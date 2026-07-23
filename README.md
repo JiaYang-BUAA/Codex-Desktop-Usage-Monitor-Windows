@@ -1,7 +1,7 @@
 # Codex Usage Monitor for Windows
 
-[![Windows CI](https://github.com/JiaYang-BUAA/codex-usage-monitor-windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/codex-usage-monitor-windows/actions/workflows/ci.yml)
-[![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/codex-usage-monitor-windows)](https://github.com/JiaYang-BUAA/codex-usage-monitor-windows/releases/latest)
+[![Windows CI](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest)
 
 在 Codex Desktop 输入栏底部显示官方订阅与第三方 API 用量。监视器通过本机 CDP 运行，不修改 `WindowsApps`、`app.asar`、Codex 登录信息或模型配置。
 
@@ -13,7 +13,7 @@
 
 | 选择 | 适合人群 | 获取方式 |
 | --- | --- | --- |
-| Windows 运行包 | 只想安装和使用监视器 | 从 [Releases](https://github.com/JiaYang-BUAA/codex-usage-monitor-windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip` |
+| Windows 运行包 | 只想安装和使用监视器 | 从 [Releases](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip` |
 | 完整源码 | 需要审查代码、修改 Provider、运行测试或参与开发 | 克隆本仓库，或在 GitHub 的 **Code** 菜单下载 Source code |
 
 运行包不包含 Node.js、Codex 或任何 API key。下载后请解压到一个长期保留的目录，不要直接从 ZIP 或临时目录运行；桌面快捷方式会继续引用该目录中的脚本。
@@ -49,7 +49,7 @@ pwsh -NoProfile -File .\scripts\install-monitor-launcher.ps1
 ## 使用完整源码
 
 ```powershell
-git clone https://github.com/JiaYang-BUAA/codex-usage-monitor-windows.git
+git clone https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows.git
 cd codex-usage-monitor-windows
 pwsh -NoProfile -File .\scripts\install-monitor-launcher.ps1
 ```
