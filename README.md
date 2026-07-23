@@ -7,16 +7,30 @@
 
 > 非官方项目，与 OpenAI 没有隶属、赞助或背书关系。Codex 更新可能改变界面 DOM，升级后请先运行测试并检查监视器位置。
 
+## 推荐：让 Codex 帮你安装
+
+推荐直接把本仓库链接和下面这段话发送给 Windows 版 Codex：
+
+```text
+请安装这个项目：https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows
+先阅读仓库根目录的 AGENTS.md 和 README.md，在 Windows 上运行根目录 install.ps1 完成当前用户安装。不要修改 Codex 安装目录、WindowsApps 或 app.asar，不要终止或重启我当前的 Codex，也不要让我在聊天中粘贴 API key。安装后请验证版本目录和桌面“Codex 监视器版”快捷方式，并告诉我正常退出当前 Codex 后如何启动。
+```
+
+Codex 会克隆或下载项目，执行受版本控制的安装脚本，将约 0.1 MB 的运行文件复制到 `%LOCALAPPDATA%\Programs\CodexUsageMonitor\<版本号>`，再创建桌面快捷方式。安装不会让当前这个未开放 CDP 的 Codex 会话立刻显示监视器；安装完成后请正常退出 Codex，再使用“Codex 监视器版”启动。
+
+官方订阅模式不需要任何额外凭据。如果要配置第三方 API，只需向 Codex 提供接口文档和字段含义，不要在聊天中发送 API key；让 Codex 按 [AGENTS.md](AGENTS.md) 的流程使用剪贴板和 Windows DPAPI 完成配置。
+
 ## 下载方式
 
-用户可以根据需要选择运行包或源码，两者功能相同：
+用户可以根据需要选择 Codex 安装、运行包或源码，三种方式运行的监视器功能相同：
 
 | 选择 | 适合人群 | 获取方式 |
 | --- | --- | --- |
+| Codex 安装（推荐） | 希望自动完成下载、稳定目录安装和快捷方式验证 | 把上面的仓库链接和提示词发送给 Codex |
 | Windows 运行包 | 只想安装和使用监视器 | 从 [Releases](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip` |
 | 完整源码 | 需要审查代码、修改 Provider、运行测试或参与开发 | 克隆本仓库，或在 GitHub 的 **Code** 菜单下载 Source code |
 
-运行包不包含 Node.js、Codex 或任何 API key。下载后请解压到一个长期保留的目录，不要直接从 ZIP 或临时目录运行；桌面快捷方式会继续引用该目录中的脚本。
+运行包不包含 Node.js、Codex 或任何 API key。根目录安装器会复制白名单内的运行文件，不会复制 `.git`、`node_modules`、日志或本地 Provider 配置。
 
 ## 功能
 
@@ -37,24 +51,28 @@
 ## 使用 Windows 运行包
 
 1. 从 GitHub Releases 下载最新的 `codex-usage-monitor-windows-*.zip`。
-2. 解压到一个长期保留的目录。
+2. 解压到任意目录。
 3. 在解压后的目录打开 PowerShell，运行：
 
 ```powershell
-pwsh -NoProfile -File .\scripts\install-monitor-launcher.ps1
+pwsh -NoProfile -File .\install.ps1
 ```
 
-安装脚本会在桌面创建“Codex 监视器版”。以后通过这个快捷方式启动 Codex，即可同时开放仅限本机的 CDP 端口并启动监视器。
+安装脚本会把当前版本复制到 `%LOCALAPPDATA%\Programs\CodexUsageMonitor`，并在桌面创建“Codex 监视器版”。安装后可以删除下载和解压目录；以后通过快捷方式启动 Codex，即可同时开放仅限本机的 CDP 端口并启动监视器。
 
 ## 使用完整源码
 
 ```powershell
 git clone https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows.git
-cd codex-usage-monitor-windows
-pwsh -NoProfile -File .\scripts\install-monitor-launcher.ps1
+cd Codex-Usage-Monitor-Windows
+pwsh -NoProfile -File .\install.ps1
 ```
 
 直接使用监视器不需要安装 npm 依赖。只有运行测试或重新构建运行包时才需要执行 `npm ci`。
+
+默认安装使用稳定的版本目录，适合普通用户和 Codex 自动安装。如果正在开发并希望快捷方式直接引用当前源码，可以显式运行 `scripts\install-monitor-launcher.ps1`。
+
+更新时让 Codex 重新执行推荐安装流程，或在新版本源码/运行包中再次运行 `install.ps1`。新版本会进入独立目录并更新桌面快捷方式，不会覆盖 DPAPI 凭据和 Provider 状态。
 
 如果 Codex 已经从原生图标启动且没有 CDP，脚本不会强制结束现有会话。请正常退出 Codex，再使用监视器快捷方式。
 
@@ -161,6 +179,9 @@ DPAPI 凭据绑定当前 Windows 用户和系统。换 Windows 账号、迁移�
 ## 常用命令
 
 ```powershell
+# 安装到稳定的当前用户目录并创建桌面快捷方式
+pwsh -NoProfile -File .\install.ps1
+
 # 已有带 CDP 的 Codex 时启动/复用监视器
 pwsh -NoProfile -File .\scripts\start-monitor.ps1
 
@@ -193,7 +214,10 @@ pwsh -NoProfile -File .\scripts\build-release.ps1
 ## 项目结构
 
 ```text
+AGENTS.md                     Codex 安装、配置与安全指引
+install.ps1                   当前用户稳定目录安装器
 assets/usage-inject.js         renderer 内的监视器 UI
+config/package-files.json      安装与发布文件白名单
 config/providers/              无密钥 Provider 示例
 scripts/injector.mjs           CDP 连接与热注入
 scripts/usage-client.mjs       官方/API 用量客户端

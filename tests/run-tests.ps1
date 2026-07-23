@@ -32,6 +32,7 @@ if ($dependencyNames.Count -ne 1 -or $dependencyNames[0] -ne 'jsdom') { throw 'O
 
 $powerShellFiles = Get-ChildItem -LiteralPath (Join-Path $root 'scripts') -Filter '*.ps1' -File
 $powerShellFiles += Get-ChildItem -LiteralPath (Join-Path $root 'tests') -Filter '*.ps1' -File
+$powerShellFiles += Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File
 foreach ($file in $powerShellFiles) {
   $bytes = [IO.File]::ReadAllBytes($file.FullName)
   if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
@@ -84,6 +85,15 @@ if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex cont
 if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state contract is missing.' }
 if ($runtimeSource -notmatch '--remote-debugging-address=127\.0\.0\.1') { throw 'Local CDP binding contract is missing.' }
 
+$agentGuide = Get-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Raw
+foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsApps', 'run-tests\.ps1')) {
+  if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }
+}
+$readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw
+foreach ($requiredReadmeText in @('推荐：让 Codex 帮你安装', 'AGENTS.md', 'install.ps1')) {
+  if ($readme -notmatch [regex]::Escape($requiredReadmeText)) { throw "README installation guidance is missing: $requiredReadmeText" }
+}
+
 function Test-JsonPropertyNames($Value) {
   if ($null -eq $Value) { return }
   if ($Value -is [Collections.IDictionary]) {
@@ -123,14 +133,8 @@ if (-not $SkipPackageTest) {
     $actual = @(Get-ChildItem -LiteralPath $packageRoot.FullName -File -Recurse | ForEach-Object {
       $_.FullName.Substring($packageRoot.FullName.Length + 1).Replace('/', '\')
     } | Sort-Object)
-    $expected = @(
-      '.gitignore', 'CHANGELOG.md', 'LICENSE', 'NOTICE.md', 'README.md', 'VERSION', 'package.json', 'package-lock.json',
-      'assets\usage-inject.js', 'config\providers\cctq.example.json', 'config\providers\custom.example.json',
-      'scripts\clear-api-provider.ps1', 'scripts\configure-api-provider.ps1', 'scripts\configure-cctq.ps1', 'scripts\injector.mjs',
-      'scripts\install-monitor-launcher.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\monitor-utils.ps1',
-      'scripts\restore-monitor.ps1', 'scripts\start-monitor.ps1', 'scripts\usage-client.mjs', 'scripts\validate-provider.mjs',
-      'tests\provider-persistence.ps1', 'tests\run-tests.ps1', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs'
-    ) | Sort-Object
+    $manifest = Get-Content -LiteralPath (Join-Path $root 'config\package-files.json') -Raw | ConvertFrom-Json
+    $expected = @($manifest | ForEach-Object { ([string]$_).Replace('/', '\') }) | Sort-Object
     if (Compare-Object $expected $actual) { throw 'Release archive content differs from the allowlist.' }
     $text = ($actual | Where-Object { $_ -match '\.(?:js|mjs|json|md|ps1|txt)$' } | ForEach-Object {
       Get-Content -LiteralPath (Join-Path $packageRoot.FullName $_) -Raw
@@ -139,6 +143,14 @@ if (-not $SkipPackageTest) {
       if ($text -match $pattern) { throw "Potential secret or personal path found in release: $pattern" }
     }
     if ($actual -match 'themes|renderer-inject|\.png$|\.exe$|theme-manager|build-exe') { throw 'Theme or binary content leaked into the release.' }
+
+    $installRoot = Join-Path $testRoot 'install'
+    & (Join-Path $root 'install.ps1') -InstallRoot $installRoot -SkipShortcut
+    $installedDirectory = Join-Path $installRoot $version
+    if (-not (Test-Path -LiteralPath (Join-Path $installedDirectory 'scripts\start-monitor.ps1') -PathType Leaf)) {
+      throw 'Persistent installer did not copy the runtime scripts.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $installedDirectory 'node_modules')) { throw 'Persistent installer copied node_modules.' }
   } finally {
     if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
   }
