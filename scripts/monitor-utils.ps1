@@ -3,11 +3,96 @@
 $CodexUsageRoot = Split-Path -Parent $PSScriptRoot
 $CodexUsageStateRoot = Join-Path $env:LOCALAPPDATA 'CodexUsageMonitor'
 $CodexUsageStatePath = Join-Path $CodexUsageStateRoot 'state.json'
+$CodexUsagePersistedProviderConfigPath = Join-Path $CodexUsageStateRoot 'provider.json'
+$CodexUsagePersistedProviderKeyPath = Join-Path $CodexUsageStateRoot 'api-key.dpapi'
+$CodexUsagePersistedProviderEntropy = [Text.Encoding]::UTF8.GetBytes('CodexUsageMonitor/v1/APIKey')
 $CodexUsageLegacyStatePath = Join-Path $env:LOCALAPPDATA 'CodexDreamSkin\state.json'
 $CodexUsageVersion = (Get-Content -LiteralPath (Join-Path $CodexUsageRoot 'VERSION') -Raw).Trim()
 $CodexUsageUtf8 = [Text.UTF8Encoding]::new($false)
 try { [Console]::OutputEncoding = $CodexUsageUtf8 } catch {}
 $global:OutputEncoding = $CodexUsageUtf8
+
+function Save-CodexUsagePersistedProvider {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ConfigPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ApiKey
+  )
+
+  if ([string]::IsNullOrWhiteSpace($ApiKey)) { throw 'API key 不能为空。' }
+  $resolvedConfig = (Resolve-Path -LiteralPath $ConfigPath -ErrorAction Stop).Path
+  New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
+  $temporaryConfig = "$CodexUsagePersistedProviderConfigPath.$PID.tmp"
+  $temporaryKey = "$CodexUsagePersistedProviderKeyPath.$PID.tmp"
+  $plainBytes = $null
+  $protectedBytes = $null
+  try {
+    $plainBytes = [Text.Encoding]::UTF8.GetBytes($ApiKey)
+    $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
+      $plainBytes,
+      $CodexUsagePersistedProviderEntropy,
+      [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    [IO.File]::WriteAllBytes($temporaryConfig, [IO.File]::ReadAllBytes($resolvedConfig))
+    [IO.File]::WriteAllBytes($temporaryKey, $protectedBytes)
+    Move-Item -LiteralPath $temporaryConfig -Destination $CodexUsagePersistedProviderConfigPath -Force
+    Move-Item -LiteralPath $temporaryKey -Destination $CodexUsagePersistedProviderKeyPath -Force
+  } finally {
+    Remove-Item -LiteralPath $temporaryConfig,$temporaryKey -Force -ErrorAction SilentlyContinue
+    if ($plainBytes) { [Array]::Clear($plainBytes, 0, $plainBytes.Length) }
+    if ($protectedBytes) { [Array]::Clear($protectedBytes, 0, $protectedBytes.Length) }
+  }
+}
+
+function Get-CodexUsagePersistedProvider {
+  $hasConfig = Test-Path -LiteralPath $CodexUsagePersistedProviderConfigPath -PathType Leaf
+  $hasKey = Test-Path -LiteralPath $CodexUsagePersistedProviderKeyPath -PathType Leaf
+  if (-not $hasConfig -and -not $hasKey) { return $null }
+  if (-not $hasConfig -or -not $hasKey) { throw '持久化 API Provider 配置不完整，请重新运行配置命令。' }
+
+  $protectedBytes = $null
+  $plainBytes = $null
+  try {
+    $protectedBytes = [IO.File]::ReadAllBytes($CodexUsagePersistedProviderKeyPath)
+    $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect(
+      $protectedBytes,
+      $CodexUsagePersistedProviderEntropy,
+      [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    $apiKey = [Text.Encoding]::UTF8.GetString($plainBytes)
+    if ([string]::IsNullOrWhiteSpace($apiKey)) { throw '持久化 API key 为空，请重新运行配置命令。' }
+    return [pscustomobject]@{
+      ApiKey = $apiKey
+      ConfigPath = [IO.Path]::GetFullPath($CodexUsagePersistedProviderConfigPath)
+    }
+  } catch {
+    throw "无法解密持久化 API key。它可能由其他 Windows 用户或其他系统写入，请重新运行配置命令。$($_.Exception.Message)"
+  } finally {
+    if ($protectedBytes) { [Array]::Clear($protectedBytes, 0, $protectedBytes.Length) }
+    if ($plainBytes) { [Array]::Clear($plainBytes, 0, $plainBytes.Length) }
+  }
+}
+
+function Import-CodexUsagePersistedProvider {
+  if ($env:CODEX_USAGE_DISABLE_PERSISTED_PROVIDER -eq '1') { return $false }
+  if ($env:CODEX_USAGE_API_KEY -or $env:CODEX_USAGE_PROVIDER_CONFIG_PATH) { return $false }
+  $stored = Get-CodexUsagePersistedProvider
+  if (-not $stored) { return $false }
+  $env:CODEX_USAGE_API_KEY = $stored.ApiKey
+  $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $stored.ConfigPath
+  return $true
+}
+
+function Remove-CodexUsagePersistedProvider {
+  Remove-Item -LiteralPath $CodexUsagePersistedProviderConfigPath,$CodexUsagePersistedProviderKeyPath -Force -ErrorAction SilentlyContinue
+}
+
+function Test-CodexUsagePersistedProvider {
+  return (Test-Path -LiteralPath $CodexUsagePersistedProviderConfigPath -PathType Leaf) -and
+    (Test-Path -LiteralPath $CodexUsagePersistedProviderKeyPath -PathType Leaf)
+}
 
 function Resolve-CodexUsageNodePath {
   $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue

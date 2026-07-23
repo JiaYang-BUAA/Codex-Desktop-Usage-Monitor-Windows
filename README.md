@@ -1,7 +1,7 @@
 # Codex Usage Monitor for Windows
 
-[![Windows CI](https://github.com/JiaYang-BUAA/codex-usage-monitor-windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/codex-usage-monitor-windows/actions/workflows/ci.yml)
-[![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/codex-usage-monitor-windows)](https://github.com/JiaYang-BUAA/codex-usage-monitor-windows/releases/latest)
+[![Windows CI](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest)
 
 在 Codex Desktop 输入栏底部显示官方订阅与第三方 API 用量。监视器通过本机 CDP 运行，不修改 `WindowsApps`、`app.asar`、Codex 登录信息或模型配置。
 
@@ -13,7 +13,7 @@
 
 | 选择 | 适合人群 | 获取方式 |
 | --- | --- | --- |
-| Windows 运行包 | 只想安装和使用监视器 | 从 [Releases](https://github.com/JiaYang-BUAA/codex-usage-monitor-windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip` |
+| Windows 运行包 | 只想安装和使用监视器 | 从 [Releases](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip` |
 | 完整源码 | 需要审查代码、修改 Provider、运行测试或参与开发 | 克隆本仓库，或在 GitHub 的 **Code** 菜单下载 Source code |
 
 运行包不包含 Node.js、Codex 或任何 API key。下载后请解压到一个长期保留的目录，不要直接从 ZIP 或临时目录运行；桌面快捷方式会继续引用该目录中的脚本。
@@ -25,7 +25,7 @@
 - 每个指标均可勾选；折叠栏会自动使用紧凑显示。
 - 官方与 API 数据默认每 90 秒刷新；请求期间保留上一份成功数据。
 - Provider 由 JSON 描述，可映射嵌套响应字段，不需要修改 JavaScript。
-- API key 只通过环境变量传给后台进程，不写入项目、日志、状态文件或 renderer 存储。
+- API key 默认使用当前 Windows 用户 DPAPI 加密保存，启动时只在后台 Node 进程环境中短暂解密，不写入项目、日志、普通状态文件或 renderer 存储。
 
 ## 环境要求
 
@@ -49,7 +49,7 @@ pwsh -NoProfile -File .\scripts\install-monitor-launcher.ps1
 ## 使用完整源码
 
 ```powershell
-git clone https://github.com/JiaYang-BUAA/codex-usage-monitor-windows.git
+git clone https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows.git
 cd codex-usage-monitor-windows
 pwsh -NoProfile -File .\scripts\install-monitor-launcher.ps1
 ```
@@ -105,7 +105,23 @@ CCTQ 用户可直接运行：
 pwsh -NoProfile -File .\scripts\configure-cctq.ps1 -FromClipboard
 ```
 
-API key 不持久化。后台监视进程或 Windows 重启后，需要重新运行配置命令；官方订阅监视不受影响。
+配置命令默认会将 API key 用 Windows DPAPI 按当前用户加密保存，并复制一份已校验的 Provider 配置到 `%LOCALAPPDATA%\CodexUsageMonitor`。以后通过“Codex 监视器版”快捷方式启动，后台监视器会自动恢复，不需要再次输入。
+
+如果只想临时使用，不保存凭据，可以加 `-SessionOnly`：
+
+```powershell
+pwsh -NoProfile -File .\scripts\configure-api-provider.ps1 `
+  -ConfigPath .\config\providers\my-provider.local.json `
+  -FromClipboard -SessionOnly
+```
+
+清除已保存的 API key，并将当前监视器切回官方订阅模式：
+
+```powershell
+pwsh -NoProfile -File .\scripts\clear-api-provider.ps1
+```
+
+DPAPI 凭据绑定当前 Windows 用户和系统。换 Windows 账号、迁移到另一台电脑或删除 `%LOCALAPPDATA%\CodexUsageMonitor` 后，需要重新配置。API key 不会传给 Codex 主进程，也不会写入项目、日志、普通状态文件或 renderer 存储。
 
 ### Provider JSON
 
@@ -151,6 +167,9 @@ pwsh -NoProfile -File .\scripts\start-monitor.ps1
 # 停止后台进程并移除当前界面的监视器
 pwsh -NoProfile -File .\scripts\restore-monitor.ps1
 
+# 清除持久化 API Provider 和 API key
+pwsh -NoProfile -File .\scripts\clear-api-provider.ps1
+
 # 验证 Provider 配置
 node .\scripts\validate-provider.mjs .\config\providers\custom.example.json
 
@@ -167,6 +186,7 @@ pwsh -NoProfile -File .\scripts\build-release.ps1
 - CDP 只绑定 Codex 启动参数指定的本机端口。不要把该端口转发到局域网或公网。
 - 项目不读取 `%USERPROFILE%\.codex\auth.json` 或 `config.toml`。
 - API 请求只发送到 Provider JSON 的 `baseUrl`，请求路径必须是站内路径。
+- DPAPI 密文只能由同一台 Windows 上的当前用户解密，防止密钥以明文落盘；它不能防御已经以同一 Windows 用户身份运行的恶意程序。
 - 监视器不会自动结束正在运行的 Codex。
 - 项目不包含编译 EXE、隐藏脚本下载器或自启动服务。未签名 PowerShell/Node 脚本仍可能触发安全软件启发式提示，请从源码审核后运行。
 
@@ -180,6 +200,12 @@ scripts/usage-client.mjs       官方/API 用量客户端
 scripts/*monitor*.ps1          启动、安装、停止和公共工具
 tests/                         协议、UI 生命周期与发布检查
 ```
+
+## 使用 Codex 继续定制
+
+本项目由 Codex 协助开发，源码完整公开。如果现有指标不能满足你的监看需求，可以在 Codex 中打开本仓库，说明目标接口、数据字段和展示方式，让 Codex 基于现有 Provider 配置、后台用量客户端和监视器 UI 修改源码并运行测试。
+
+不同第三方服务的接口和认证方式可能不同。运行或发布修改前，请审查代码差异，确认请求只发送到预期服务，并确保 API key 没有写入源码、配置示例或日志。
 
 ## 测试范围
 

@@ -12,6 +12,8 @@ $node = $nodeCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Lea
 if (-not $node) { throw 'Node.js 22+ is required for tests.' }
 $nodeVersion = (& $node --version).TrimStart('v').Split('.')[0]
 if ([int]$nodeVersion -lt 22) { throw "Node.js 22+ is required; found $(& $node --version)." }
+$pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
+if (-not $pwsh) { $pwsh = (Get-Command powershell.exe -ErrorAction Stop).Source }
 
 $package = Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | ConvertFrom-Json
 $lockPath = Join-Path $root 'package-lock.json'
@@ -54,19 +56,19 @@ foreach ($relative in $javascriptFiles) {
 if ($LASTEXITCODE -ne 0) { throw 'Usage client tests failed.' }
 & $node (Join-Path $root 'tests\usage-monitor-lifecycle.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Renderer lifecycle tests failed.' }
+& $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\provider-persistence.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Provider persistence tests failed.' }
 foreach ($relative in @('config\providers\cctq.example.json', 'config\providers\custom.example.json')) {
   & $node (Join-Path $root 'scripts\validate-provider.mjs') (Join-Path $root $relative) *> $null
   if ($LASTEXITCODE -ne 0) { throw "Provider validation failed: $relative" }
 }
 
-$pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
-if (-not $pwsh) { $pwsh = (Get-Command powershell.exe -ErrorAction Stop).Source }
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'scripts\launch-codex-monitor.ps1') -SelfTest
 if ($LASTEXITCODE -ne 0) { throw 'Launcher decision tests failed.' }
 
 $runtimeFiles = @(
   'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\monitor-utils.ps1',
-  'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\configure-api-provider.ps1'
+  'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1'
 )
 $runtimeSource = ($runtimeFiles | ForEach-Object { Get-Content -LiteralPath (Join-Path $root $_) -Raw }) -join "`n"
 foreach ($forbidden in @('.codex\auth.json', '.codex/config.toml', 'Stop-Process ChatGPT', 'Invoke-Expression', 'DownloadString')) {
@@ -75,6 +77,7 @@ foreach ($forbidden in @('.codex\auth.json', '.codex/config.toml', 'Stop-Process
 if ($runtimeSource -match 'C:\\Users\\yang|E:\\codex') { throw 'A personal absolute path is embedded in runtime source.' }
 if ($runtimeSource -notmatch 'IApplicationActivationManager') { throw 'Packaged Codex must be launched through the Windows activation API.' }
 if ($runtimeSource -notmatch 'CODEX_USAGE_API_KEY') { throw 'API key environment contract is missing.' }
+if ($runtimeSource -notmatch 'ProtectedData') { throw 'DPAPI persistence contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageCliPath') { throw 'Codex CLI auto-discovery contract is missing.' }
 if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop executable contract is missing.' }
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
@@ -123,10 +126,10 @@ if (-not $SkipPackageTest) {
     $expected = @(
       '.gitignore', 'CHANGELOG.md', 'LICENSE', 'NOTICE.md', 'README.md', 'VERSION', 'package.json', 'package-lock.json',
       'assets\usage-inject.js', 'config\providers\cctq.example.json', 'config\providers\custom.example.json',
-      'scripts\configure-api-provider.ps1', 'scripts\configure-cctq.ps1', 'scripts\injector.mjs',
+      'scripts\clear-api-provider.ps1', 'scripts\configure-api-provider.ps1', 'scripts\configure-cctq.ps1', 'scripts\injector.mjs',
       'scripts\install-monitor-launcher.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\monitor-utils.ps1',
       'scripts\restore-monitor.ps1', 'scripts\start-monitor.ps1', 'scripts\usage-client.mjs', 'scripts\validate-provider.mjs',
-      'tests\run-tests.ps1', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs'
+      'tests\provider-persistence.ps1', 'tests\run-tests.ps1', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs'
     ) | Sort-Object
     if (Compare-Object $expected $actual) { throw 'Release archive content differs from the allowlist.' }
     $text = ($actual | Where-Object { $_ -match '\.(?:js|mjs|json|md|ps1|txt)$' } | ForEach-Object {
