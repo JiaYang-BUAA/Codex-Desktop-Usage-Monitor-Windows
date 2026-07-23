@@ -1,0 +1,17 @@
+{
+  "name": "codex-usage-monitor-windows",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/run-tests.ps1",
+    "test": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/run-tests.ps1",
+    "build": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-release.ps1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

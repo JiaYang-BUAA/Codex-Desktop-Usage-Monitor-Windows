@@ -1,0 +1,14 @@
+dist/
+node_modules/
+.package-smoke/
+artifacts/
+.idea/
+.vs/
+.vscode/
+Thumbs.db
+.DS_Store
+*.log
+.env
+.env.*
+config/providers/*.local.json
+config/providers/*.secret.json

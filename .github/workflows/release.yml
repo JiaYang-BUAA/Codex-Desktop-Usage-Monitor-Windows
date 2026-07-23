@@ -1,0 +1,39 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install test dependencies
+        run: npm ci
+
+      - name: Test and build runtime package
+        shell: pwsh
+        run: .\scripts\build-release.ps1
+
+      - name: Create GitHub Release and upload package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $archive = Get-ChildItem .\dist\codex-usage-monitor-windows-*.zip -File | Select-Object -First 1
+          if (-not $archive) { throw 'Runtime package was not created.' }
+          gh release create $tag $archive.FullName --repo $env:GITHUB_REPOSITORY --title $tag --generate-notes --verify-tag

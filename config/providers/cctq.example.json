@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "cctq",
+  "label": "CCTQ API",
+  "baseUrl": "https://www.cctq.ai",
+  "requests": {
+    "usagePath": "/api/usage/token/",
+    "statusPath": "/api/status"
+  },
+  "auth": {
+    "header": "Authorization",
+    "scheme": "Bearer"
+  },
+  "response": {
+    "usageRoot": "data",
+    "statusRoot": "data",
+    "used": "total_used",
+    "limit": "total_granted",
+    "unlimited": "unlimited_quota",
+    "expiresAt": "expires_at",
+    "quotaPerUnit": "quota_per_unit",
+    "currency": "quota_display_type",
+    "defaultQuotaPerUnit": 500000,
+    "defaultCurrency": "CNY"
+  }
+}

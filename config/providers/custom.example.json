@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "my-provider",
+  "label": "我的 API",
+  "baseUrl": "https://api.example.com",
+  "requests": {
+    "usagePath": "/v1/usage",
+    "statusPath": null
+  },
+  "auth": {
+    "header": "Authorization",
+    "scheme": "Bearer"
+  },
+  "response": {
+    "usageRoot": "data",
+    "statusRoot": "data",
+    "used": "total_used",
+    "limit": "total_granted",
+    "unlimited": "unlimited",
+    "expiresAt": "expires_at",
+    "quotaPerUnit": "quota_per_unit",
+    "currency": "currency",
+    "defaultQuotaPerUnit": 1,
+    "defaultCurrency": "USD"
+  }
+}
