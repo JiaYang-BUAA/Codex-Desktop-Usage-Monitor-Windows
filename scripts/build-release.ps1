@@ -20,17 +20,11 @@ $releaseName = "codex-usage-monitor-windows-$version"
 $archivePath = Join-Path $OutputDirectory "$releaseName.zip"
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) "codex-usage-monitor-build-$PID"
 $packageRoot = Join-Path $temporaryRoot $releaseName
+$manifestPath = Join-Path $root 'config\package-files.json'
+$files = @(Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
+if (-not $files.Count) { throw 'Package manifest is empty.' }
 try {
   New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
-  $files = @(
-    '.gitignore', 'CHANGELOG.md', 'LICENSE', 'NOTICE.md', 'README.md', 'VERSION', 'package.json', 'package-lock.json',
-    'assets\usage-inject.js',
-    'config\providers\cctq.example.json', 'config\providers\custom.example.json',
-    'scripts\clear-api-provider.ps1', 'scripts\configure-api-provider.ps1', 'scripts\configure-cctq.ps1', 'scripts\injector.mjs',
-    'scripts\install-monitor-launcher.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\monitor-utils.ps1',
-    'scripts\restore-monitor.ps1', 'scripts\start-monitor.ps1', 'scripts\usage-client.mjs', 'scripts\validate-provider.mjs',
-    'tests\provider-persistence.ps1', 'tests\run-tests.ps1', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs'
-  )
   foreach ($relative in $files) {
     $source = Join-Path $root $relative
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Release file missing: $relative" }

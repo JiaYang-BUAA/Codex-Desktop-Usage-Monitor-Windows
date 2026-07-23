@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.0 - 2026-07-23
+
+- 增加面向 Codex 安装流程的根目录 `install.ps1`，将运行文件复制到当前用户的稳定版本目录后创建桌面快捷方式。
+- 增加 `AGENTS.md`，为 Codex 提供安装、安全、API key 保护和测试指引。
+- 使用统一的 `config/package-files.json` 驱动安装器、发布包和发布测试，减少文件清单漂移。
+
 ## 1.1.0 - 2026-07-23
 
 - API key 默认使用当前 Windows 用户 DPAPI 加密持久化，Codex 或 Windows 重启后自动恢复。
