@@ -3,7 +3,8 @@ param(
   [ValidateRange(1024, 65535)]
   [int]$Port = 9335,
   [string]$ConfigPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'config\providers\cctq.example.json'),
-  [switch]$FromClipboard
+  [switch]$FromClipboard,
+  [switch]$SessionOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,11 +27,23 @@ try {
     $plainKey = [Net.NetworkCredential]::new('', $secureKey).Password
   }
   if (-not $plainKey) { throw 'API key 不能为空。' }
+  if (-not $SessionOnly) {
+    Save-CodexUsagePersistedProvider -ConfigPath $resolvedConfig -ApiKey $plainKey
+  }
   $env:CODEX_USAGE_API_KEY = $plainKey
   $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $resolvedConfig
-  & (Join-Path $PSScriptRoot 'start-monitor.ps1') -Port $Port -Replace
-  if ($LASTEXITCODE -ne 0) { throw "API 用量监视器启动失败，退出码 $LASTEXITCODE。" }
-  Write-Host 'API Provider 已启用。Key 只保留在后台 Node 进程内存中。'
+  try {
+    & (Join-Path $PSScriptRoot 'start-monitor.ps1') -Port $Port -Replace
+    if ($LASTEXITCODE -ne 0) { throw "API 用量监视器启动失败，退出码 $LASTEXITCODE。" }
+  } catch {
+    if (-not $SessionOnly) { throw "API Provider 已安全保存，但本次监视器启动失败：$($_.Exception.Message)" }
+    throw
+  }
+  if ($SessionOnly) {
+    Write-Host 'API Provider 已启用。本次为仅会话模式，后台进程或 Windows 重启后需要重新配置。'
+  } else {
+    Write-Host 'API Provider 已启用。Key 已使用当前 Windows 用户 DPAPI 加密保存，重启后会自动恢复。'
+  }
 } finally {
   if ($null -ne $savedKey) { $env:CODEX_USAGE_API_KEY = $savedKey } else { Remove-Item Env:CODEX_USAGE_API_KEY -ErrorAction SilentlyContinue }
   if ($null -ne $savedConfig) { $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $savedConfig } else { Remove-Item Env:CODEX_USAGE_PROVIDER_CONFIG_PATH -ErrorAction SilentlyContinue }

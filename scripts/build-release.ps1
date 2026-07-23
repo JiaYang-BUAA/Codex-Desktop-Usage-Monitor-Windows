@@ -26,10 +26,10 @@ try {
     '.gitignore', 'CHANGELOG.md', 'LICENSE', 'NOTICE.md', 'README.md', 'VERSION', 'package.json', 'package-lock.json',
     'assets\usage-inject.js',
     'config\providers\cctq.example.json', 'config\providers\custom.example.json',
-    'scripts\configure-api-provider.ps1', 'scripts\configure-cctq.ps1', 'scripts\injector.mjs',
+    'scripts\clear-api-provider.ps1', 'scripts\configure-api-provider.ps1', 'scripts\configure-cctq.ps1', 'scripts\injector.mjs',
     'scripts\install-monitor-launcher.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\monitor-utils.ps1',
     'scripts\restore-monitor.ps1', 'scripts\start-monitor.ps1', 'scripts\usage-client.mjs', 'scripts\validate-provider.mjs',
-    'tests\run-tests.ps1', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs'
+    'tests\provider-persistence.ps1', 'tests\run-tests.ps1', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs'
   )
   foreach ($relative in $files) {
     $source = Join-Path $root $relative

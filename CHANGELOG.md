@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 - 2026-07-23
+
+- API key 默认使用当前 Windows 用户 DPAPI 加密持久化，Codex 或 Windows 重启后自动恢复。
+- 增加 `-SessionOnly` 临时会话模式和 `clear-api-provider.ps1` 凭据清除命令。
+- 增加 DPAPI 轮换、明文保护、自动导入和清除测试。
+
 ## 1.0.0 - 2026-07-23
 
 - 将项目收敛为独立的 Windows Codex 用量监视器。
