@@ -350,12 +350,13 @@
       height: 5px;
       flex: 0 0 auto;
       border-radius: 50%;
-      background: #34a853;
-      box-shadow: 0 0 0 2px color-mix(in srgb, #34a853 15%, transparent);
+      background: #15803d;
+      box-shadow: 0 0 0 2px color-mix(in srgb, #15803d 18%, transparent);
     }
-    :host([data-status="loading"]) .usage-dot { background: #d49b33; }
-    :host([data-status="unavailable"]) .usage-dot { background: #929292; box-shadow: none; }
-    :host([data-status="stale"]) .usage-dot, :host([data-status="error"]) .usage-dot { background: #d36b55; }
+    :host([data-status="loading"]) .usage-dot { background: #2563eb; box-shadow: 0 0 0 2px color-mix(in srgb, #2563eb 18%, transparent); }
+    :host([data-status="stale"]) .usage-dot { background: #7c3aed; box-shadow: 0 0 0 2px color-mix(in srgb, #7c3aed 18%, transparent); }
+    :host([data-status="error"]) .usage-dot { background: #db2777; box-shadow: 0 0 0 2px color-mix(in srgb, #db2777 18%, transparent); }
+    :host([data-status="unavailable"]) .usage-dot { background: #6b7280; box-shadow: none; }
     .usage-primary, .usage-secondary, .usage-today, .usage-extra-item { overflow: hidden; text-overflow: ellipsis; }
     .usage-secondary, .usage-today, .usage-extra { opacity: .82; }
     .usage-today { padding-left: 4px; }

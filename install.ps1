@@ -46,5 +46,5 @@ Write-Host "Codex Usage Monitor $version installed to: $installDirectory"
 if ($SkipShortcut) {
   Write-Host 'Shortcut creation was skipped.'
 } else {
-  Write-Host 'Exit the current Codex session normally, then start Codex from the desktop shortcut: Codex 监视器版'
+  Write-Host 'Exit the current Codex session normally, then start Codex from the desktop shortcut: Codex Usage Monitor'
 }

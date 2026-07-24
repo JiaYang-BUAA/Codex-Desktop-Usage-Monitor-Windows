@@ -35,7 +35,7 @@ function Test-MonitorInjection([int]$CandidatePort, [int]$TimeoutMs = 4000) {
 
 $activePort = Resolve-CodexUsageCdpPort $Port
 if (-not $activePort) {
-  if (-not $LaunchCodex) { throw '没有找到带 CDP 的 Codex。请先使用“Codex 监视器版”快捷方式启动 Codex。' }
+  if (-not $LaunchCodex) { throw '没有找到带 CDP 的 Codex。请先使用“Codex Usage Monitor”快捷方式启动 Codex。' }
   if (@(Get-Process ChatGPT -ErrorAction SilentlyContinue).Count -gt 0) {
     throw 'Codex 已经运行但未开放 CDP。请正常退出后再使用监视器启动器；脚本不会强制结束现有会话。'
   }
