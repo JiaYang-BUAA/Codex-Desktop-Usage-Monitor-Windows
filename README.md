@@ -9,7 +9,7 @@
 
 ### 界面预览
 
-监视栏位于“替我审批”右侧，可勾选最多 8 项数据；下图使用演示数据，不包含真实账户信息。
+监视栏位于“替我审批”右侧，可勾选最多 8 项数据。截图仅用于界面示意，不包含 API key 或访问令牌。
 
 ![Codex Usage Monitor 折叠监视栏](docs/images/monitor-collapsed.png)
 
@@ -31,14 +31,14 @@
 
 ### 2. 选择数据源并配置
 
-- 官方订阅：无需配置，启动后自动读取。
-- API 账户：准备账户访问令牌和数字用户 ID。复制令牌后运行：
+- 官方订阅：数据来自 Codex Desktop 本机 app-server 返回的官方账户用量，无需配置，启动后自动读取。
+- API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备账户访问令牌和数字用户 ID；访问令牌通常可在服务商的“用户资料”“个人中心”或类似页面获取。复制令牌后运行：
 
   ```powershell
   pwsh -NoProfile -File .\scripts\configure-api-account.ps1 -FromClipboard -UserId <你的用户ID>
   ```
 
-- API Key：准备服务商的用量接口文档，复制 key 后使用对应 Provider 配置脚本；不要把 key 发到聊天中。CCTQ 示例可运行：
+- API Key：数据来自服务商针对 API key 提供的额度或用量查询接口。准备接口文档，复制 key 后使用对应 Provider 配置脚本；不要把 key 发到聊天中。CCTQ 示例可运行：
 
   ```powershell
   pwsh -NoProfile -File .\scripts\configure-cctq.ps1 -FromClipboard
@@ -63,6 +63,16 @@ pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完
 ### 数据源与指标
 
 面板从左到右固定为：官方订阅、API 账户、API Key。数据源未配置或没有可用响应时仍保留对应栏位，并显示请求状态。
+
+#### 三栏数据来源
+
+| 栏位 | 数据来源 | 所需凭据 |
+| --- | --- | --- |
+| 官方订阅 | Codex Desktop 本机 app-server 返回的官方账户周期和 Token 用量。 | 无需额外凭据。 |
+| API 账户 | 第三方服务商的账户信息接口与请求日志接口；当前内置实现兼容 CCTQ 风格接口。 | API 账户访问令牌和数字用户 ID。访问令牌一般在服务商的用户资料或个人中心页面获取。 |
+| API Key | 第三方服务商为某个 API key 提供的额度、限额和有效期查询接口，由 Provider JSON 映射响应字段。 | 对应 API key。 |
+
+API 账户与 API Key 是两种不同的数据来源：前者读取整个用户账户及请求日志，后者读取某个 key 对应的额度信息。不同服务商的接口字段可能不同，可按 [AGENTS.md](AGENTS.md) 的 Codex 辅助配置流程适配。
 
 #### 官方订阅
 
