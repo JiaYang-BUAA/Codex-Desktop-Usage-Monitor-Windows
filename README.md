@@ -7,6 +7,16 @@
 
 这是一个 Windows 版 Codex Desktop 用量监视器。它在 Codex 输入栏附近显示官方订阅、API 账户和 API Key 的用量，不修改 Codex 安装文件、登录文件或模型配置。
 
+### 界面预览
+
+监视栏位于“替我审批”右侧，可勾选最多 8 项数据；下图使用演示数据，不包含真实账户信息。
+
+![Codex Usage Monitor 折叠监视栏](docs/images/monitor-collapsed.png)
+
+点击监视栏后可同时查看官方订阅、API 账户和 API Key 三类数据。
+
+![Codex Usage Monitor 三栏展开面板](docs/images/monitor-expanded.png)
+
 ### 1. 让 Codex 帮你安装（推荐）
 
 把仓库链接和下面的文字一起发给 Windows 版 Codex：

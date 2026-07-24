@@ -446,7 +446,7 @@
       display: flex;
       flex-direction: column;
       justify-content: flex-end;
-      align-self: flex-start;
+      align-self: flex-end;
       width: fit-content;
       max-width: 100%;
       min-height: 36px;
@@ -461,7 +461,7 @@
     .usage-brand-credit { font-size: 9px; font-weight: 450; text-align: right; }
     .usage-column-meta {
       display: flex;
-      justify-content: flex-end;
+      justify-content: flex-start;
       align-items: center;
       gap: 5px;
       min-height: 27px;
@@ -529,7 +529,7 @@
     if (settingsChanged) saveSettings(settings);
     const availableWidth = Number.parseInt(host.style.getPropertyValue("--usage-max-width"), 10) || 280;
     host.dataset.density = selected.length >= 7 || (selected.length >= 5 && availableWidth < 280)
-      ? "packed" : selected.length >= 4 ? "dense" : "normal";
+      ? "packed" : selected.length >= 5 ? "dense" : "normal";
     const summaryDisplay = (metric) => host.dataset.density === "normal" ? metric?.display : compactSummaryDisplay(metric);
     const shadow = host.shadowRoot;
     const summaryRoot = shadow.querySelector(".usage-summary-items");
@@ -592,7 +592,7 @@
           return row;
         }));
         column.append(title, rows);
-        if (source.accountType === "subscription") {
+        if (source.accountType === "api-key") {
           const brand = document.createElement("div");
           brand.className = "usage-column-brand";
           const product = document.createElement("span");
@@ -603,7 +603,7 @@
           credit.textContent = "—— Designed by +羊 and Codex";
           brand.append(product, credit);
           column.append(brand);
-        } else if (source.accountType === "api-key") {
+        } else if (source.accountType === "subscription") {
           const meta = document.createElement("div");
           meta.className = "usage-column-meta";
           const maximum = document.createElement("span");

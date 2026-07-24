@@ -99,7 +99,7 @@ foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsA
   if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }
 }
 $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw
-foreach ($requiredReadmeText in @('小白用户：三步开始', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '30 秒', '有限页数')) {
+foreach ($requiredReadmeText in @('小白用户：三步开始', '界面预览', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '30 秒', '有限页数')) {
   if ($readme -notmatch [regex]::Escape($requiredReadmeText)) { throw "README installation guidance is missing: $requiredReadmeText" }
 }
 
@@ -166,7 +166,10 @@ if (-not $SkipPackageTest) {
     foreach ($pattern in @('C:\\Users\\yang', 'E:\\codex', 'sk-[A-Za-z0-9_-]{20,}', 'Bearer\s+[A-Za-z0-9._-]{16,}')) {
       if ($text -match $pattern) { throw "Potential secret or personal path found in release: $pattern" }
     }
-    if ($actual -match 'themes|renderer-inject|\.png$|\.exe$|theme-manager|build-exe') { throw 'Theme or binary content leaked into the release.' }
+    if ($actual -match 'themes|renderer-inject|\.exe$|theme-manager|build-exe') { throw 'Theme or executable content leaked into the release.' }
+    foreach ($imagePath in @('docs\images\monitor-collapsed.png', 'docs\images\monitor-expanded.png')) {
+      if ($actual -notcontains $imagePath) { throw "README screenshot is missing from the release: $imagePath" }
+    }
 
     $installRoot = Join-Path $testRoot 'install'
     & (Join-Path $root 'install.ps1') -InstallRoot $installRoot -SkipShortcut

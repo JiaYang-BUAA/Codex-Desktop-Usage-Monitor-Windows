@@ -114,6 +114,7 @@ try {
 
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
+  assert.notEqual(host.dataset.density, "normal");
   assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["剩余75%", "重置2天", "余额¥20", "已用¥5", "限额不限"]);
 
   host.shadowRoot.querySelector(".usage-summary").click();
@@ -125,13 +126,24 @@ try {
   assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [5, 8, 4]);
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "请求中", "请求失败"]);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[0].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows", "—— Designed by +羊 and Codex"]);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-start;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
+  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows", "—— Designed by +羊 and Codex"]);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{\s*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
   assert.equal(columns[1].querySelector(".usage-column-meta"), null);
-  assert.equal(columns[2].querySelector(".usage-column-meta span:first-child").textContent, "最多显示 8 项");
+  assert.equal(columns[0].querySelector(".usage-column-meta span:first-child").textContent, "最多显示 8 项");
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-meta\s*\{[\s\S]*?justify-content:\s*flex-start;/);
   assert.match(host.shadowRoot.querySelector(".usage-refresh-countdown").textContent, /^刷新 \d+秒后$/);
+
+  const densityToggle = host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]');
+  assert.equal(densityToggle.checked, true);
+  densityToggle.click();
+  assert.deepEqual(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).metrics["api-account"], []);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 4);
+  assert.equal(host.dataset.density, "normal");
+  host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]').click();
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
+  assert.notEqual(host.dataset.density, "normal");
 
   const stableInput = host.shadowRoot.querySelector('[data-source="api-account"][data-metric="totalTokens"]');
   stableInput.focus();
