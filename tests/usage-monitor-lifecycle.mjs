@@ -75,10 +75,12 @@ try {
   assert.match(monitorStyle, /bottom:\s*8px/);
   assert.match(monitorStyle, /color:\s*var\(--usage-color,\s*currentColor\)/);
   assert.match(monitorStyle, /\.usage-secondary,\s*\.usage-today,\s*\.usage-extra\s*\{\s*opacity:\s*\.82/);
-  assert.match(monitorStyle, /data-status="loading"[\s\S]*?#2563eb/);
-  assert.match(monitorStyle, /data-status="stale"[\s\S]*?#7c3aed/);
-  assert.match(monitorStyle, /data-status="error"[\s\S]*?#db2777/);
+  assert.match(monitorStyle, /\.usage-dot\s*\{[\s\S]*?background:\s*#15803d/);
+  assert.match(monitorStyle, /data-status="loading"[\s\S]*?#eab308/);
+  assert.match(monitorStyle, /data-status="stale"[\s\S]*?#dc2626/);
+  assert.match(monitorStyle, /data-status="error"[\s\S]*?#6b7280/);
   assert.match(monitorStyle, /data-status="unavailable"[\s\S]*?#6b7280/);
+  assert.doesNotMatch(monitorStyle, /#2563eb|#7c3aed|#db2777/);
   assert.equal(host.style.getPropertyValue("--usage-left"), "134px");
   assert.equal(host.style.getPropertyValue("--usage-color"), "rgb(70, 80, 90)");
   assert.equal(host.dataset.anchor, "approval");
