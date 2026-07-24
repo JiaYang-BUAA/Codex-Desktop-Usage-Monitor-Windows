@@ -69,7 +69,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Launcher decision tests failed.' }
 
 $runtimeFiles = @(
   'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\monitor-utils.ps1',
-  'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1'
+  'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\launch-codex-monitor-hidden.vbs',
+  'scripts\install-monitor-launcher.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1'
 )
 $runtimeSource = ($runtimeFiles | ForEach-Object { Get-Content -LiteralPath (Join-Path $root $_) -Raw }) -join "`n"
 foreach ($forbidden in @('.codex\auth.json', '.codex/config.toml', 'Stop-Process ChatGPT', 'Invoke-Expression', 'DownloadString')) {
@@ -84,6 +85,9 @@ if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
 if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state contract is missing.' }
 if ($runtimeSource -notmatch '--remote-debugging-address=127\.0\.0\.1') { throw 'Local CDP binding contract is missing.' }
+if ($runtimeSource -notmatch 'Codex Usage Monitor\.lnk') { throw 'English shortcut name contract is missing.' }
+if ($runtimeSource -notmatch 'launch-codex-monitor-hidden\.vbs') { throw 'Hidden launcher contract is missing.' }
+if ($runtimeSource -notmatch 'shell\.Run command, 0, False') { throw 'Hidden WindowStyle contract is missing.' }
 
 $agentGuide = Get-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Raw
 foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsApps', 'run-tests\.ps1')) {
@@ -151,6 +155,19 @@ if (-not $SkipPackageTest) {
       throw 'Persistent installer did not copy the runtime scripts.'
     }
     if (Test-Path -LiteralPath (Join-Path $installedDirectory 'node_modules')) { throw 'Persistent installer copied node_modules.' }
+
+    $shortcutDirectory = Join-Path $testRoot 'desktop'
+    New-Item -ItemType Directory -Force -Path $shortcutDirectory | Out-Null
+    Set-Content -LiteralPath (Join-Path $shortcutDirectory 'Codex 监视器版.lnk') -Value 'legacy' -Encoding ascii
+    & (Join-Path $root 'scripts\install-monitor-launcher.ps1') -DestinationDirectory $shortcutDirectory
+    $shortcutPath = Join-Path $shortcutDirectory 'Codex Usage Monitor.lnk'
+    if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) { throw 'Hidden launcher shortcut was not created.' }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    if ([IO.Path]::GetFileName($shortcut.TargetPath) -ine 'wscript.exe') { throw 'Shortcut target must be wscript.exe.' }
+    if ($shortcut.Arguments -notmatch 'launch-codex-monitor-hidden\.vbs') { throw 'Shortcut does not reference the hidden launcher.' }
+    if ($shortcut.Arguments -notmatch '\s9335$') { throw 'Shortcut does not preserve the CDP port.' }
+    if (Test-Path -LiteralPath (Join-Path $shortcutDirectory 'Codex 监视器版.lnk')) { throw 'Legacy shortcut was not removed.' }
   } finally {
     if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
   }

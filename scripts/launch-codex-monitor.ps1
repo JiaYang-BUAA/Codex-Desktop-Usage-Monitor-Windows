@@ -41,13 +41,21 @@ function Show-CodexMonitorMessage([string]$Message, [string]$Icon = 'Information
   } catch { Write-Error $Message }
 }
 
+function Write-CodexMonitorLaunchError([string]$Message) {
+  try {
+    New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+    [IO.File]::WriteAllText((Join-Path $CodexUsageStateRoot 'launcher-error.log'), $line, $CodexUsageUtf8)
+  } catch {}
+}
+
 try {
   $activePort = Resolve-CodexUsageCdpPort $Port
   $debugReady = [bool]$activePort
   $codexRunning = @(Get-Process ChatGPT -ErrorAction SilentlyContinue).Count -gt 0
   $plan = Get-CodexMonitorLaunchPlan $debugReady $codexRunning
   if ($plan -eq 'blocked-running-without-cdp') {
-    Show-CodexMonitorMessage 'Codex 已通过原生入口运行，无法在不中断会话的情况下补加监视端口。请先正常退出 Codex，再点击“Codex 监视器版”。' 'Warning'
+    Show-CodexMonitorMessage 'Codex 已通过原生入口运行，无法在不中断会话的情况下补加监视端口。请先正常退出 Codex，再点击“Codex Usage Monitor”。' 'Warning'
     exit 2
   }
   if ($debugReady) { $Port = $activePort }
@@ -60,6 +68,8 @@ try {
   & (Join-Path $PSScriptRoot 'start-monitor.ps1') -Port $Port
   if ($LASTEXITCODE -ne 0) { throw "监视器启动脚本退出码：$LASTEXITCODE" }
 } catch {
-  Show-CodexMonitorMessage "启动失败。`n`n$($_.Exception.Message)" 'Error'
+  $message = "启动失败。`n`n$($_.Exception.Message)"
+  Write-CodexMonitorLaunchError $message
+  Show-CodexMonitorMessage $message 'Error'
   exit 1
 }

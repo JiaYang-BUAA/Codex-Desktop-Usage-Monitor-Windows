@@ -17,6 +17,7 @@
   "scripts/configure-api-provider.ps1",
   "scripts/configure-cctq.ps1",
   "scripts/injector.mjs",
+  "scripts/launch-codex-monitor-hidden.vbs",
   "scripts/install-monitor-launcher.ps1",
   "scripts/launch-codex-monitor.ps1",
   "scripts/monitor-utils.ps1",
