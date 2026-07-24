@@ -3,13 +3,7 @@
 [![Windows CI](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest)
 
-## 1. 简要安装说明
-
-> **如果不懂如何运行下面的命令，请直接让 Codex 按本教程帮你完成安装和配置，无需自己手动操作。**
-
 这是一个 Windows 版 Codex Desktop 用量监视器。它在 Codex 输入栏附近显示官方订阅、API 账户和 API Key 的用量，不修改 Codex 安装文件、登录文件或模型配置。
-
-### 1.1 界面预览
 
 监视栏位于“替我审批”右侧，可勾选最多 8 项数据。截图仅用于界面示意，不包含 API key 或访问令牌。
 
@@ -19,7 +13,9 @@
 
 ![Codex Usage Monitor 三栏展开面板](docs/images/monitor-expanded.png)
 
-### 1.2 让 Codex 帮你安装（推荐）
+## 1. 简要安装说明
+
+### 1.1 让 Codex 帮你安装（推荐）
 
 把下面的文字发给 Windows 版 Codex：
 
@@ -31,7 +27,9 @@
 
 安装完成后，先正常退出已经打开的 Codex，再双击桌面快捷方式 `Codex Usage Monitor`。原生 Codex 图标不会自动开放本机 CDP 端口，因此不会注入监视器。快捷方式会同时启动 Codex 和监视器，不显示正常的黑色命令行窗口。
 
-### 1.3 选择数据源并配置
+### 1.2 选择数据源并配置
+
+> **如果不懂如何运行下面的命令，请直接让 Codex 按本教程帮你完成安装和配置，无需自己手动操作。**
 
 - 官方订阅：数据来自 Codex Desktop 本机 app-server 返回的官方账户用量，无需配置，启动后自动读取。
 - API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备服务商的接口文档、账户访问令牌和用户 ID；访问令牌通常可在“用户资料”“个人中心”或类似页面获取。先让 Codex 按接口文档确认或适配请求路径与返回字段，再复制令牌并运行：
@@ -55,7 +53,7 @@ pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完
 
 如果不设置，默认按 `0` 开始。设置初始值是因为第三方日志接口通常只返回有限页数，监视器会记住初始值，并把之后新发现且去重后的日志 Token 累加到本地。同一个状态文件还会按本机日期持久化“今日 Token”，Codex 或 Windows 重启后不会清空，第二天自动归零。该状态只保存在 `%LOCALAPPDATA%\CodexUsageMonitor\account-token-counter.json`，不会进入仓库。
 
-### 1.4 展开监视栏查看和勾选
+### 1.3 展开监视栏查看和勾选
 
 点击监视栏即可展开三栏面板。每项前的复选框决定是否显示在折叠后的监视栏中，最多显示 8 项；三栏共用 30 秒刷新周期。请求失败时保留上一次成功数据，指示灯变为灰色，不会把已有数值清空。
 
