@@ -32,16 +32,17 @@
 ### 2. 选择数据源并配置
 
 - 官方订阅：数据来自 Codex Desktop 本机 app-server 返回的官方账户用量，无需配置，启动后自动读取。
-- API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备账户访问令牌和数字用户 ID；访问令牌通常可在服务商的“用户资料”“个人中心”或类似页面获取。复制令牌后运行：
+- API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备服务商的接口文档、账户访问令牌和用户 ID；访问令牌通常可在“用户资料”“个人中心”或类似页面获取。先让 Codex 按接口文档确认或适配请求路径与返回字段，再复制令牌并运行：
 
   ```powershell
-  pwsh -NoProfile -File .\scripts\configure-api-account.ps1 -FromClipboard -UserId <你的用户ID>
+  pwsh -NoProfile -File .\scripts\configure-api-account.ps1 -FromClipboard -UserId <你的用户ID> -BaseUrl https://api.example.com
   ```
 
-- API Key：数据来自服务商针对 API key 提供的额度或用量查询接口。准备接口文档，复制 key 后使用对应 Provider 配置脚本；不要把 key 发到聊天中。CCTQ 示例可运行：
+- API Key：数据来自服务商针对 API key 提供的额度或用量查询接口。把服务商的接口文档交给 Codex，让它根据通用模板填写请求地址、认证头和返回字段映射。确认配置后复制 API key，再从剪贴板安全保存；不要把 key 写进聊天或 JSON：
 
   ```powershell
-  pwsh -NoProfile -File .\scripts\configure-cctq.ps1 -FromClipboard
+  Copy-Item .\config\providers\custom.example.json .\config\providers\my-provider.local.json
+  pwsh -NoProfile -File .\scripts\configure-api-provider.ps1 -ConfigPath .\config\providers\my-provider.local.json -FromClipboard
   ```
 
 API 账户配置后，输入当前真实累计 Token（完整整数，不要写“5亿”）：
