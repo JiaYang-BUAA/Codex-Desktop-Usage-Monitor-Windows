@@ -149,16 +149,87 @@ function Get-CodexUsageAppPackage {
   }
 }
 
+function Get-CodexUsageNonStoreDesktopCandidates {
+  [CmdletBinding()]
+  param([string[]]$CandidatePaths)
+
+  if ($CandidatePaths) {
+    return @($CandidatePaths | Where-Object { $_ } | Select-Object -Unique)
+  }
+
+  $command = Get-Command ChatGPT.exe -ErrorAction SilentlyContinue
+  $candidates = [Collections.Generic.List[string]]::new()
+  foreach ($candidate in @(
+    $env:CODEX_USAGE_DESKTOP_PATH,
+    $(if ($command) { $command.Source } else { $null }),
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\ChatGPT\ChatGPT.exe' }),
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex\ChatGPT.exe' }),
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI\Codex\ChatGPT.exe' }),
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'ChatGPT\ChatGPT.exe' }),
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'OpenAI Codex\ChatGPT.exe' }),
+    $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'OpenAI\Codex\ChatGPT.exe' }),
+    $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'ChatGPT\ChatGPT.exe' }),
+    $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'OpenAI Codex\ChatGPT.exe' })
+  ) | Where-Object { $_ }) {
+    try { [void]$candidates.Add([IO.Path]::GetFullPath([string]$candidate)) } catch {}
+  }
+
+  $scanRoots = @(
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs' }),
+    $env:ProgramFiles,
+    ${env:ProgramFiles(x86)}
+  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique
+  foreach ($root in $scanRoots) {
+    try {
+      Get-ChildItem -LiteralPath $root -Filter 'ChatGPT.exe' -File -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '(?i)[\\/]WindowsApps[\\/]|[\\/]node_modules[\\/]|[\\/]Temp[\\/]' } |
+        ForEach-Object { [void]$candidates.Add($_.FullName) }
+    } catch {}
+  }
+  return @($candidates | Select-Object -Unique)
+}
+
+function Resolve-CodexUsageNonStoreDesktopPath {
+  [CmdletBinding()]
+  param([string[]]$CandidatePaths)
+
+  foreach ($candidate in Get-CodexUsageNonStoreDesktopCandidates -CandidatePaths $CandidatePaths) {
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [IO.Path]::GetFullPath($candidate) }
+  }
+  return $null
+}
+
 function Resolve-CodexUsageCliPath {
+  [CmdletBinding()]
+  param([string]$DesktopPath)
+
   $command = Get-Command codex.exe -ErrorAction SilentlyContinue
   $package = Get-CodexUsageAppPackage
-  $candidates = @(
+  $candidates = [Collections.Generic.List[string]]::new()
+  foreach ($candidate in @(
     $env:CODEX_USAGE_CODEX_PATH,
     $(if ($command) { $command.Source } else { $null }),
     $(if ($package) { Join-Path $package.InstallLocation 'app\resources\codex.exe' } else { $null }),
-    (Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex CLI\codex.exe')
-  ) | Where-Object { $_ } | Select-Object -Unique
-  foreach ($candidate in $candidates) {
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex CLI\codex.exe' })
+  ) | Where-Object { $_ }) {
+    try { [void]$candidates.Add([IO.Path]::GetFullPath([string]$candidate)) } catch {}
+  }
+
+  $desktop = if ($DesktopPath) { $DesktopPath } else { Resolve-CodexUsageNonStoreDesktopPath }
+  if ($desktop -and (Test-Path -LiteralPath $desktop -PathType Leaf)) {
+    $desktopDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($desktop))
+    $installDirectory = Split-Path -Parent $desktopDirectory
+    foreach ($candidate in @(
+      (Join-Path $desktopDirectory 'resources\codex.exe'),
+      (Join-Path $installDirectory 'resources\codex.exe'),
+      (Join-Path $installDirectory 'codex.exe'),
+      (Join-Path $desktopDirectory 'codex.exe')
+    )) {
+      [void]$candidates.Add($candidate)
+    }
+  }
+
+  foreach ($candidate in @($candidates | Select-Object -Unique)) {
     if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [IO.Path]::GetFullPath($candidate) }
   }
   return $null
@@ -292,15 +363,22 @@ function Start-CodexUsagePackagedCodex {
     '--remote-debugging-address=127.0.0.1',
     "--remote-allow-origins=http://127.0.0.1:$Port"
   )
+  $desktopPath = $null
+  $package = $null
   if ($env:CODEX_USAGE_DESKTOP_PATH) {
     $desktopPath = [IO.Path]::GetFullPath($env:CODEX_USAGE_DESKTOP_PATH)
     if (-not (Test-Path -LiteralPath $desktopPath -PathType Leaf)) { throw "CODEX_USAGE_DESKTOP_PATH 不存在：$desktopPath" }
+  } else {
+    $package = Get-CodexUsageAppPackage
+    if (-not $package) { $desktopPath = Resolve-CodexUsageNonStoreDesktopPath }
+  }
+  if ($desktopPath) {
     $process = Start-Process -FilePath $desktopPath -ArgumentList $arguments -PassThru
     return [pscustomobject]@{ ProcessId = $process.Id; Port = $Port; AppUserModelId = $null }
   }
   $appUserModelId = $env:CODEX_USAGE_APP_USER_MODEL_ID
   if (-not $appUserModelId) {
-    $package = Get-CodexUsageAppPackage
+    if (-not $package) { $package = Get-CodexUsageAppPackage }
     if (-not $package) { throw '未找到 Codex Store 应用包。可通过 CODEX_USAGE_APP_PACKAGE_NAME 或 CODEX_USAGE_DESKTOP_PATH 指定其他安装。' }
     $manifestPath = Join-Path $package.InstallLocation 'AppxManifest.xml'
     if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {

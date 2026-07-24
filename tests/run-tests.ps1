@@ -81,6 +81,7 @@ if ($runtimeSource -notmatch 'IApplicationActivationManager') { throw 'Packaged 
 if ($runtimeSource -notmatch 'CODEX_USAGE_API_KEY') { throw 'API key environment contract is missing.' }
 if ($runtimeSource -notmatch 'ProtectedData') { throw 'DPAPI persistence contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageCliPath') { throw 'Codex CLI auto-discovery contract is missing.' }
+if ($runtimeSource -notmatch 'Resolve-CodexUsageNonStoreDesktopPath') { throw 'Non-Store Codex Desktop auto-discovery contract is missing.' }
 if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop executable contract is missing.' }
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
 if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state contract is missing.' }
@@ -126,6 +127,21 @@ if (-not $SkipPackageTest) {
   $testRoot = Join-Path ([IO.Path]::GetTempPath()) "codex-usage-monitor-package-test-$PID"
   try {
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
+    $fakeDesktop = Join-Path $testRoot 'non-store\app\ChatGPT.exe'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fakeDesktop) | Out-Null
+    Set-Content -LiteralPath $fakeDesktop -Value 'test' -Encoding ascii
+    . (Join-Path $root 'scripts\monitor-utils.ps1')
+    $resolvedDesktop = Resolve-CodexUsageNonStoreDesktopPath -CandidatePaths @(
+      (Join-Path $testRoot 'missing\ChatGPT.exe'),
+      $fakeDesktop
+    )
+    if ($resolvedDesktop -ne [IO.Path]::GetFullPath($fakeDesktop)) { throw 'Non-Store desktop discovery did not select the valid candidate.' }
+
+    $installerSource = Get-Content -LiteralPath (Join-Path $root 'install.ps1') -Raw
+    foreach ($pattern in @('Read-Host', "SetEnvironmentVariable\('CODEX_USAGE_DESKTOP_PATH'", "SetEnvironmentVariable\('CODEX_USAGE_CODEX_PATH'", 'NonInteractive')) {
+      if ($installerSource -notmatch $pattern) { throw "Installer discovery contract is missing: $pattern" }
+    }
+
     & (Join-Path $root 'scripts\build-release.ps1') -SkipTests -OutputDirectory $testRoot
     if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
     $archive = Get-ChildItem -LiteralPath $testRoot -Filter '*.zip' -File | Select-Object -First 1
