@@ -3,7 +3,7 @@
 [![Windows CI](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest)
 
-## 1. 小白用户：三步开始
+## 1. 简要安装说明
 
 > **如果不懂如何运行下面的命令，请直接让 Codex 按本教程帮你完成安装和配置，无需自己手动操作。**
 
