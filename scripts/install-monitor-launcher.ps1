@@ -28,6 +28,7 @@ try {
   } else {
     $package = Get-CodexUsageAppPackage
     if ($package) { $candidate = Join-Path $package.InstallLocation 'app\ChatGPT.exe' }
+    if (-not $candidate) { $candidate = Resolve-CodexUsageNonStoreDesktopPath }
   }
   if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { $iconPath = $candidate }
 } catch {}

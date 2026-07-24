@@ -13,7 +13,7 @@
 
 ```text
 请安装这个项目：https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows
-先阅读仓库根目录的 AGENTS.md 和 README.md，在 Windows 上运行根目录 install.ps1 完成当前用户安装。不要修改 Codex 安装目录、WindowsApps 或 app.asar，不要终止或重启我当前的 Codex，也不要让我在聊天中粘贴 API key。安装后请验证版本目录和桌面“Codex Usage Monitor”快捷方式，并告诉我正常退出当前 Codex 后如何启动。
+先阅读仓库根目录的 AGENTS.md 和 README.md，在 Windows 上运行根目录 install.ps1 完成当前用户安装。安装器会先自动寻找 Microsoft Store 和常见非 Store Codex 路径；只有找不到时才询问 ChatGPT.exe 或 codex.exe 的真实路径。不要猜测路径，不要修改 Codex 安装目录、WindowsApps 或 app.asar，不要终止或重启我当前的 Codex，也不要让我在聊天中粘贴 API key。安装后请验证版本目录和桌面“Codex Usage Monitor”快捷方式，并告诉我正常退出当前 Codex 后如何启动。
 ```
 
 Codex 会克隆或下载项目，执行受版本控制的安装脚本，将约 0.1 MB 的运行文件复制到 `%LOCALAPPDATA%\Programs\CodexUsageMonitor\<版本号>`，再创建桌面快捷方式。安装不会让当前这个未开放 CDP 的 Codex 会话立刻显示监视器；安装完成后请正常退出 Codex，再使用“Codex Usage Monitor”启动。
@@ -57,7 +57,7 @@ Codex 会克隆或下载项目，执行受版本控制的安装脚本，将约 0
 ## 环境要求
 
 - Windows 10/11
-- Codex Desktop（Microsoft Store 版会自动发现，其他安装方式可显式配置）
+- Codex Desktop（Microsoft Store 版和常见非 Store 路径会自动发现，找不到时安装器会询问实际路径）
 - PowerShell 7（推荐）或 Windows PowerShell 5.1
 - Node.js 22 或更高版本
 
@@ -71,7 +71,7 @@ Codex 会克隆或下载项目，执行受版本控制的安装脚本，将约 0
 pwsh -NoProfile -File .\install.ps1
 ```
 
-安装脚本会把当前版本复制到 `%LOCALAPPDATA%\Programs\CodexUsageMonitor`，并在桌面创建“Codex Usage Monitor”。安装后可以删除下载和解压目录；以后通过快捷方式启动 Codex，即可同时开放仅限本机的 CDP 端口并启动监视器。快捷方式通过 Windows Script Host 隐藏启动 PowerShell，Codex 主界面出现前不会显示命令行黑框或额外的正常状态窗口；只有启动失败时才会显示错误消息。
+安装脚本会把当前版本复制到 `%LOCALAPPDATA%\Programs\CodexUsageMonitor`，并在桌面创建“Codex Usage Monitor”。安装器会先扫描 Store 包、PATH、常见程序目录以及 `%LOCALAPPDATA%\Programs` 和 `Program Files` 的有限深度；找到有效的非 Store `ChatGPT.exe` 后会直接使用，并将路径保存到当前用户环境变量。安装后可以删除下载和解压目录；以后通过快捷方式启动 Codex，即可同时开放仅限本机的 CDP 端口并启动监视器。快捷方式通过 Windows Script Host 隐藏启动 PowerShell，Codex 主界面出现前不会显示命令行黑框或额外的正常状态窗口；只有启动失败时才会显示错误消息。
 
 ## 使用完整源码
 
@@ -89,7 +89,7 @@ pwsh -NoProfile -File .\install.ps1
 
 如果 Codex 已经从原生图标启动且没有 CDP，脚本不会强制结束现有会话。请正常退出 Codex，再使用“Codex Usage Monitor”。
 
-非标准安装可以在创建快捷方式前设置以下用户环境变量：
+如果自动扫描不到非 Store 安装，安装器会询问 `ChatGPT.exe` 和 `codex.exe` 的路径。也可以在安装前手动设置以下用户环境变量：
 
 ```powershell
 [Environment]::SetEnvironmentVariable('CODEX_USAGE_DESKTOP_PATH', 'D:\Apps\Codex\ChatGPT.exe', 'User')
@@ -137,7 +137,7 @@ Test-Path "$env:LOCALAPPDATA\CodexUsageMonitor\api-key.dpapi"
 [Environment]::SetEnvironmentVariable('CODEX_USAGE_CODEX_PATH', 'D:\Apps\Codex\codex.exe', 'User')
 ```
 
-路径必须指向本机真实文件。设置后重新打开终端或重新启动 Codex。
+路径必须指向本机真实文件。设置后重新打开终端或重新启动 Codex；已自动发现的路径也会写入这些用户环境变量，后续重启不需要再次询问。
 
 ### 安全软件拦截或 PowerShell 执行策略报错
 
