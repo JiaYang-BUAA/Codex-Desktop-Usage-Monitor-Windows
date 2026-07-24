@@ -3,11 +3,11 @@
 [![Windows CI](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest)
 
-## 小白用户：三步开始
+## 1. 小白用户：三步开始
 
 这是一个 Windows 版 Codex Desktop 用量监视器。它在 Codex 输入栏附近显示官方订阅、API 账户和 API Key 的用量，不修改 Codex 安装文件、登录文件或模型配置。
 
-### 界面预览
+### 1.1 界面预览
 
 监视栏位于“替我审批”右侧，可勾选最多 8 项数据。截图仅用于界面示意，不包含 API key 或访问令牌。
 
@@ -17,9 +17,9 @@
 
 ![Codex Usage Monitor 三栏展开面板](docs/images/monitor-expanded.png)
 
-### 1. 让 Codex 帮你安装（推荐）
+### 1.2 让 Codex 帮你安装（推荐）
 
-把仓库链接和下面的文字一起发给 Windows 版 Codex：
+把下面的文字发给 Windows 版 Codex：
 
 ```text
 请安装这个项目：https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows
@@ -29,7 +29,7 @@
 
 安装完成后，先正常退出已经打开的 Codex，再双击桌面快捷方式 `Codex Usage Monitor`。原生 Codex 图标不会自动开放本机 CDP 端口，因此不会注入监视器。快捷方式会同时启动 Codex 和监视器，不显示正常的黑色命令行窗口。
 
-### 2. 选择数据源并配置
+### 1.3 选择数据源并配置
 
 - 官方订阅：数据来自 Codex Desktop 本机 app-server 返回的官方账户用量，无需配置，启动后自动读取。
 - API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备服务商的接口文档、账户访问令牌和用户 ID；访问令牌通常可在“用户资料”“个人中心”或类似页面获取。先让 Codex 按接口文档确认或适配请求路径与返回字段，再复制令牌并运行：
@@ -53,19 +53,19 @@ pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完
 
 如果不设置，默认按 `0` 开始。设置初始值是因为第三方日志接口通常只返回有限页数，监视器会记住初始值，并把之后新发现且去重后的日志 Token 累加到本地。同一个状态文件还会按本机日期持久化“今日 Token”，Codex 或 Windows 重启后不会清空，第二天自动归零。该状态只保存在 `%LOCALAPPDATA%\CodexUsageMonitor\account-token-counter.json`，不会进入仓库。
 
-### 3. 展开监视栏查看和勾选
+### 1.4 展开监视栏查看和勾选
 
 点击监视栏即可展开三栏面板。每项前的复选框决定是否显示在折叠后的监视栏中，最多显示 8 项；三栏共用 30 秒刷新周期。请求失败时保留上一次成功数据，指示灯变为灰色，不会把已有数值清空。
 
-## 完整说明
+## 2. 完整说明
 
 > 本项目是非官方项目，与 OpenAI 没有隶属、赞助或背书关系。Codex 更新可能改变页面 DOM；升级后请先运行测试并检查监视器位置。
 
-### 数据源与指标
+### 2.1 数据源与指标
 
 面板从左到右固定为：官方订阅、API 账户、API Key。数据源未配置或没有可用响应时仍保留对应栏位，并显示请求状态。
 
-#### 三栏数据来源
+#### 2.1.1 三栏数据来源
 
 | 栏位 | 数据来源 | 所需凭据 |
 | --- | --- | --- |
@@ -75,7 +75,7 @@ pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完
 
 API 账户与 API Key 是两种不同的数据来源：前者读取整个用户账户及请求日志，后者读取某个 key 对应的额度信息。不同服务商的接口字段可能不同，可按 [AGENTS.md](AGENTS.md) 的 Codex 辅助配置流程适配。
 
-#### 官方订阅
+#### 2.1.2 官方订阅
 
 官方数据来自本机 Codex app-server，不需要 API key。当前返回多个周期时，只选择持续时间最短的周期作为“周期剩余”，不把长期周期误当成短期周期。
 
@@ -89,7 +89,7 @@ API 账户与 API Key 是两种不同的数据来源：前者读取整个用户�
 
 Token 显示规则：少于 `10,000` 时显示完整数值；达到 `10,000` 后以整数“万”显示；达到 `100,000,000` 后以两位小数“亿”显示。展开面板的数值遵循相同单位规则。
 
-#### API 账户
+#### 2.1.3 API 账户
 
 当前内置的是 CCTQ 风格的账户接口：`/api/user/self`、`/api/log/self`，认证需要访问令牌和 `New-Api-User` 用户 ID。
 
@@ -109,7 +109,7 @@ Token 显示规则：少于 `10,000` 时显示完整数值；达到 `10,000` 后
 
 如果你的服务商返回的字段、路径、认证头或分页格式不同，让 Codex 查看脱敏后的响应示例，修改 `scripts/usage-client.mjs` 的账户请求/归一化逻辑并增加 fixture 测试。不要直接把真实令牌、完整私有响应或用户 ID 写入源码。
 
-#### API Key
+#### 2.1.4 API Key
 
 API Key 使用声明式 Provider JSON，默认示例位于 `config/providers/`。不同服务商只需调整接口地址、认证头和响应字段选择器。
 
@@ -122,7 +122,7 @@ API Key 使用声明式 Provider JSON，默认示例位于 `config/providers/`�
 
 若响应格式不同，优先修改本地 `*.local.json` 的 selectors；如果接口需要特殊的分页、签名或响应转换，先让 Codex 检查安全边界，再修改客户端并补测试。配置校验会拒绝 URL 内凭据、跨域路径和试图嵌入密钥的字段。
 
-### 状态指示灯
+### 2.2 状态指示灯
 
 指示灯只表示该栏最近一次用量请求，不代表 Codex 对话或模型服务状态。
 
@@ -135,7 +135,7 @@ API Key 使用声明式 Provider JSON，默认示例位于 `config/providers/`�
 
 折叠监视栏不显示指示灯；展开面板时每栏标题显示指示灯。底部显示“最多显示 8 项 · 刷新 xx 秒后”，三栏同步每 30 秒刷新。
 
-### Windows 运行包
+### 2.3 Windows 运行包
 
 从 [Releases](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip`，解压后在目录中运行：
 
@@ -145,7 +145,7 @@ pwsh -NoProfile -File .\install.ps1
 
 安装器把白名单运行文件复制到 `%LOCALAPPDATA%\Programs\CodexUsageMonitor\<版本号>`，创建桌面快捷方式 `Codex Usage Monitor`。运行包不包含 Node.js、Codex、API key、日志或本地 Provider 配置。
 
-### 完整源码安装
+### 2.4 完整源码安装
 
 ```powershell
 git clone https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows.git
@@ -163,7 +163,7 @@ pwsh -NoProfile -File .\install.ps1
 
 安装器会优先自动寻找 Microsoft Store 和常见非 Store 路径；找不到才询问实际文件。不要修改 WindowsApps 或替换原生 Codex 快捷方式。
 
-### API Key 配置与持久化
+### 2.5 API Key 配置与持久化
 
 复制 Provider 示例为本地文件后填写字段映射，不要提交 `*.local.json`：
 
@@ -182,7 +182,7 @@ pwsh -NoProfile -File .\scripts\clear-token-baseline.ps1
 
 DPAPI 凭据绑定当前 Windows 用户和电脑。换账号、换电脑或删除 `%LOCALAPPDATA%\CodexUsageMonitor` 后需要重新配置。项目不读取 `%USERPROFILE%\.codex\auth.json` 或 `config.toml`。
 
-### 运行异常排查
+### 2.6 运行异常排查
 
 1. **点击快捷方式没有反应**：确认 Codex 已正常退出；检查 `node -v` 是否为 22+；重新运行 `install.ps1`。启动错误可查看 `%LOCALAPPDATA%\CodexUsageMonitor\launcher-error.log`。
 2. **Codex 启动但没有监视栏**：必须使用 `Codex Usage Monitor` 快捷方式并等待最多 30 秒。若首选 CDP 端口被占用，启动器会自动选择后续可用端口；在 `%LOCALAPPDATA%\CodexUsageMonitor\state.json` 查看实际 `port`，再运行 `Invoke-RestMethod http://127.0.0.1:<实际端口>/json/list` 检查是否可连接。原生图标不会开放 CDP。
@@ -190,7 +190,7 @@ DPAPI 凭据绑定当前 Windows 用户和电脑。换账号、换电脑或删�
 4. **API 账户请求失败**：确认用户 ID 是数字，令牌是完整单行文本，且账户接口能返回 JSON；重新运行 `configure-api-account.ps1 -FromClipboard`。不要把令牌或私有响应发到聊天。
 5. **安全软件拦截**：项目没有编译 EXE、自启动服务或下载器，但隐藏 PowerShell、Node 后台进程和 CDP 参数可能触发启发式检测。只从本仓库 Release 下载，审查源码后添加精确的信任规则，不要关闭整套防护。
 
-### 常用命令与测试
+### 2.7 常用命令与测试
 
 ```powershell
 pwsh -NoProfile -File .\scripts\start-monitor.ps1
@@ -203,7 +203,7 @@ pwsh -NoProfile -File .\scripts\build-release.ps1
 
 发布前测试覆盖 JavaScript/PowerShell 语法、官方短周期选择、Token 单位、CCTQ 分页与累计基线、通用 Provider 映射、恶意配置拒绝、DPAPI 持久化、UI 生命周期、点击稳定性、启动器、安全扫描和运行包白名单。Windows CI 会在推送和 Pull Request 时运行同一套测试。
 
-### 安全边界与项目结构
+### 2.8 安全边界与项目结构
 
 CDP 只绑定 `127.0.0.1`；API 请求只发送到 Provider 的 `baseUrl`；监视器不会强制结束正在运行的 Codex；明文 key 只在后台 Node 进程内存中短暂存在。安装、配置和安全契约详见 [AGENTS.md](AGENTS.md)。
 
