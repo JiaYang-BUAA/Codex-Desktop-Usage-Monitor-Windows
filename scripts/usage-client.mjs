@@ -4,6 +4,8 @@ import path from "node:path";
 
 const DEFAULT_REFRESH_MS = 30000;
 const REQUEST_TIMEOUT_MS = 12000;
+const RATE_LIMIT_BASE_BACKOFF_MS = 60000;
+const RATE_LIMIT_MAX_BACKOFF_MS = 300000;
 const CCTQ_DEFAULT_BASE_URL = "https://www.cctq.ai";
 const CCTQ_ACCOUNT_PAGE_SIZE = 1000;
 const CCTQ_ACCOUNT_MAX_PAGES = 100;
@@ -550,17 +552,20 @@ export function normalizeApiAccountView(profileResponse, logs, {
 }
 
 export class ApiUsageClient {
-  constructor({ provider = loadApiProviderConfig(), apiKey = resolveApiKey(), refreshMs = DEFAULT_REFRESH_MS, managed = false, onUpdate = () => {} } = {}) {
+  constructor({ provider = loadApiProviderConfig(), apiKey = resolveApiKey(), refreshMs = DEFAULT_REFRESH_MS, managed = false, now = () => Date.now(), onUpdate = () => {} } = {}) {
     this.provider = validateApiProviderConfig(provider);
     this.baseUrl = this.provider.baseUrl;
     this.apiKey = apiKey;
     this.refreshMs = refreshMs;
     this.managed = managed;
+    this.now = now;
     this.onUpdate = onUpdate;
     this.timer = null;
     this.refreshing = null;
     this.stopped = true;
     this.statusResponse = null;
+    this.rateLimitFailures = 0;
+    this.retryAt = 0;
     this.view = normalizeApiUsageView(null, null, this.provider);
   }
 
@@ -580,7 +585,18 @@ export class ApiUsageClient {
         },
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`${this.provider.label} 用量接口返回 HTTP ${response.status}`);
+      if (!response.ok) {
+        const error = new Error(`${this.provider.label} 用量接口返回 HTTP ${response.status}`);
+        error.status = response.status;
+        const retryAfter = response.headers.get("retry-after");
+        const seconds = Number(retryAfter);
+        if (retryAfter && Number.isFinite(seconds) && seconds >= 0) error.retryAfterMs = seconds * 1000;
+        else if (retryAfter) {
+          const timestamp = Date.parse(retryAfter);
+          if (Number.isFinite(timestamp)) error.retryAfterMs = Math.max(0, timestamp - this.now());
+        }
+        throw error;
+      }
       const declaredLength = Number(response.headers.get("content-length"));
       if (Number.isFinite(declaredLength) && declaredLength > 2 * 1024 * 1024) throw new Error(`${this.provider.label} 响应过大`);
       const body = await response.text();
@@ -593,9 +609,14 @@ export class ApiUsageClient {
 
   async refresh() {
     if (this.refreshing) return this.refreshing;
-    this.refreshing = (async () => {
+    const operation = (async () => {
+      const now = this.now();
       if (!this.apiKey) {
-        this.emit({ ...this.view, status: "unavailable", error: `未配置 ${this.provider.label} API key`, nextRefreshAt: Date.now() + this.refreshMs });
+        this.emit({ ...this.view, status: "unavailable", error: `未配置 ${this.provider.label} API key`, nextRefreshAt: now + this.refreshMs });
+        return;
+      }
+      if (this.retryAt > now) {
+        this.emit({ ...this.view, status: "rate-limited", error: `${this.provider.label} 请求受限（HTTP 429），稍后自动重试`, nextRefreshAt: this.retryAt });
         return;
       }
       try {
@@ -609,14 +630,27 @@ export class ApiUsageClient {
         if (usageResult.status === "rejected") throw usageResult.reason;
         const usageResponse = usageResult.value;
         const statusResponse = statusResult.status === "fulfilled" ? statusResult.value : this.statusResponse;
-        this.emit(normalizeApiUsageView(usageResponse, statusResponse, this.provider, Date.now(), this.refreshMs));
-      } catch {
-        this.emit({ ...this.view, status: "error", error: `${this.provider.label} 用量接口请求失败`, nextRefreshAt: Date.now() + this.refreshMs });
-      } finally {
-        this.refreshing = null;
+        this.rateLimitFailures = 0;
+        this.retryAt = 0;
+        this.emit(normalizeApiUsageView(usageResponse, statusResponse, this.provider, this.now(), this.refreshMs));
+      } catch (error) {
+        if (error?.status === 429) {
+          this.rateLimitFailures += 1;
+          const fallback = Math.min(RATE_LIMIT_BASE_BACKOFF_MS * (2 ** (this.rateLimitFailures - 1)), RATE_LIMIT_MAX_BACKOFF_MS);
+          const delay = Math.min(Math.max(Number(error.retryAfterMs) || fallback, this.refreshMs), RATE_LIMIT_MAX_BACKOFF_MS);
+          this.retryAt = this.now() + delay;
+          this.emit({ ...this.view, status: "rate-limited", error: `${this.provider.label} 请求受限（HTTP 429），稍后自动重试`, nextRefreshAt: this.retryAt });
+        } else {
+          this.emit({ ...this.view, status: "error", error: `${this.provider.label} 用量接口请求失败`, nextRefreshAt: this.now() + this.refreshMs });
+        }
       }
     })();
-    return this.refreshing;
+    this.refreshing = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.refreshing === operation) this.refreshing = null;
+    }
   }
 
   async start() {

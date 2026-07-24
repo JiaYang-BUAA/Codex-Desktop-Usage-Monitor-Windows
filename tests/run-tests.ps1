@@ -88,6 +88,10 @@ if ($runtimeSource -notmatch 'Resolve-CodexUsageNonStoreDesktopPath') { throw 'N
 if ($runtimeSource -notmatch 'Resolve-CodexUsageAvailablePort') { throw 'Automatic CDP port fallback contract is missing.' }
 if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop executable contract is missing.' }
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
+if ($runtimeSource -notmatch "Local\\CodexUsageMonitor'") { throw 'Cross-port startup mutex contract is missing.' }
+if ($runtimeSource -notmatch 'TARGET_ABSENCE_EXIT_MS') { throw 'Orphan injector shutdown contract is missing.' }
+if ($runtimeSource -notmatch '\$owned = @\(Get-CodexUsageInjectorProcesses\)') { throw 'Cross-port injector cleanup contract is missing.' }
+if ($runtimeSource -notmatch 'rate-limited' -or $runtimeSource -notmatch 'HTTP 429') { throw 'API rate-limit backoff contract is missing.' }
 if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state contract is missing.' }
 if ($runtimeSource -notmatch '--remote-debugging-address=127\.0\.0\.1') { throw 'Local CDP binding contract is missing.' }
 if ($runtimeSource -notmatch 'Codex Usage Monitor\.lnk') { throw 'English shortcut name contract is missing.' }

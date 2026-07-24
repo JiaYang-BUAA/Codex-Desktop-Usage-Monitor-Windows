@@ -133,6 +133,8 @@ API Key 使用声明式 Provider JSON，默认示例位于 `config/providers/`�
 | 亮红色 | 数据过期 | 本轮失败，但有上一次成功数据；数值继续保留。 |
 | 灰色 | 请求失败或暂无数据 | 尚未取得可用数据、未配置或请求失败。 |
 
+API Key 接口返回 `HTTP 429` 时，该栏会显示“请求受限”并保留上一次成功数据。监视器会跳过后续的立即请求，从 60 秒开始逐步延长重试间隔，最长 5 分钟；请求恢复成功后自动回到 30 秒刷新。
+
 折叠监视栏不显示指示灯；展开面板时每栏标题显示指示灯。底部显示“最多显示 8 项 · 刷新 xx 秒后”，三栏同步每 30 秒刷新。
 
 ### 2.3 Windows 运行包
@@ -186,7 +188,7 @@ DPAPI 凭据绑定当前 Windows 用户和电脑。换账号、换电脑或删�
 
 1. **点击快捷方式没有反应**：确认 Codex 已正常退出；检查 `node -v` 是否为 22+；重新运行 `install.ps1`。启动错误可查看 `%LOCALAPPDATA%\CodexUsageMonitor\launcher-error.log`。
 2. **Codex 启动但没有监视栏**：必须使用 `Codex Usage Monitor` 快捷方式并等待最多 30 秒。若首选 CDP 端口被占用，启动器会自动选择后续可用端口；在 `%LOCALAPPDATA%\CodexUsageMonitor\state.json` 查看实际 `port`，再运行 `Invoke-RestMethod http://127.0.0.1:<实际端口>/json/list` 检查是否可连接。原生图标不会开放 CDP。
-3. **API Key 重启后失败**：检查 `%LOCALAPPDATA%\CodexUsageMonitor\provider.json` 和 `api-key.dpapi` 是否存在；DPAPI 只能由原 Windows 用户解密。
+3. **API Key 重启后失败**：检查 `%LOCALAPPDATA%\CodexUsageMonitor\provider.json` 和 `api-key.dpapi` 是否存在；DPAPI 只能由原 Windows 用户解密。若状态显示“请求受限”，通常是服务商返回 `HTTP 429`；新版启动器会清理其他端口或旧版本残留的监视进程，并自动退避重试。
 4. **API 账户请求失败**：确认用户 ID 是数字，令牌是完整单行文本，且账户接口能返回 JSON；重新运行 `configure-api-account.ps1 -FromClipboard`。不要把令牌或私有响应发到聊天。
 5. **安全软件拦截**：项目没有编译 EXE、自启动服务或下载器，但隐藏 PowerShell、Node 后台进程和 CDP 参数可能触发启发式检测。只从本仓库 Release 下载，审查源码后添加精确的信任规则，不要关闭整套防护。
 

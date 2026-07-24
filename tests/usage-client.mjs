@@ -168,6 +168,44 @@ await apiClient.refresh();
 assert.equal(apiUpdates.at(-1).status, "ready");
 assert.equal(apiUpdates.at(-1).metrics.find((item) => item.id === "usedAmount").value, "¥2.5");
 
+let rateLimitNow = 1784700000000;
+let rateLimitRequests = 0;
+let rateLimited = false;
+const rateLimitUpdates = [];
+const rateLimitClient = new ApiUsageClient({
+  provider: validateApiProviderConfig({ ...baseProvider, response: { used: "used" } }),
+  apiKey: "test-key",
+  now: () => rateLimitNow,
+  onUpdate: (value) => rateLimitUpdates.push(value),
+});
+rateLimitClient.requestJson = async () => {
+  rateLimitRequests += 1;
+  if (rateLimited) {
+    const error = new Error("rate limited");
+    error.status = 429;
+    throw error;
+  }
+  return { used: 12 };
+};
+await rateLimitClient.refresh();
+assert.equal(rateLimitUpdates.at(-1).status, "ready");
+const successfulMetrics = rateLimitUpdates.at(-1).metrics;
+rateLimited = true;
+await rateLimitClient.refresh();
+assert.equal(rateLimitUpdates.at(-1).status, "rate-limited");
+assert.match(rateLimitUpdates.at(-1).error, /HTTP 429/);
+assert.deepEqual(rateLimitUpdates.at(-1).metrics, successfulMetrics);
+assert.equal(rateLimitUpdates.at(-1).nextRefreshAt, rateLimitNow + 60000);
+rateLimitNow += 30000;
+await rateLimitClient.refresh();
+assert.equal(rateLimitRequests, 2);
+assert.equal(rateLimitUpdates.at(-1).status, "rate-limited");
+rateLimitNow += 30000;
+rateLimited = false;
+await rateLimitClient.refresh();
+assert.equal(rateLimitRequests, 3);
+assert.equal(rateLimitUpdates.at(-1).status, "ready");
+
 const accountNow = new Date(2026, 6, 22, 12, 0, 0).getTime();
 const account = normalizeApiAccountView({ data: { quota: 5000000, used_quota: 1250000 } }, [
   { created_at: Math.floor((accountNow - 10 * 60000) / 1000), prompt_tokens: 1200, completion_tokens: 300, quota: 250000, model_name: "gpt-5.6-sol", use_time: 842 },

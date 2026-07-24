@@ -26,7 +26,7 @@ try {
 }
 $env:CODEX_USAGE_ACCOUNT_COUNTER_PATH = $CodexUsageAccountCounterPath
 
-$mutexName = "Local\CodexUsageMonitor-$Port"
+$mutexName = 'Local\CodexUsageMonitor'
 $mutex = [Threading.Mutex]::new($false, $mutexName)
 $mutexAcquired = $false
 try {
@@ -53,13 +53,17 @@ if (-not $activePort) {
 }
 $Port = $activePort
 
-$owned = @(Get-CodexUsageInjectorProcesses | Where-Object { $_.Port -eq $Port })
 $currentInjectorPath = [IO.Path]::GetFullPath($injector)
+$owned = @(Get-CodexUsageInjectorProcesses)
+$ownedOnPort = @($owned | Where-Object { $_.Port -eq $Port })
 $state = Get-CodexUsageState
-$reusable = @($owned | Where-Object { Test-CodexUsageReusableInjector $state $_ $currentInjectorPath })
+$reusable = @($ownedOnPort | Where-Object { Test-CodexUsageReusableInjector $state $_ $currentInjectorPath })
 if (-not $Replace) {
   foreach ($candidate in $reusable) {
     if (Test-MonitorInjection $Port) {
+      foreach ($previous in $owned) {
+        if ($previous.ProcessId -ne $candidate.ProcessId) { Stop-Process -Id $previous.ProcessId -Force -ErrorAction SilentlyContinue }
+      }
       Write-Host "Codex 用量监视器已在端口 $Port 运行（PID $($candidate.ProcessId)）。"
       return
     }
@@ -67,6 +71,7 @@ if (-not $Replace) {
 }
 
 if ($Foreground) {
+  foreach ($previous in $owned) { Stop-Process -Id $previous.ProcessId -Force -ErrorAction SilentlyContinue }
   & $node $injector --watch --port $Port --monitor-only
   exit $LASTEXITCODE
 }

@@ -10,6 +10,7 @@ const HOST_ID = "codex-usage-monitor";
 const STATE_KEY = "__CODEX_USAGE_MONITOR_STATE__";
 const LEGACY_HOST_ID = "codex-dream-skin-usage";
 const LEGACY_STATE_KEY = "__CODEX_DREAM_SKIN_USAGE_STATE__";
+const TARGET_ABSENCE_EXIT_MS = 15000;
 
 function parseArgs(argv) {
   const options = {
@@ -249,6 +250,7 @@ async function runWatch(options) {
   const sessions = new Map();
   let latestUsage = null;
   let stopping = false;
+  let targetsMissingSince = null;
   const usageClient = new CombinedUsageClient({
     refreshMs: 30000,
     onUpdate: (usage) => {
@@ -292,20 +294,31 @@ async function runWatch(options) {
   process.once("SIGINT", () => { stop().finally(() => process.exit(0)); });
   process.once("SIGTERM", () => { stop().finally(() => process.exit(0)); });
 
-  await usageClient.start();
-  while (!stopping) {
-    const targets = await getTargets(options.port);
-    const activeIds = new Set(targets.filter(isMonitorTarget).map((target) => target.id));
-    for (const [id, entry] of sessions) {
-      if (!activeIds.has(id)) {
-        await entry.session.close().catch(() => {});
-        sessions.delete(id);
+  try {
+    await usageClient.start();
+    while (!stopping) {
+      const targets = await getTargets(options.port);
+      const monitorTargets = targets.filter(isMonitorTarget);
+      if (monitorTargets.length) targetsMissingSince = null;
+      else if (targetsMissingSince === null) targetsMissingSince = Date.now();
+      else if (Date.now() - targetsMissingSince >= TARGET_ABSENCE_EXIT_MS) {
+        console.log(`[usage-monitor] no Codex renderer target for ${TARGET_ABSENCE_EXIT_MS} ms; exiting`);
+        break;
       }
+      const activeIds = new Set(monitorTargets.map((target) => target.id));
+      for (const [id, entry] of sessions) {
+        if (!activeIds.has(id)) {
+          await entry.session.close().catch(() => {});
+          sessions.delete(id);
+        }
+      }
+      for (const target of monitorTargets) {
+        try { await attach(target); } catch (error) { console.error(`[usage-monitor] target attach failed: ${error.message}`); }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    for (const target of targets) {
-      try { await attach(target); } catch (error) { console.error(`[usage-monitor] target attach failed: ${error.message}`); }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+  } finally {
+    await stop();
   }
 }
 

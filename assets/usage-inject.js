@@ -36,7 +36,7 @@
   const formatExactInteger = (value) => finiteNumber(value)
     ? String(Math.round(Math.max(0, Number(value)))).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
     : "--";
-  const validStatus = (value) => ["loading", "ready", "stale", "unavailable", "error"].includes(value) ? value : "unavailable";
+  const validStatus = (value) => ["loading", "ready", "stale", "unavailable", "error", "rate-limited"].includes(value) ? value : "unavailable";
   const normalizeMetric = (item) => {
     if (!item || typeof item !== "object" || typeof item.id !== "string") return null;
     const id = item.id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 48);
@@ -175,6 +175,7 @@
     const requestValue = source.status === "ready" ? "正常"
       : source.status === "loading" ? "请求中"
       : source.status === "stale" ? "数据过期"
+      : source.status === "rate-limited" ? "请求受限"
       : source.status === "error" ? "请求失败"
       : source.error?.includes("未配置") ? "未配置" : "不可用";
     return [
@@ -559,7 +560,7 @@
         title.className = "usage-column-title";
         const status = document.createElement("span");
         status.className = "usage-status";
-        const statusText = source.status === "loading" ? "请求中" : source.status === "ready" ? "正常" : source.status === "stale" ? "数据过期" : source.status === "error" ? "请求失败" : "暂无数据";
+        const statusText = source.status === "loading" ? "请求中" : source.status === "ready" ? "正常" : source.status === "stale" ? "数据过期" : source.status === "rate-limited" ? "请求受限" : source.status === "error" ? "请求失败" : "暂无数据";
         status.title = source.error || statusText;
         status.setAttribute("aria-label", statusText);
         const heading = document.createElement("span");

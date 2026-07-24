@@ -125,6 +125,13 @@ try {
   assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "loading", "error"]);
   assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [5, 8, 4]);
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "请求中", "请求失败"]);
+  const limitedUsage = structuredClone(usage);
+  limitedUsage.sources.acme.status = "rate-limited";
+  limitedUsage.sources.acme.error = "Acme API 请求受限（HTTP 429），稍后自动重试";
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(limitedUsage), true);
+  assert.equal(host.shadowRoot.querySelector('.usage-column[data-status="rate-limited"] .usage-status').getAttribute("aria-label"), "请求受限");
+  assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
   assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
