@@ -1,10 +1,14 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const DEFAULT_REFRESH_MS = 90000;
+const DEFAULT_REFRESH_MS = 30000;
 const REQUEST_TIMEOUT_MS = 12000;
 const CCTQ_DEFAULT_BASE_URL = "https://www.cctq.ai";
+const CCTQ_ACCOUNT_PAGE_SIZE = 1000;
+const CCTQ_ACCOUNT_MAX_PAGES = 100;
+const CCTQ_ACCOUNT_MAX_LOG_IDS = CCTQ_ACCOUNT_PAGE_SIZE * CCTQ_ACCOUNT_MAX_PAGES;
+const ACCOUNT_COUNTER_SCHEMA_VERSION = 2;
 const CCTQ_PROVIDER = Object.freeze({
   schemaVersion: 1,
   id: "cctq",
@@ -300,11 +304,10 @@ function readMapped(value, selector) {
   return selector ? readPath(value, selector) : undefined;
 }
 
-function formatApiQuota(value, quotaPerUnit, symbol) {
+function formatApiQuota(value, quotaPerUnit, symbol, decimals = 1) {
   if (!Number.isFinite(Number(value))) return "--";
   const amount = Math.max(0, Number(value)) / quotaPerUnit;
-  const decimals = amount >= 100 ? 0 : amount >= 10 ? 1 : 2;
-  return `${symbol}${amount.toFixed(decimals).replace(/\.0+$|(?<=\.\d)0+$/, "")}`;
+  return `${symbol}${amount.toFixed(decimals)}`;
 }
 
 function parseApiBoolean(value) {
@@ -402,12 +405,157 @@ function resolveApiKey(explicit) {
   return candidates.find((value) => typeof value === "string" && value.trim().length > 0)?.trim() || null;
 }
 
+function resolveApiAccountToken(explicit) {
+  const candidates = [explicit, process.env.CODEX_USAGE_ACCOUNT_TOKEN];
+  return candidates.find((value) => typeof value === "string" && value.trim().length > 0)?.trim() || null;
+}
+
+function resolveApiAccountUserId(explicit) {
+  const candidates = [explicit, process.env.CODEX_USAGE_ACCOUNT_USER_ID];
+  return candidates.find((value) => typeof value === "string" && /^[1-9][0-9]{0,19}$/.test(value.trim()))?.trim() || null;
+}
+
+function formatAccountQuota(value, decimals = 1) {
+  return formatApiQuota(value, CCTQ_PROVIDER.response.defaultQuotaPerUnit, "¥", decimals);
+}
+
+function formatAccountTokens(value) {
+  if (!Number.isFinite(Number(value))) return "--";
+  const number = Math.max(0, Number(value));
+  if (number >= 100000000) return `${(number / 100000000).toFixed(2)}亿`;
+  if (number >= 10000) return `${Math.round(number / 10000)}万`;
+  return formatExactMetricTokens(number);
+}
+
+function normalizeLogTimestamp(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric > 100000000000 ? numeric : numeric * 1000;
+  const parsed = Date.parse(String(value ?? ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function localStartOfDay(timestamp) {
+  const date = new Date(timestamp);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function formatAccountTime(value) {
+  const timestamp = normalizeLogTimestamp(value);
+  if (!timestamp) return "--";
+  const date = new Date(timestamp);
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function accountLogIdentity(item) {
+  if (item && item.id != null) return `id:${String(item.id)}`;
+  return [item?.created_at, item?.prompt_tokens, item?.completion_tokens, item?.quota, item?.model_name, item?.use_time]
+    .map((value) => String(value ?? ""))
+    .join("|");
+}
+
+function resolveAccountCounterPath(explicit) {
+  if (explicit) return path.resolve(explicit);
+  return process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor", "account-token-counter.json")
+    : null;
+}
+
+function loadAccountCounter(counterPath) {
+  if (!counterPath || !existsSync(counterPath)) return null;
+  try {
+    const value = JSON.parse(readFileSync(counterPath, "utf8"));
+    if (![1, ACCOUNT_COUNTER_SCHEMA_VERSION].includes(value?.schemaVersion) || !Number.isSafeInteger(value.totalTokens) || value.totalTokens < 0) return null;
+    return {
+      schemaVersion: ACCOUNT_COUNTER_SCHEMA_VERSION,
+      baselineConfigured: value.schemaVersion === 1 ? true : value.baselineConfigured !== false,
+      initialTokens: Number.isSafeInteger(value.initialTokens) && value.initialTokens >= 0 ? value.initialTokens : value.totalTokens,
+      totalTokens: value.totalTokens,
+      checkpointAt: Number.isFinite(Number(value.checkpointAt)) ? Number(value.checkpointAt) : 0,
+      recentLogIds: Array.isArray(value.recentLogIds) ? value.recentLogIds.filter((item) => typeof item === "string").slice(-2000) : [],
+      dailyDate: typeof value.dailyDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.dailyDate) ? value.dailyDate : null,
+      dailyTokens: Number.isSafeInteger(value.dailyTokens) && value.dailyTokens >= 0 ? value.dailyTokens : 0,
+      dailyLogIds: Array.isArray(value.dailyLogIds) ? value.dailyLogIds.filter((item) => typeof item === "string").slice(-CCTQ_ACCOUNT_MAX_LOG_IDS) : [],
+      configuredAt: typeof value.configuredAt === "string" ? value.configuredAt : null,
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveAccountCounter(counterPath, counter) {
+  if (!counterPath || !counter) return;
+  mkdirSync(path.dirname(counterPath), { recursive: true });
+  const temporaryPath = `${counterPath}.${process.pid}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify(counter, null, 2)}\n`, "utf8");
+  renameSync(temporaryPath, counterPath);
+}
+
+export function normalizeApiAccountView(profileResponse, logs, {
+  now = Date.now(),
+  refreshMs = DEFAULT_REFRESH_MS,
+  truncated = false,
+  cumulativeTokens = null,
+  persistentTodayTokens = null,
+} = {}) {
+  const profile = profileResponse?.data && typeof profileResponse.data === "object" ? profileResponse.data : null;
+  if (!profile) {
+    return {
+      id: "api-account",
+      label: "API 账户",
+      accountType: "api-account",
+      status: "unavailable",
+      error: "未配置 API 账户令牌",
+      fetchedAt: null,
+      nextRefreshAt: now + refreshMs,
+      metrics: [],
+    };
+  }
+  const items = Array.isArray(logs) ? logs.filter((item) => item && typeof item === "object") : [];
+  const latest = [...items].sort((left, right) => (normalizeLogTimestamp(right.created_at) || 0) - (normalizeLogTimestamp(left.created_at) || 0))[0] || null;
+  const dayStart = localStartOfDay(now);
+  const visibleTokens = items.reduce((sum, item) => sum + Math.max(0, Number(item.prompt_tokens) || 0) + Math.max(0, Number(item.completion_tokens) || 0), 0);
+  const totalTokens = Number.isSafeInteger(cumulativeTokens) && cumulativeTokens >= 0 ? cumulativeTokens : visibleTokens;
+  const visibleDayTokens = items.reduce((sum, item) => {
+    const timestamp = normalizeLogTimestamp(item.created_at);
+    return timestamp && timestamp >= dayStart
+      ? sum + Math.max(0, Number(item.prompt_tokens) || 0) + Math.max(0, Number(item.completion_tokens) || 0)
+      : sum;
+  }, 0);
+  const dayTokens = Number.isSafeInteger(persistentTodayTokens) && persistentTodayTokens >= 0
+    ? persistentTodayTokens
+    : visibleDayTokens;
+  const metrics = [
+    { id: "balance", label: "账户余额", value: formatAccountQuota(profile.quota), display: `余额 ${formatAccountQuota(profile.quota)}`, defaultVisible: true },
+    { id: "usedQuota", label: "累计已用额度", value: formatAccountQuota(profile.used_quota), display: `已用 ${formatAccountQuota(profile.used_quota)}`, defaultVisible: false },
+    { id: "todayTokens", label: "今日 Token", value: formatAccountTokens(dayTokens), display: `今日 ${formatAccountTokens(dayTokens)}`, defaultVisible: false },
+    { id: "totalTokens", label: "累计 Token", value: formatAccountTokens(totalTokens), display: `累计 ${formatAccountTokens(totalTokens)}`, defaultVisible: false },
+    { id: "lastQuota", label: "上次消耗额度", value: latest ? formatAccountQuota(latest.quota, 3) : "--", display: `消耗 ${latest ? formatAccountQuota(latest.quota, 3) : "--"}`, defaultVisible: false },
+    { id: "lastModel", label: "上次响应模型", value: typeof latest?.model_name === "string" && latest.model_name.trim() ? latest.model_name.trim() : "--", display: `模型 ${typeof latest?.model_name === "string" && latest.model_name.trim() ? latest.model_name.trim() : "--"}`, defaultVisible: false },
+    { id: "lastRequestAt", label: "上次请求时间", value: formatAccountTime(latest?.created_at), display: `请求 ${formatAccountTime(latest?.created_at)}`, defaultVisible: false },
+    { id: "lastLatency", label: "上次响应耗时", value: Number.isFinite(Number(latest?.use_time)) ? `${Math.max(0, Number(latest.use_time))}ms` : "--", display: `耗时 ${Number.isFinite(Number(latest?.use_time)) ? `${Math.max(0, Number(latest.use_time))}ms` : "--"}`, defaultVisible: false },
+  ];
+  return {
+    id: "api-account",
+    label: "API 账户",
+    accountType: "api-account",
+    status: "ready",
+    error: truncated ? `Token 汇总仅包含最近 ${items.length} 条日志` : null,
+    fetchedAt: now,
+    nextRefreshAt: now + refreshMs,
+    metrics,
+  };
+}
+
 export class ApiUsageClient {
-  constructor({ provider = loadApiProviderConfig(), apiKey = resolveApiKey(), refreshMs = DEFAULT_REFRESH_MS, onUpdate = () => {} } = {}) {
+  constructor({ provider = loadApiProviderConfig(), apiKey = resolveApiKey(), refreshMs = DEFAULT_REFRESH_MS, managed = false, onUpdate = () => {} } = {}) {
     this.provider = validateApiProviderConfig(provider);
     this.baseUrl = this.provider.baseUrl;
     this.apiKey = apiKey;
     this.refreshMs = refreshMs;
+    this.managed = managed;
     this.onUpdate = onUpdate;
     this.timer = null;
     this.refreshing = null;
@@ -476,8 +624,10 @@ export class ApiUsageClient {
     this.stopped = false;
     this.emit({ ...this.view, status: "loading", error: null });
     await this.refresh();
-    this.timer = setInterval(() => this.refresh().catch(() => {}), this.refreshMs);
-    this.timer.unref?.();
+    if (!this.managed) {
+      this.timer = setInterval(() => this.refresh().catch(() => {}), this.refreshMs);
+      this.timer.unref?.();
+    }
     return this.view;
   }
 
@@ -494,34 +644,251 @@ export class CctqUsageClient extends ApiUsageClient {
   }
 }
 
+export class ApiAccountUsageClient {
+  constructor({
+    baseUrl = process.env.CODEX_USAGE_ACCOUNT_BASE_URL || CCTQ_DEFAULT_BASE_URL,
+    token = resolveApiAccountToken(),
+    userId = resolveApiAccountUserId(),
+    counterPath = resolveAccountCounterPath(process.env.CODEX_USAGE_ACCOUNT_COUNTER_PATH),
+    refreshMs = DEFAULT_REFRESH_MS,
+    managed = false,
+    now = () => Date.now(),
+    onUpdate = () => {},
+  } = {}) {
+    const parsedBaseUrl = new URL(baseUrl);
+    if (!/^https?:$/.test(parsedBaseUrl.protocol) || parsedBaseUrl.username || parsedBaseUrl.password) throw new Error("API 账户 BaseUrl 无效");
+    this.baseUrl = parsedBaseUrl.toString().replace(/\/$/, "");
+    this.token = token;
+    this.userId = userId;
+    this.counterPath = resolveAccountCounterPath(counterPath);
+    this.counter = loadAccountCounter(this.counterPath);
+    this.refreshMs = refreshMs;
+    this.managed = managed;
+    this.now = typeof now === "function" ? now : () => Date.now();
+    this.onUpdate = onUpdate;
+    this.timer = null;
+    this.refreshing = null;
+    this.stopped = true;
+    this.cachedLogs = [];
+    this.fullLogsLoaded = false;
+    this.nextLogPage = 1;
+    this.view = normalizeApiAccountView(null, [], { refreshMs });
+  }
+
+  updateCounter(logs) {
+    const now = this.now();
+    const nowIso = new Date(now).toISOString();
+    const today = localDateKey(now);
+    if (!this.counter) {
+      this.counter = {
+        schemaVersion: ACCOUNT_COUNTER_SCHEMA_VERSION,
+        baselineConfigured: false,
+        initialTokens: 0,
+        totalTokens: 0,
+        checkpointAt: 0,
+        recentLogIds: [],
+        dailyDate: today,
+        dailyTokens: 0,
+        dailyLogIds: [],
+        configuredAt: nowIso,
+        updatedAt: nowIso,
+      };
+    }
+    const recent = new Set(this.counter.recentLogIds);
+    let dailyRecent = new Set(this.counter.dailyLogIds);
+    let checkpointAt = this.counter.checkpointAt;
+    let totalTokens = this.counter.totalTokens;
+    let dailyTokens = this.counter.dailyTokens;
+    let changed = this.counter.schemaVersion !== ACCOUNT_COUNTER_SCHEMA_VERSION;
+    if (this.counter.dailyDate !== today) {
+      dailyRecent = new Set();
+      dailyTokens = 0;
+      changed = true;
+    }
+    const ordered = [...logs].sort((left, right) => (normalizeLogTimestamp(left?.created_at) || 0) - (normalizeLogTimestamp(right?.created_at) || 0));
+    for (const item of ordered) {
+      const timestamp = normalizeLogTimestamp(item?.created_at);
+      if (!timestamp) continue;
+      const identity = accountLogIdentity(item);
+      const tokens = Math.max(0, Number(item?.prompt_tokens) || 0) + Math.max(0, Number(item?.completion_tokens) || 0);
+      if (localDateKey(timestamp) === today && !dailyRecent.has(identity)) {
+        dailyTokens += tokens;
+        dailyRecent.add(identity);
+        changed = true;
+      }
+      const shouldCountCumulative = !recent.has(identity) && (!this.counter.baselineConfigured || timestamp >= checkpointAt);
+      if (shouldCountCumulative) {
+        totalTokens += tokens;
+        checkpointAt = Math.max(checkpointAt, timestamp);
+        recent.add(identity);
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.counter = {
+        ...this.counter,
+        schemaVersion: ACCOUNT_COUNTER_SCHEMA_VERSION,
+        totalTokens,
+        checkpointAt,
+        recentLogIds: [...recent].slice(-(this.counter.baselineConfigured ? 2000 : CCTQ_ACCOUNT_MAX_LOG_IDS)),
+        dailyDate: today,
+        dailyTokens,
+        dailyLogIds: [...dailyRecent].slice(-CCTQ_ACCOUNT_MAX_LOG_IDS),
+        updatedAt: nowIso,
+      };
+      saveAccountCounter(this.counterPath, this.counter);
+    }
+    return { totalTokens: this.counter.totalTokens, dailyTokens: this.counter.dailyTokens };
+  }
+
+  emit(view) {
+    this.view = view;
+    this.onUpdate(view);
+  }
+
+  async requestJson(pathname, searchParams = null) {
+    const url = new URL(pathname, `${this.baseUrl}/`);
+    if (searchParams) {
+      for (const [key, value] of Object.entries(searchParams)) url.searchParams.set(key, String(value));
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${this.token}`,
+          "New-Api-User": this.userId,
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`API 账户接口返回 HTTP ${response.status}`);
+      const declaredLength = Number(response.headers.get("content-length"));
+      if (Number.isFinite(declaredLength) && declaredLength > 2 * 1024 * 1024) throw new Error("API 账户响应过大");
+      const body = await response.text();
+      if (body.length > 2 * 1024 * 1024) throw new Error("API 账户响应过大");
+      return JSON.parse(body);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async readLogs() {
+    const requestedPage = this.fullLogsLoaded ? 1 : this.nextLogPage;
+    const response = await this.requestJson("/api/log/self", { p: requestedPage, size: CCTQ_ACCOUNT_PAGE_SIZE });
+    const data = response?.data && typeof response.data === "object" ? response.data : response;
+    const items = Array.isArray(data?.items) ? [...data.items] : [];
+    const total = Math.max(items.length, Number(data?.total) || 0);
+    const pageSize = Math.max(1, Number(data?.page_size) || CCTQ_ACCOUNT_PAGE_SIZE);
+    const pageCount = Math.ceil(total / pageSize);
+    const availablePages = Math.min(pageCount, CCTQ_ACCOUNT_MAX_PAGES);
+    if (!this.fullLogsLoaded) {
+      const currentPage = Math.max(1, Number(data?.page) || requestedPage);
+      if (!items.length || currentPage >= availablePages) {
+        this.fullLogsLoaded = true;
+        this.nextLogPage = 1;
+      } else {
+        this.nextLogPage = currentPage + 1;
+      }
+    }
+    return { items, truncated: !this.fullLogsLoaded || pageCount > CCTQ_ACCOUNT_MAX_PAGES };
+  }
+
+  async refresh() {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = (async () => {
+      if (!this.token || !this.userId) {
+        this.emit({ ...this.view, status: "unavailable", error: "未配置 API 账户令牌", nextRefreshAt: Date.now() + this.refreshMs });
+        return;
+      }
+      try {
+        const [profile, logResult] = await Promise.all([
+          this.requestJson("/api/user/self"),
+          this.readLogs(),
+        ]);
+        const merged = new Map(this.cachedLogs.map((item) => [accountLogIdentity(item), item]));
+        for (const item of logResult.items) merged.set(accountLogIdentity(item), item);
+        this.cachedLogs = [...merged.values()];
+        const counters = this.updateCounter(logResult.items);
+        const now = this.now();
+        this.emit(normalizeApiAccountView(profile, this.cachedLogs, {
+          now,
+          refreshMs: this.refreshMs,
+          truncated: logResult.truncated,
+          cumulativeTokens: counters?.totalTokens ?? null,
+          persistentTodayTokens: counters?.dailyTokens ?? null,
+        }));
+      } catch {
+        this.emit({ ...this.view, status: "error", error: "API 账户接口请求失败", nextRefreshAt: Date.now() + this.refreshMs });
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  async start() {
+    if (!this.stopped) return this.view;
+    this.stopped = false;
+    this.emit({ ...this.view, status: "loading", error: null });
+    await this.refresh();
+    if (!this.managed) {
+      this.timer = setInterval(() => this.refresh().catch(() => {}), this.refreshMs);
+      this.timer.unref?.();
+    }
+    return this.view;
+  }
+
+  async stop() {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+}
+
 export class CombinedUsageClient {
   constructor({ command = resolveCodexExecutable(), provider = loadApiProviderConfig(), refreshMs = DEFAULT_REFRESH_MS, onUpdate = () => {} } = {}) {
     this.onUpdate = onUpdate;
     this.refreshMs = refreshMs;
+    this.timer = null;
+    this.nextRefreshAt = null;
     this.officialView = { status: "loading", windows: [], todayTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
+    this.accountView = normalizeApiAccountView(null, [], { refreshMs });
     this.apiView = normalizeApiUsageView(null, null, provider);
-    this.official = new UsageClient({ command, refreshMs, onUpdate: (view) => { this.officialView = view; this.emit(); } });
-    this.api = new ApiUsageClient({ provider, refreshMs, onUpdate: (view) => { this.apiView = view; this.emit(); } });
+    this.official = new UsageClient({ command, refreshMs, managed: true, onUpdate: (view) => { this.officialView = view; this.emit(); } });
+    this.account = new ApiAccountUsageClient({ refreshMs, managed: true, onUpdate: (view) => { this.accountView = view; this.emit(); } });
+    this.api = new ApiUsageClient({ provider, refreshMs, managed: true, onUpdate: (view) => { this.apiView = view; this.emit(); } });
   }
 
   emit() {
     this.onUpdate({
       ...this.officialView,
       schemaVersion: 2,
+      nextRefreshAt: this.nextRefreshAt,
       sources: {
         official: toOfficialUsageSource(this.officialView, Date.now(), this.refreshMs),
+        "api-account": this.accountView,
         [this.apiView.id]: this.apiView,
       },
     });
   }
 
   async start() {
-    await Promise.all([this.official.start(), this.api.start()]);
+    await Promise.all([this.official.start(), this.account.start(), this.api.start()]);
+    this.nextRefreshAt = Date.now() + this.refreshMs;
+    this.timer = setInterval(() => {
+      this.nextRefreshAt = Date.now() + this.refreshMs;
+      this.emit();
+      Promise.all([this.official.refresh(), this.account.refresh(), this.api.refresh()]).catch(() => {});
+    }, this.refreshMs);
+    this.timer.unref?.();
     this.emit();
   }
 
   async stop() {
-    await Promise.all([this.official.stop(), this.api.stop()]);
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    await Promise.all([this.official.stop(), this.account.stop(), this.api.stop()]);
   }
 }
 
@@ -676,9 +1043,10 @@ class AppServerRpc {
 }
 
 export class UsageClient {
-  constructor({ command = resolveCodexExecutable(), refreshMs = DEFAULT_REFRESH_MS, onUpdate = () => {} } = {}) {
+  constructor({ command = resolveCodexExecutable(), refreshMs = DEFAULT_REFRESH_MS, managed = false, onUpdate = () => {} } = {}) {
     this.command = command;
     this.refreshMs = refreshMs;
+    this.managed = managed;
     this.onUpdate = onUpdate;
     this.rpc = null;
     this.timer = null;
@@ -759,8 +1127,10 @@ export class UsageClient {
     this.stopped = false;
     this.emit({ ...this.view, status: "loading", error: null });
     await this.refresh();
-    this.timer = setInterval(() => this.refresh().catch(() => {}), this.refreshMs);
-    this.timer.unref?.();
+    if (!this.managed) {
+      this.timer = setInterval(() => this.refresh().catch(() => {}), this.refreshMs);
+      this.timer.unref?.();
+    }
     return this.view;
   }
 

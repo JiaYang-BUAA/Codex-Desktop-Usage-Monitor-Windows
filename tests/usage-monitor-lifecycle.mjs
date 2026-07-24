@@ -32,22 +32,15 @@ const dom = new JSDOM(`<!doctype html>
 });
 
 const { window } = dom;
-window.__CODEX_DREAM_SKIN_STATE__ = {
-  usage: null,
-  cleanup() {
-    delete window.__CODEX_DREAM_SKIN_STATE__;
-    return true;
-  },
-};
+window.__CODEX_DREAM_SKIN_STATE__ = { cleanup() { delete window.__CODEX_DREAM_SKIN_STATE__; return true; } };
 window.Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
   const value = (() => {
     if (this.id === "composer-wrapper" || this.matches(".composer-surface-chrome")) return { x: 100, y: 100, width: 700, height: 100 };
-    if (this.id === "codex-usage-monitor") return { x: 234, y: 164, width: 220, height: 28 };
+    if (this.id === "codex-usage-monitor") return { x: 234, y: 164, width: 380, height: 28 };
     if (this.matches('[contenteditable="true"]')) return { x: 112, y: 112, width: 676, height: 44 };
     const text = `${this.getAttribute?.("aria-label") || ""} ${this.textContent || ""}`;
     if (/添加/.test(text)) return { x: 108, y: 164, width: 28, height: 28 };
     if (/替我审批/.test(text)) return { x: 141, y: 164, width: 85, height: 28 };
-    if (/更多操作/.test(text)) return { x: 141, y: 164, width: 85, height: 28 };
     if (/5\.6/.test(text)) return { x: 622, y: 164, width: 105, height: 28 };
     if (/听写/.test(text)) return { x: 728, y: 164, width: 28, height: 28 };
     if (/发送/.test(text)) return { x: 764, y: 164, width: 28, height: 28 };
@@ -56,192 +49,135 @@ window.Element.prototype.getBoundingClientRect = function getBoundingClientRect(
   return { ...value, right: value.x + value.width, bottom: value.y + value.height };
 };
 
+const now = Date.now();
+const usage = {
+  schemaVersion: 2,
+  nextRefreshAt: now + 30000,
+  sources: {
+    official: {
+      id: "official", label: "官方订阅", accountType: "subscription", status: "ready", nextRefreshAt: now + 30000,
+      metrics: [
+        { id: "primaryRemaining", label: "周期剩余", display: "剩余 75%", value: "75%", defaultVisible: true },
+        { id: "primaryReset", label: "周期重置", display: "重置 2天后", value: "2天后", defaultVisible: false },
+        { id: "todayTokens", label: "今日 token", display: "今日 128k", value: "128,000", defaultVisible: true },
+        { id: "lifetimeTokens", label: "累计 token", display: "累计 12m", value: "12,000,000", defaultVisible: false },
+      ],
+    },
+    "api-account": {
+      id: "api-account", label: "API 账户", accountType: "api-account", status: "loading", nextRefreshAt: now + 30000,
+      metrics: [
+        { id: "balance", label: "账户余额", value: "¥20", display: "余额 ¥20", defaultVisible: true },
+        { id: "usedQuota", label: "累计已用额度", value: "¥8", display: "已用 ¥8" },
+        { id: "todayTokens", label: "今日 Token", value: "4万", display: "今日 4万" },
+        { id: "totalTokens", label: "累计 Token", value: "36万", display: "累计 36万" },
+        { id: "lastPromptTokens", label: "上次输入 Token", value: "12,500", display: "输入 1万" },
+        { id: "lastCompletionTokens", label: "上次输出 Token", value: "800", display: "输出 800" },
+        { id: "lastQuota", label: "上次消耗额度", value: "¥0.12", display: "消耗 ¥0.12" },
+        { id: "lastModel", label: "上次响应模型名称", value: "gpt-5.6-sol", display: "模型 gpt-5.6-sol" },
+        { id: "lastRequestAt", label: "上次请求时间", value: "2026-07-24 09:30", display: "请求 2026-07-24 09:30" },
+        { id: "lastLatency", label: "上次响应耗时", value: "842ms", display: "耗时 842ms" },
+      ],
+    },
+    acme: {
+      id: "acme", label: "Acme API", accountType: "api-key", status: "error", error: "request failed", nextRefreshAt: now + 30000,
+      metrics: [
+        { id: "usedAmount", label: "已用额度", value: "¥5", display: "已用 ¥5", defaultVisible: true },
+        { id: "quotaLimit", label: "限额", value: "不限", display: "限额 不限", defaultVisible: true },
+        { id: "expiresAt", label: "到期时间", value: "永久", display: "到期 永久" },
+      ],
+    },
+  },
+};
+
 try {
   const result = window.eval(payload);
   assert.equal(result.installed, true);
-  assert.equal(result.mode, "monitor-only");
-  assert.equal(result.anchoredToApproval, true);
-  assert.equal(window.document.documentElement.classList.contains("codex-dream-skin"), false);
-  assert.equal(window.document.getElementById("codex-dream-skin-style"), null);
-  assert.equal(window.document.getElementById("codex-dream-skin-chrome"), null);
-  assert.equal(window.__CODEX_DREAM_SKIN_STATE__, undefined);
-
   let host = window.document.getElementById("codex-usage-monitor");
-  const wrapper = window.document.getElementById("composer-wrapper");
-  assert.equal(host.parentElement, wrapper);
-  assert.ok(host.shadowRoot);
-  const monitorStyle = host.shadowRoot.querySelector("style").textContent;
-  assert.match(monitorStyle, /left:\s*var\(--usage-left/);
-  assert.match(monitorStyle, /bottom:\s*8px/);
-  assert.match(monitorStyle, /color:\s*var\(--usage-color,\s*currentColor\)/);
-  assert.match(monitorStyle, /\.usage-secondary,\s*\.usage-today,\s*\.usage-extra\s*\{\s*opacity:\s*\.82/);
-  assert.match(monitorStyle, /\.usage-dot\s*\{[\s\S]*?background:\s*#15803d/);
-  assert.match(monitorStyle, /data-status="loading"[\s\S]*?#eab308/);
-  assert.match(monitorStyle, /data-status="stale"[\s\S]*?#dc2626/);
-  assert.match(monitorStyle, /data-status="error"[\s\S]*?#6b7280/);
-  assert.match(monitorStyle, /data-status="unavailable"[\s\S]*?#6b7280/);
-  assert.doesNotMatch(monitorStyle, /#2563eb|#7c3aed|#db2777/);
-  assert.equal(host.style.getPropertyValue("--usage-left"), "134px");
-  assert.equal(host.style.getPropertyValue("--usage-color"), "rgb(70, 80, 90)");
+  assert.ok(host?.shadowRoot);
+  assert.equal(host.parentElement.id, "composer-wrapper");
   assert.equal(host.dataset.anchor, "approval");
-  assert.equal(host.shadowRoot.querySelector(".usage-primary").textContent, "状态 不可用");
-  assert.equal(host.shadowRoot.querySelector(".usage-today").hidden, true);
+  assert.equal(host.style.getPropertyValue("--usage-color"), "rgb(70, 80, 90)");
+  assert.equal(host.shadowRoot.querySelector(".usage-dot"), null);
+  assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /\.usage-source-switch/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /ready[^}]+#22c55e/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /loading[^}]+#facc15/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /stale[^}]+#fb3f4f/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /usage-status[^}]+#a1a1aa/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /usage-summary-item \+ \.usage-summary-item::before\s*\{[\s\S]*?top:\s*calc\(50% \+ 1px\);[\s\S]*?background:\s*currentColor;[\s\S]*?translateY\(-50%\)/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /height:\s*14px;[\s\S]*?opacity:\s*\.40;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?background:\s*Canvas;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column\s*\{[\s\S]*?box-sizing:\s*border-box;[\s\S]*?width:\s*100%;/);
+  assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-column \+ \.usage-column\s*\{[^}]*border-left/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-detail-label\s*\{[\s\S]*?color:\s*inherit;[\s\S]*?font-weight:\s*650;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /usage-detail-select input\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?width:\s*13px;[\s\S]*?height:\s*13px;/);
+  assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-popover-footer/);
 
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage({
-    status: "ready",
-    windows: [{ label: "30天", remainingPercent: 100, resetsAt: Math.floor(Date.now() / 1000) + 86400 }],
-    todayTokens: 0,
-    lifetimeTokens: 57839148,
-    fetchedAt: Date.now(),
-    schemaVersion: 2,
-    sources: {
-      official: {
-        id: "official",
-        label: "官方订阅",
-        accountType: "subscription",
-        status: "ready",
-        metrics: [
-          { id: "primaryRemaining", label: "30天 剩余", display: "30天 100%", detail: "30天 剩余 100%", defaultVisible: true },
-          { id: "primaryReset", label: "30天 重置", display: "30天 1 天后重置", detail: "30天：1 天后重置", defaultVisible: false },
-          { id: "secondaryRemaining", label: "周 剩余", display: "周 80%", detail: "周 剩余 80%", defaultVisible: false },
-          { id: "secondaryReset", label: "周 重置", display: "周 2 天后重置", detail: "周：2 天后重置", defaultVisible: false },
-          { id: "todayTokens", label: "今日 token", display: "今日 0", detail: "今日 token：0", defaultVisible: true },
-          { id: "lifetimeTokens", label: "累计 token", display: "累计 58m", detail: "累计 token：58m", defaultVisible: false },
-        ],
-      },
-      acme: {
-        id: "acme",
-        label: "Acme API",
-        accountType: "api-key",
-        status: "ready",
-        nextRefreshAt: Date.now() + 90000,
-        metrics: [
-          { id: "usedAmount", label: "已用额度", value: "¥5", display: "已用 ¥5", detail: "已用额度：¥5", defaultVisible: true },
-          { id: "quotaLimit", label: "限额", value: "不限", display: "限额 不限", detail: "限额：不限", defaultVisible: true },
-          { id: "expiresAt", label: "到期时间", value: "永久", display: "到期 永久", detail: "到期时间：永久", defaultVisible: false },
-        ],
-      },
-    },
-  }), true);
-  assert.equal(host.shadowRoot.querySelector(".usage-primary").textContent, "剩余 100%");
-  assert.equal(host.shadowRoot.querySelector(".usage-secondary").textContent, "重置 1天后");
-  assert.equal(host.shadowRoot.querySelector(".usage-today").hidden, true);
-  assert.equal(host.dataset.status, "ready");
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["剩余75%", "重置2天", "余额¥20", "已用¥5", "限额不限"]);
+
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-detail-row").length, 6);
-  assert.equal(host.shadowRoot.querySelector('[data-metric="secondaryRemaining"]'), null);
-  assert.equal(host.shadowRoot.querySelector('[data-metric="secondaryReset"]'), null);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-detail-label")].map((item) => item.textContent), ["周期剩余", "重置时间", "今日 Token", "累计 Token", "请求状态", "下次刷新时间"]);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-detail-value")].slice(0, 5).map((item) => item.textContent), ["100%", "1天后", "0万", "5784万", "正常"]);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-detail-select input")].filter((item) => item.checked).map((item) => item.dataset.metric), ["primaryRemaining", "primaryReset"]);
-  const thresholdUsage = JSON.parse(JSON.stringify(window.__CODEX_USAGE_MONITOR_STATE__.usage));
-  const thresholdLifetime = thresholdUsage.sources.official.metrics.find((item) => item.id === "lifetimeTokens");
-  thresholdLifetime.value = "120,000,000";
-  thresholdLifetime.display = "累计 120m";
-  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(thresholdUsage);
-  assert.equal([...host.shadowRoot.querySelectorAll(".usage-detail-row")].find((row) => row.querySelector(".usage-detail-label").textContent === "累计 Token").querySelector(".usage-detail-value").textContent, "1.20亿");
-  let lifetimeInput = host.shadowRoot.querySelector('[data-metric="lifetimeTokens"]');
-  lifetimeInput.checked = true;
-  lifetimeInput.dispatchEvent(new window.Event("change", { bubbles: true }));
-  assert.equal(host.shadowRoot.querySelector(".usage-today").textContent, "累计 1.20亿");
-  lifetimeInput = host.shadowRoot.querySelector('[data-metric="lifetimeTokens"]');
-  lifetimeInput.checked = false;
-  lifetimeInput.dispatchEvent(new window.Event("change", { bubbles: true }));
-  host.shadowRoot.querySelector('[data-source="api-key"]').click();
-  assert.equal(host.dataset.source, "acme");
-  assert.equal(host.shadowRoot.querySelector('[data-source="api-key"]').textContent, "API Key");
-  assert.equal(host.shadowRoot.querySelector(".usage-primary").textContent, "已用 ¥5");
-  assert.equal(host.shadowRoot.querySelector(".usage-secondary").textContent, "限额 不限");
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-metric-option").length, 0);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-detail-row").length, 5);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-detail-select input").length, 5);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-detail-select input")].filter((item) => item.checked).map((item) => item.dataset.metric), ["usedAmount", "quotaLimit"]);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-detail-label")].map((item) => item.textContent), ["已用额度", "限额", "到期时间", "请求状态", "下次刷新时间"]);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-detail-value")].slice(0, 4).map((item) => item.textContent), ["¥5", "不限", "永久", "正常"]);
-  assert.match(host.shadowRoot.querySelectorAll(".usage-detail-value")[4].textContent, /^\d+秒后$/);
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage({
-    schemaVersion: 2,
-    sources: {
-      acme: {
-        id: "acme",
-        label: "Acme API",
-        accountType: "api-key",
-        status: "loading",
-        metrics: [],
-      },
-    },
-  }), true);
-  assert.equal(host.dataset.status, "loading");
-  assert.equal(host.shadowRoot.querySelector(".usage-primary").textContent, "已用 ¥5");
-  assert.equal(host.shadowRoot.querySelector(".usage-secondary").textContent, "限额 不限");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-detail-value")].slice(0, 3).map((item) => item.textContent), ["¥5", "不限", "永久"]);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-detail-value")[3].textContent, "请求中");
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage({
-    schemaVersion: 2,
-    sources: {
-      acme: {
-        id: "acme",
-        label: "Acme API",
-        accountType: "api-key",
-        status: "ready",
-        nextRefreshAt: Date.now() + 90000,
-        metrics: [
-          { id: "usedAmount", label: "已用额度", value: "¥5", display: "已用 ¥5", detail: "已用额度：¥5", defaultVisible: true },
-          { id: "quotaLimit", label: "限额", value: "不限", display: "限额 不限", detail: "限额：不限", defaultVisible: true },
-          { id: "expiresAt", label: "到期时间", value: "永久", display: "到期 永久", detail: "到期时间：永久", defaultVisible: false },
-        ],
-      },
-    },
-  }), true);
-  assert.equal(host.dataset.status, "ready");
-  const expiryInput = host.shadowRoot.querySelector('[data-metric="expiresAt"]');
-  expiryInput.checked = true;
-  expiryInput.dispatchEvent(new window.Event("change", { bubbles: true }));
-  assert.equal(host.shadowRoot.querySelector(".usage-today").textContent, "到期 永久");
-  assert.equal(host.shadowRoot.querySelector(".usage-today").hidden, false);
-  for (const id of ["requestStatus", "nextRefreshAt"]) {
-    const input = host.shadowRoot.querySelector(`[data-metric="${id}"]`);
-    assert.equal(input.disabled, false);
+  const columns = [...host.shadowRoot.querySelectorAll(".usage-column")];
+  assert.equal(columns.length, 3);
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-title span:last-child").textContent), ["官方订阅", "API 账户", "API Key"]);
+  assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "loading", "error"]);
+  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [5, 8, 4]);
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "请求中", "请求失败"]);
+  assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
+  assert.deepEqual([...columns[0].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows", "—— Designed by +羊 and Codex"]);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-start;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{\s*font-size:\s*12px;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
+  assert.equal(columns[1].querySelector(".usage-column-meta"), null);
+  assert.equal(columns[2].querySelector(".usage-column-meta span:first-child").textContent, "最多显示 8 项");
+  assert.match(host.shadowRoot.querySelector(".usage-refresh-countdown").textContent, /^刷新 \d+秒后$/);
+
+  const stableInput = host.shadowRoot.querySelector('[data-source="api-account"][data-metric="totalTokens"]');
+  stableInput.focus();
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(host.shadowRoot.querySelector('[data-source="api-account"][data-metric="totalTokens"]'), stableInput);
+  stableInput.blur();
+
+  for (const selector of [
+    '[data-source="api-account"][data-metric="totalTokens"]',
+    '[data-source="api-account"][data-metric="todayTokens"]',
+    '[data-source="acme"][data-metric="expiresAt"]',
+  ]) {
+    const input = host.shadowRoot.querySelector(selector);
     input.checked = true;
     input.dispatchEvent(new window.Event("change", { bubbles: true }));
   }
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-detail-select input")].filter((item) => item.checked).map((item) => item.dataset.metric), ["usedAmount", "quotaLimit", "expiresAt", "requestStatus", "nextRefreshAt"]);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-extra-item")].map((item) => item.textContent).slice(0, 1), ["状态正常"]);
-  assert.match(host.shadowRoot.querySelectorAll(".usage-extra-item")[1].textContent, /^刷新\d+秒$/);
-  assert.deepEqual(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")), {
-    source: "acme",
-    metrics: {
-      official: ["primaryRemaining", "primaryReset"],
-      acme: ["usedAmount", "quotaLimit", "expiresAt", "requestStatus", "nextRefreshAt"],
-    },
-    apiKeyMetricsVersion: 1,
-    officialMetricsVersion: 1,
-  });
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 8);
+  assert.equal(host.dataset.density, "packed");
+  const ninth = host.shadowRoot.querySelector('[data-source="api-account"][data-metric="lastModel"]');
+  assert.equal(ninth.disabled, true);
+  ninth.checked = true;
+  ninth.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 8);
 
-  wrapper.innerHTML = composerMarkup();
+  const balance = host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]');
+  balance.checked = false;
+  balance.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
+  assert.equal(host.shadowRoot.querySelector('[data-source="api-account"][data-metric="lastModel"]').disabled, false);
+
+  const saved = JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1"));
+  assert.equal(saved.unifiedMetricsVersion, 1);
+  assert.equal(saved.source, undefined);
+  assert.deepEqual(saved.metrics["api-account"], ["totalTokens", "todayTokens"]);
+
+  window.document.getElementById("composer-wrapper").innerHTML = composerMarkup();
   await new Promise((resolve) => setTimeout(resolve, 250));
   window.__CODEX_USAGE_MONITOR_STATE__.ensure();
   host = window.document.getElementById("codex-usage-monitor");
-  assert.equal(host.parentElement, wrapper);
-  assert.equal(host.dataset.source, "acme");
-  assert.equal(host.shadowRoot.querySelector(".usage-primary").textContent, "已用¥5");
-  assert.equal(host.shadowRoot.querySelector(".usage-today").textContent, "到期永久");
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-extra-item").length, 2);
-
-  wrapper.innerHTML = composerMarkup(false);
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  window.__CODEX_USAGE_MONITOR_STATE__.ensure();
-  host = window.document.getElementById("codex-usage-monitor");
-  assert.equal(host.dataset.anchor, "control");
-  assert.equal(host.hidden, false);
+  assert.ok(host?.shadowRoot);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
 
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.cleanup(), true);
   assert.equal(window.document.getElementById("codex-usage-monitor"), null);
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__, undefined);
-  assert.equal(window.__CODEX_USAGE_MONITOR__, undefined);
 } finally {
   dom.window.close();
 }
 
-console.log("PASS: monitor-only cleanup, source switching, fixed API status rows, approval anchoring, usage refresh, replacement recovery, and cleanup lifecycle.");
+console.log("PASS: unified three-column panel, per-source status, global selection limit, aggregated summary, replacement recovery, and cleanup lifecycle.");

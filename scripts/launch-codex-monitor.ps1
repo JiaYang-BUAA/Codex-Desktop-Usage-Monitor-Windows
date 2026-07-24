@@ -30,6 +30,18 @@ if ($SelfTest) {
   $currentState = [pscustomobject]@{ injectorPid = 42; injectorPath = $injectorPath; runtimeVersion = $CodexUsageVersion }
   if (Test-CodexUsageReusableInjector $legacyState $injectorProcess $injectorPath) { throw '旧版状态不应复用新版监视器进程。' }
   if (-not (Test-CodexUsageReusableInjector $currentState $injectorProcess $injectorPath)) { throw '当前版本状态应允许复用监视器进程。' }
+  $testListener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+  try {
+    $testListener.Server.ExclusiveAddressUse = $true
+    $testListener.Start()
+    $occupiedPort = ([Net.IPEndPoint]$testListener.LocalEndpoint).Port
+    if (Test-CodexUsageTcpPortAvailable $occupiedPort) { throw '已占用端口不应被识别为可用。' }
+    $availablePort = Resolve-CodexUsageAvailablePort -PreferredPort $occupiedPort -SearchCount 2
+    if ($availablePort -ne ($occupiedPort + 1)) { throw '端口冲突时应选择后续可用端口。' }
+  } finally {
+    $testListener.Stop()
+  }
+  if (-not (Test-CodexUsageTcpPortAvailable $occupiedPort)) { throw '监听器关闭后端口应恢复可用。' }
   Write-Host 'PASS: Codex monitor launcher decisions.'
   return
 }
@@ -60,6 +72,7 @@ try {
   }
   if ($debugReady) { $Port = $activePort }
   if (-not $debugReady) {
+    $Port = Resolve-CodexUsageAvailablePort -PreferredPort $Port
     [void](Start-CodexUsagePackagedCodex -Port $Port)
     $deadline = (Get-Date).AddSeconds(30)
     while (-not (Test-CodexUsageCdpPort $Port) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 400 }

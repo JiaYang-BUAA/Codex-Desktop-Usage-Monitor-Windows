@@ -70,7 +70,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Launcher decision tests failed.' }
 $runtimeFiles = @(
   'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\monitor-utils.ps1',
   'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\launch-codex-monitor-hidden.vbs',
-  'scripts\install-monitor-launcher.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1'
+  'scripts\install-monitor-launcher.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1',
+  'scripts\configure-api-account.ps1', 'scripts\clear-api-account.ps1', 'scripts\configure-token-baseline.ps1', 'scripts\clear-token-baseline.ps1'
 )
 $runtimeSource = ($runtimeFiles | ForEach-Object { Get-Content -LiteralPath (Join-Path $root $_) -Raw }) -join "`n"
 foreach ($forbidden in @('.codex\auth.json', '.codex/config.toml', 'Stop-Process ChatGPT', 'Invoke-Expression', 'DownloadString')) {
@@ -79,9 +80,12 @@ foreach ($forbidden in @('.codex\auth.json', '.codex/config.toml', 'Stop-Process
 if ($runtimeSource -match 'C:\\Users\\yang|E:\\codex') { throw 'A personal absolute path is embedded in runtime source.' }
 if ($runtimeSource -notmatch 'IApplicationActivationManager') { throw 'Packaged Codex must be launched through the Windows activation API.' }
 if ($runtimeSource -notmatch 'CODEX_USAGE_API_KEY') { throw 'API key environment contract is missing.' }
+if ($runtimeSource -notmatch 'CODEX_USAGE_ACCOUNT_TOKEN' -or $runtimeSource -notmatch 'New-Api-User') { throw 'API account environment or authentication contract is missing.' }
+if ($runtimeSource -notmatch 'account-token-counter.json' -or $runtimeSource -notmatch 'InitialTokens') { throw 'Token baseline persistence contract is missing.' }
 if ($runtimeSource -notmatch 'ProtectedData') { throw 'DPAPI persistence contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageCliPath') { throw 'Codex CLI auto-discovery contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageNonStoreDesktopPath') { throw 'Non-Store Codex Desktop auto-discovery contract is missing.' }
+if ($runtimeSource -notmatch 'Resolve-CodexUsageAvailablePort') { throw 'Automatic CDP port fallback contract is missing.' }
 if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop executable contract is missing.' }
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
 if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state contract is missing.' }
@@ -91,11 +95,11 @@ if ($runtimeSource -notmatch 'launch-codex-monitor-hidden\.vbs') { throw 'Hidden
 if ($runtimeSource -notmatch 'shell\.Run command, 0, False') { throw 'Hidden WindowStyle contract is missing.' }
 
 $agentGuide = Get-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Raw
-foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsApps', 'run-tests\.ps1')) {
+foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsApps', 'run-tests\.ps1', 'Codex-Assisted Configuration', 'InitialTokens', 'sanitized.*response')) {
   if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }
 }
 $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw
-foreach ($requiredReadmeText in @('推荐：让 Codex 帮你安装', 'AGENTS.md', 'install.ps1')) {
+foreach ($requiredReadmeText in @('小白用户：三步开始', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '30 秒', '有限页数')) {
   if ($readme -notmatch [regex]::Escape($requiredReadmeText)) { throw "README installation guidance is missing: $requiredReadmeText" }
 }
 

@@ -13,6 +13,45 @@ When the user asks to install this project:
 5. Verify the installed version directory and shortcut. Its target must be `wscript.exe`, which launches PowerShell invisibly through `launch-codex-monitor-hidden.vbs`. Do not launch, restart, or terminate the user's current Codex session. Tell the user to exit Codex normally and then use the new shortcut.
 6. Official subscription monitoring needs no API key or additional configuration.
 
+## Codex-Assisted Configuration
+
+When installation is being performed by Codex, guide the user through the available
+data sources after the launcher has been verified:
+
+1. Ask whether the user wants Official Subscription, API Account, API Key, or any
+   combination of the three. Official Subscription requires no credential.
+2. For API Account, explain that the current implementation expects a CCTQ-style
+   account endpoint, a numeric user ID, and an account access token. Ask the user to
+   copy the complete token to the Windows clipboard and run
+   `scripts/configure-api-account.ps1 -FromClipboard -UserId <real-id>`; never ask for
+   the token in chat or print it. The script validates `/api/user/self` before saving
+   the token with Windows DPAPI.
+3. For API Key, ask for the provider's endpoint documentation and response example,
+   not the key itself. Copy the key through the clipboard and use the appropriate
+   `configure-*.ps1 -FromClipboard` command. Keep the key in DPAPI and keep the
+   provider JSON limited to endpoint and field mappings.
+4. Ask for the user's current real cumulative Token count when API Account is
+   enabled. It must be a complete non-negative integer, without `万` or `亿`. Run
+   `scripts/configure-token-baseline.ps1 -InitialTokens <value>` after the account is
+   configured. If the user does not know the value, explicitly explain that `0` is
+   used and new visible logs are accumulated from there. This baseline is needed
+   because the upstream log endpoint exposes only a limited page of history.
+   The same counter file stores a date-scoped, deduplicated daily Token total;
+   preserve it when reinstalling or updating so a Codex/Windows restart does not
+   reset the current day's value.
+5. If an API Account or API Key response does not match the example schema, inspect
+   the documented/sanitized response shape without exposing credentials. Adapt the
+   local account normalization/request mapping or the local Provider JSON selectors,
+   add or update a fixture test for the new shape, and run the full test suite. Do not
+   silently guess fields, weaken URL/authentication validation, or commit a user's
+   private response or provider file. Preserve the original mapping when it remains
+   compatible and report exactly which fields were adapted.
+
+After configuration, verify each enabled source with a redacted status result and
+run `pwsh -NoProfile -File .\tests\run-tests.ps1`. Do not claim that a metric is
+available merely because a field was configured; confirm a successful response or
+show the source as unavailable while preserving the last successful values.
+
 For a non-Store Codex installation, preserve any paths the installer discovers in the current user's environment. Do not silently invent a path; if the installer asks for `ChatGPT.exe` or `codex.exe`, ask the user to select the real file.
 
 Do not replace the normal Codex shortcut. Do not modify `WindowsApps`, `app.asar`, Codex authentication files, model configuration, or registry startup entries. Do not terminate Codex processes to finish an installation.
@@ -29,6 +68,7 @@ Do not replace the normal Codex shortcut. Do not modify `WindowsApps`, `app.asar
 
 - Preserve user changes and `*.local.json` files. Never commit provider secrets or personal paths.
 - Keep CDP bound to `127.0.0.1` and retain the policy that an already-running Codex instance is not forcefully restarted.
+- Preserve automatic CDP port fallback. Read the selected runtime port from `%LOCALAPPDATA%\CodexUsageMonitor\state.json` when verifying an installed monitor.
 - After code or configuration-template changes, run `pwsh -NoProfile -File .\tests\run-tests.ps1`.
 - After installer or package-manifest changes, also verify `pwsh -NoProfile -File .\install.ps1 -InstallRoot <temporary-directory> -SkipShortcut` and remove only that exact temporary directory afterward.
 - Report the installed path, shortcut path, selected mode, tests run, and any action the user still needs to take. Never claim that the monitor is visible until it has actually been launched and verified in a CDP-enabled Codex session.

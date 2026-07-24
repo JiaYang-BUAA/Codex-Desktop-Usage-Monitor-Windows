@@ -250,7 +250,7 @@ async function runWatch(options) {
   let latestUsage = null;
   let stopping = false;
   const usageClient = new CombinedUsageClient({
-    refreshMs: 90000,
+    refreshMs: 30000,
     onUpdate: (usage) => {
       latestUsage = usage;
       for (const entry of sessions.values()) {

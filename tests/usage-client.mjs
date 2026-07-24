@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
+  ApiAccountUsageClient,
   ApiUsageClient,
   loadApiProviderConfig,
   mergeRateLimitSnapshot,
   normalizeApiUsageView,
+  normalizeApiAccountView,
   normalizeCctqUsageView,
   normalizeUsageView,
   parseAppServerLine,
@@ -60,8 +65,8 @@ const cctq = normalizeCctqUsageView({
 }, {
   data: { quota_per_unit: 500000, quota_display_type: "CNY" },
 }, now.getTime());
-assert.equal(cctq.metrics.find((item) => item.id === "usedAmount").value, "¥5");
-assert.equal(cctq.metrics.find((item) => item.id === "quotaLimit").value, "¥15");
+assert.equal(cctq.metrics.find((item) => item.id === "usedAmount").value, "¥5.0");
+assert.equal(cctq.metrics.find((item) => item.id === "quotaLimit").value, "¥15.0");
 assert.equal(cctq.metrics.find((item) => item.id === "expiresAt").value, "永久");
 
 const customProvider = validateApiProviderConfig({
@@ -99,7 +104,7 @@ assert.equal(custom.id, "acme");
 assert.equal(custom.label, "Acme API");
 assert.equal(custom.accountType, "api-key");
 assert.equal(custom.metrics.find((item) => item.id === "usedAmount").value, "$12.3");
-assert.equal(custom.metrics.find((item) => item.id === "quotaLimit").value, "$50");
+assert.equal(custom.metrics.find((item) => item.id === "quotaLimit").value, "$50.0");
 assert.equal(custom.metrics.find((item) => item.id === "expiresAt").value, "3天后");
 
 const noLimitProvider = validateApiProviderConfig({
@@ -112,7 +117,7 @@ const noLimitProvider = validateApiProviderConfig({
   response: { used: "used", limit: null, unlimited: null, defaultQuotaPerUnit: 1, defaultCurrency: "" },
 });
 const noLimit = normalizeApiUsageView({ used: 123 }, null, noLimitProvider, now.getTime());
-assert.equal(noLimit.metrics.find((item) => item.id === "usedAmount").value, "123");
+assert.equal(noLimit.metrics.find((item) => item.id === "usedAmount").value, "123.0");
 assert.equal(noLimit.metrics.find((item) => item.id === "quotaLimit").value, "不限");
 
 const baseProvider = {
@@ -156,16 +161,122 @@ apiClient.requestJson = async (url) => {
   return { used: usedAmount };
 };
 await apiClient.refresh();
-assert.equal(apiUpdates.at(-1).metrics.find((item) => item.id === "usedAmount").value, "¥1");
+assert.equal(apiUpdates.at(-1).metrics.find((item) => item.id === "usedAmount").value, "¥1.0");
 statusAvailable = false;
 usedAmount = 250;
 await apiClient.refresh();
 assert.equal(apiUpdates.at(-1).status, "ready");
 assert.equal(apiUpdates.at(-1).metrics.find((item) => item.id === "usedAmount").value, "¥2.5");
 
+const accountNow = new Date(2026, 6, 22, 12, 0, 0).getTime();
+const account = normalizeApiAccountView({ data: { quota: 5000000, used_quota: 1250000 } }, [
+  { created_at: Math.floor((accountNow - 10 * 60000) / 1000), prompt_tokens: 1200, completion_tokens: 300, quota: 250000, model_name: "gpt-5.6-sol", use_time: 842 },
+  { created_at: Math.floor((accountNow - 3 * 3600000) / 1000), prompt_tokens: 5000, completion_tokens: 700, quota: 400000, model_name: "gpt-5.5", use_time: 1200 },
+  { created_at: Math.floor((accountNow - 13 * 3600000) / 1000), prompt_tokens: 100, completion_tokens: 0, quota: 10000, model_name: "gpt-5.5", use_time: 300 },
+  { created_at: Math.floor((accountNow - 2 * 86400000) / 1000), prompt_tokens: 10000, completion_tokens: 2000, quota: 800000, model_name: "gpt-5.4", use_time: 1600 },
+], { now: accountNow, refreshMs: 90000 });
+assert.equal(account.accountType, "api-account");
+assert.equal(account.metrics.length, 8);
+assert.equal(account.metrics.find((item) => item.id === "balance").value, "¥10.0");
+assert.equal(account.metrics.find((item) => item.id === "usedQuota").value, "¥2.5");
+assert.equal(account.metrics.find((item) => item.id === "totalTokens").value, "2万");
+assert.equal(account.metrics.find((item) => item.id === "todayTokens").value, "7,200");
+assert.equal(account.metrics.find((item) => item.id === "todayTokens").label, "今日 Token");
+assert.equal(account.metrics.find((item) => item.id === "totalTokens").label, "累计 Token");
+assert.equal(account.metrics.find((item) => item.id === "lastQuota").value, "¥0.500");
+assert.equal(account.metrics.find((item) => item.id === "lastModel").value, "gpt-5.6-sol");
+assert.equal(account.metrics.find((item) => item.id === "lastModel").label, "上次响应模型");
+assert.match(account.metrics.find((item) => item.id === "lastRequestAt").value, /^2026-07-22 11:50$/);
+assert.equal(account.metrics.find((item) => item.id === "lastLatency").value, "842ms");
+
+const persistedToday = normalizeApiAccountView({ data: { quota: 5000000, used_quota: 1250000 } }, [], {
+  now: accountNow,
+  persistentTodayTokens: 123456,
+});
+assert.equal(persistedToday.metrics.find((item) => item.id === "todayTokens").value, "12万");
+
+const automaticCounterRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-auto-counter-test-"));
+try {
+  const automaticCounterPath = path.join(automaticCounterRoot, "counter.json");
+  const accountUpdates = [];
+  const accountClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath: automaticCounterPath, now: () => accountNow, onUpdate: (value) => accountUpdates.push(value) });
+  const requestedLogPages = [];
+  accountClient.requestJson = async (pathname, query) => {
+    if (pathname === "/api/user/self") return { data: { quota: 1000000, used_quota: 500000 } };
+    requestedLogPages.push(query.p);
+    if (query.p === 1) return { data: { total: 101, page_size: 100, items: [{ id: 1, created_at: Math.floor(accountNow / 1000), prompt_tokens: 2, completion_tokens: 3 }] } };
+    return { data: { total: 101, page_size: 100, items: [{ id: 2, created_at: Math.floor(accountNow / 1000) - 1, prompt_tokens: 5, completion_tokens: 7 }] } };
+  };
+  await accountClient.refresh();
+  assert.equal(accountUpdates.at(-1).status, "ready");
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "5");
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "5");
+  assert.match(accountUpdates.at(-1).error, /最近 1 条日志/);
+  assert.equal(accountUpdates.at(-1).nextRefreshAt - accountUpdates.at(-1).fetchedAt, 30000);
+  assert.deepEqual(requestedLogPages, [1]);
+  await accountClient.refresh();
+  assert.deepEqual(requestedLogPages, [1, 2]);
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "17");
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "17");
+  assert.equal(accountUpdates.at(-1).error, null);
+  await accountClient.refresh();
+  assert.deepEqual(requestedLogPages, [1, 2, 1]);
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "17");
+
+  const restartedUpdates = [];
+  const restartedClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath: automaticCounterPath, now: () => accountNow, onUpdate: (value) => restartedUpdates.push(value) });
+  restartedClient.requestJson = accountClient.requestJson;
+  await restartedClient.refresh();
+  assert.equal(restartedUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "17");
+  assert.equal(restartedUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "17");
+} finally {
+  rmSync(automaticCounterRoot, { recursive: true, force: true });
+}
+
+const counterRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-counter-test-"));
+try {
+  const counterPath = path.join(counterRoot, "counter.json");
+  writeFileSync(counterPath, JSON.stringify({
+    schemaVersion: 1,
+    initialTokens: 500,
+    totalTokens: 500,
+    checkpointAt: accountNow - 1000,
+    recentLogIds: [],
+    configuredAt: new Date(accountNow - 1000).toISOString(),
+    updatedAt: new Date(accountNow - 1000).toISOString(),
+  }));
+  const counterUpdates = [];
+  let counterNow = accountNow;
+  let counterLog = { id: 99, created_at: Math.floor(accountNow / 1000), prompt_tokens: 2, completion_tokens: 3 };
+  const counterClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath, now: () => counterNow, onUpdate: (value) => counterUpdates.push(value) });
+  counterClient.requestJson = async (pathname) => pathname === "/api/user/self"
+    ? { data: { quota: 1000000, used_quota: 500000 } }
+    : { data: { page: 1, page_size: 100, total: 1, items: [counterLog] } };
+  await counterClient.refresh();
+  assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "505");
+  assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "5");
+  const migratedCounter = JSON.parse(readFileSync(counterPath, "utf8"));
+  assert.equal(migratedCounter.schemaVersion, 2);
+  assert.equal(migratedCounter.dailyTokens, 5);
+  await counterClient.refresh();
+  assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "505");
+  assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "5");
+
+  counterNow += 86400000;
+  counterLog = { id: 100, created_at: Math.floor(counterNow / 1000), prompt_tokens: 7, completion_tokens: 11 };
+  await counterClient.refresh();
+  assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "523");
+  assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "18");
+  const nextDayCounter = JSON.parse(readFileSync(counterPath, "utf8"));
+  assert.equal(nextDayCounter.dailyTokens, 18);
+  assert.equal(nextDayCounter.dailyLogIds.length, 1);
+} finally {
+  rmSync(counterRoot, { recursive: true, force: true });
+}
+
 const merged = mergeRateLimitSnapshot(rateLimits.rateLimits, { primary: { usedPercent: 40 }, secondary: null, planType: null });
 assert.deepEqual(merged.primary, { usedPercent: 40, windowDurationMins: 300, resetsAt: 1784700000 });
 assert.deepEqual(merged.secondary, rateLimits.rateLimits.secondary);
 assert.equal(normalizeUsageView(null, null, now).status, "unavailable");
 
-console.log("PASS: official usage, generic API mapping, provider validation, CCTQ compatibility, and sparse updates.");
+console.log("PASS: official usage, API account aggregation, generic API mapping, provider validation, CCTQ compatibility, and sparse updates.");

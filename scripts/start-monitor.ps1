@@ -19,6 +19,12 @@ try {
 } catch {
   Write-Warning $_.Exception.Message
 }
+try {
+  [void](Import-CodexUsagePersistedAccount)
+} catch {
+  Write-Warning $_.Exception.Message
+}
+$env:CODEX_USAGE_ACCOUNT_COUNTER_PATH = $CodexUsageAccountCounterPath
 
 $mutexName = "Local\CodexUsageMonitor-$Port"
 $mutex = [Threading.Mutex]::new($false, $mutexName)

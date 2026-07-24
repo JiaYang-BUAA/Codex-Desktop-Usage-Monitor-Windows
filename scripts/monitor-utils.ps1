@@ -6,6 +6,10 @@ $CodexUsageStatePath = Join-Path $CodexUsageStateRoot 'state.json'
 $CodexUsagePersistedProviderConfigPath = Join-Path $CodexUsageStateRoot 'provider.json'
 $CodexUsagePersistedProviderKeyPath = Join-Path $CodexUsageStateRoot 'api-key.dpapi'
 $CodexUsagePersistedProviderEntropy = [Text.Encoding]::UTF8.GetBytes('CodexUsageMonitor/v1/APIKey')
+$CodexUsagePersistedAccountConfigPath = Join-Path $CodexUsageStateRoot 'account.json'
+$CodexUsagePersistedAccountTokenPath = Join-Path $CodexUsageStateRoot 'account-token.dpapi'
+$CodexUsagePersistedAccountEntropy = [Text.Encoding]::UTF8.GetBytes('CodexUsageMonitor/v1/APIAccountToken')
+$CodexUsageAccountCounterPath = Join-Path $CodexUsageStateRoot 'account-token-counter.json'
 $CodexUsageLegacyStatePath = Join-Path $env:LOCALAPPDATA 'CodexDreamSkin\state.json'
 $CodexUsageVersion = (Get-Content -LiteralPath (Join-Path $CodexUsageRoot 'VERSION') -Raw).Trim()
 $CodexUsageUtf8 = [Text.UTF8Encoding]::new($false)
@@ -92,6 +96,155 @@ function Remove-CodexUsagePersistedProvider {
 function Test-CodexUsagePersistedProvider {
   return (Test-Path -LiteralPath $CodexUsagePersistedProviderConfigPath -PathType Leaf) -and
     (Test-Path -LiteralPath $CodexUsagePersistedProviderKeyPath -PathType Leaf)
+}
+
+function Save-CodexUsagePersistedAccount {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Token,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[1-9][0-9]{0,19}$')]
+    [string]$UserId,
+    [string]$BaseUrl = 'https://www.cctq.ai'
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Token)) { throw 'API 账户令牌不能为空。' }
+  $baseUri = $null
+  if (-not [Uri]::TryCreate($BaseUrl, [UriKind]::Absolute, [ref]$baseUri) -or $baseUri.Scheme -notin @('http', 'https')) {
+    throw 'API 账户 BaseUrl 必须是有效的 HTTP 或 HTTPS 地址。'
+  }
+  if (-not [string]::IsNullOrEmpty($baseUri.UserInfo)) { throw 'API 账户 BaseUrl 不能包含凭据。' }
+  $normalizedBaseUrl = $baseUri.AbsoluteUri.TrimEnd('/')
+  New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
+  $temporaryConfig = "$CodexUsagePersistedAccountConfigPath.$PID.tmp"
+  $temporaryToken = "$CodexUsagePersistedAccountTokenPath.$PID.tmp"
+  $plainBytes = $null
+  $protectedBytes = $null
+  try {
+    $plainBytes = [Text.Encoding]::UTF8.GetBytes($Token)
+    $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
+      $plainBytes,
+      $CodexUsagePersistedAccountEntropy,
+      [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    $configJson = [ordered]@{ schemaVersion = 1; baseUrl = $normalizedBaseUrl; userId = $UserId } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($temporaryConfig, $configJson, $CodexUsageUtf8)
+    [IO.File]::WriteAllBytes($temporaryToken, $protectedBytes)
+    Move-Item -LiteralPath $temporaryConfig -Destination $CodexUsagePersistedAccountConfigPath -Force
+    Move-Item -LiteralPath $temporaryToken -Destination $CodexUsagePersistedAccountTokenPath -Force
+  } finally {
+    Remove-Item -LiteralPath $temporaryConfig,$temporaryToken -Force -ErrorAction SilentlyContinue
+    if ($plainBytes) { [Array]::Clear($plainBytes, 0, $plainBytes.Length) }
+    if ($protectedBytes) { [Array]::Clear($protectedBytes, 0, $protectedBytes.Length) }
+  }
+}
+
+function Get-CodexUsagePersistedAccount {
+  $hasConfig = Test-Path -LiteralPath $CodexUsagePersistedAccountConfigPath -PathType Leaf
+  $hasToken = Test-Path -LiteralPath $CodexUsagePersistedAccountTokenPath -PathType Leaf
+  if (-not $hasConfig -and -not $hasToken) { return $null }
+  if (-not $hasConfig -or -not $hasToken) { throw '持久化 API 账户配置不完整，请重新运行配置命令。' }
+
+  $protectedBytes = $null
+  $plainBytes = $null
+  try {
+    $config = Get-Content -LiteralPath $CodexUsagePersistedAccountConfigPath -Raw | ConvertFrom-Json
+    if ($config.schemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace([string]$config.baseUrl) -or [string]$config.userId -notmatch '^[1-9][0-9]{0,19}$') {
+      throw 'API 账户配置格式无效。'
+    }
+    $protectedBytes = [IO.File]::ReadAllBytes($CodexUsagePersistedAccountTokenPath)
+    $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect(
+      $protectedBytes,
+      $CodexUsagePersistedAccountEntropy,
+      [Security.Cryptography.DataProtectionScope]::CurrentUser
+    )
+    $token = [Text.Encoding]::UTF8.GetString($plainBytes)
+    if ([string]::IsNullOrWhiteSpace($token)) { throw '持久化 API 账户令牌为空。' }
+    return [pscustomobject]@{ Token = $token; UserId = [string]$config.userId; BaseUrl = [string]$config.baseUrl }
+  } catch {
+    throw "无法读取持久化 API 账户凭据，请重新运行配置命令。$($_.Exception.Message)"
+  } finally {
+    if ($protectedBytes) { [Array]::Clear($protectedBytes, 0, $protectedBytes.Length) }
+    if ($plainBytes) { [Array]::Clear($plainBytes, 0, $plainBytes.Length) }
+  }
+}
+
+function Import-CodexUsagePersistedAccount {
+  if ($env:CODEX_USAGE_DISABLE_PERSISTED_ACCOUNT -eq '1') { return $false }
+  if ($env:CODEX_USAGE_ACCOUNT_TOKEN -or $env:CODEX_USAGE_ACCOUNT_USER_ID) { return $false }
+  $stored = Get-CodexUsagePersistedAccount
+  if (-not $stored) { return $false }
+  $env:CODEX_USAGE_ACCOUNT_TOKEN = $stored.Token
+  $env:CODEX_USAGE_ACCOUNT_USER_ID = $stored.UserId
+  $env:CODEX_USAGE_ACCOUNT_BASE_URL = $stored.BaseUrl
+  return $true
+}
+
+function Remove-CodexUsagePersistedAccount {
+  Remove-Item -LiteralPath $CodexUsagePersistedAccountConfigPath,$CodexUsagePersistedAccountTokenPath -Force -ErrorAction SilentlyContinue
+}
+
+function Test-CodexUsagePersistedAccount {
+  return (Test-Path -LiteralPath $CodexUsagePersistedAccountConfigPath -PathType Leaf) -and
+    (Test-Path -LiteralPath $CodexUsagePersistedAccountTokenPath -PathType Leaf)
+}
+
+function Save-CodexUsageTokenBaseline {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(0, [long]::MaxValue)]
+    [long]$InitialTokens,
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(0, [long]::MaxValue)]
+    [long]$CheckpointAt,
+    [string[]]$RecentLogIds = @(),
+    [ValidatePattern('^\d{4}-\d{2}-\d{2}$')]
+    [string]$DailyDate = (Get-Date -Format 'yyyy-MM-dd'),
+    [ValidateRange(0, [long]::MaxValue)]
+    [long]$DailyTokens = 0,
+    [string[]]$DailyLogIds = @()
+  )
+
+  New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
+  $temporaryPath = "$CodexUsageAccountCounterPath.$PID.tmp"
+  try {
+    $now = (Get-Date).ToUniversalTime().ToString('o')
+    $state = [ordered]@{
+      schemaVersion = 2
+      baselineConfigured = $true
+      initialTokens = $InitialTokens
+      totalTokens = $InitialTokens
+      checkpointAt = $CheckpointAt
+      recentLogIds = @($RecentLogIds | Where-Object { $_ } | Select-Object -Last 2000)
+      dailyDate = $DailyDate
+      dailyTokens = $DailyTokens
+      dailyLogIds = @($DailyLogIds | Where-Object { $_ } | Select-Object -Last 100000)
+      configuredAt = $now
+      updatedAt = $now
+    }
+    [IO.File]::WriteAllText($temporaryPath, ($state | ConvertTo-Json -Depth 4), $CodexUsageUtf8)
+    Move-Item -LiteralPath $temporaryPath -Destination $CodexUsageAccountCounterPath -Force
+  } finally {
+    Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Get-CodexUsageTokenBaseline {
+  if (-not (Test-Path -LiteralPath $CodexUsageAccountCounterPath -PathType Leaf)) { return $null }
+  $state = Get-Content -LiteralPath $CodexUsageAccountCounterPath -Raw | ConvertFrom-Json
+  if ($state.schemaVersion -notin @(1, 2) -or [long]$state.totalTokens -lt 0 -or [long]$state.checkpointAt -lt 0) {
+    throw '累计 Token 初始值配置格式无效，请重新配置。'
+  }
+  if ($state.schemaVersion -eq 2 -and ($state.dailyDate -notmatch '^\d{4}-\d{2}-\d{2}$' -or [long]$state.dailyTokens -lt 0)) {
+    throw '每日 Token 计数格式无效，请重新配置。'
+  }
+  return $state
+}
+
+function Remove-CodexUsageTokenBaseline {
+  Remove-Item -LiteralPath $CodexUsageAccountCounterPath -Force -ErrorAction SilentlyContinue
 }
 
 function Resolve-CodexUsageNodePath {
@@ -323,6 +476,35 @@ function Get-CodexUsageTargets([int]$Port) {
 
 function Test-CodexUsageCdpPort([int]$Port) {
   return [bool](Get-CodexUsageTargets $Port | Where-Object { $_.type -eq 'page' -and [string]$_.url -like 'app://*' })
+}
+
+function Test-CodexUsageTcpPortAvailable([int]$Port) {
+  if ($Port -lt 1024 -or $Port -gt 65535) { return $false }
+  $listener = $null
+  try {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+    $listener.Server.ExclusiveAddressUse = $true
+    $listener.Start()
+    return $true
+  } catch {
+    return $false
+  } finally {
+    if ($listener) { try { $listener.Stop() } catch {} }
+  }
+}
+
+function Resolve-CodexUsageAvailablePort {
+  [CmdletBinding()]
+  param(
+    [ValidateRange(1024, 65535)][int]$PreferredPort = 9335,
+    [ValidateRange(1, 100)][int]$SearchCount = 20
+  )
+  for ($offset = 0; $offset -lt $SearchCount; $offset++) {
+    $candidate = $PreferredPort + $offset
+    if ($candidate -gt 65535) { break }
+    if (Test-CodexUsageTcpPortAvailable $candidate) { return $candidate }
+  }
+  throw "从端口 $PreferredPort 开始的 $SearchCount 个本机端口均不可用。"
 }
 
 function Resolve-CodexUsageCdpPort {
