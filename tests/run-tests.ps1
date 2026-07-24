@@ -98,6 +98,11 @@ if ($runtimeSource -notmatch 'Codex Usage Monitor\.lnk') { throw 'English shortc
 if ($runtimeSource -notmatch 'launch-codex-monitor-hidden\.vbs') { throw 'Hidden launcher contract is missing.' }
 if ($runtimeSource -notmatch 'shell\.Run command, 0, False') { throw 'Hidden WindowStyle contract is missing.' }
 
+$releaseWorkflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\release.yml') -Raw
+foreach ($requiredReleaseText in @('gh release list', 'gh release upload', '--clobber', 'gh release create')) {
+  if ($releaseWorkflow -notmatch [regex]::Escape($requiredReleaseText)) { throw "Idempotent release workflow contract is missing: $requiredReleaseText" }
+}
+
 $agentGuide = Get-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Raw
 foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsApps', 'run-tests\.ps1', 'Codex-Assisted Configuration', 'InitialTokens', 'sanitized.*response')) {
   if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }

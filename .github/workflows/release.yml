@@ -36,4 +36,9 @@ jobs:
           $tag = $env:GITHUB_REF_NAME
           $archive = Get-ChildItem .\dist\codex-usage-monitor-windows-*.zip -File | Select-Object -First 1
           if (-not $archive) { throw 'Runtime package was not created.' }
-          gh release create $tag $archive.FullName --repo $env:GITHUB_REPOSITORY --title $tag --generate-notes --verify-tag
+          $releaseTags = @(gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName | ConvertFrom-Json | ForEach-Object { $_.tagName })
+          if ($releaseTags -contains $tag) {
+            gh release upload $tag $archive.FullName --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $tag $archive.FullName --repo $env:GITHUB_REPOSITORY --title $tag --generate-notes --verify-tag
+          }
