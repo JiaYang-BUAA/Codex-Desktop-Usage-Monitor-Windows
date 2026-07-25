@@ -147,9 +147,11 @@
         apiKeyMetricsVersion: Number(value?.apiKeyMetricsVersion) || 0,
         officialMetricsVersion: Number(value?.officialMetricsVersion) || 0,
         unifiedMetricsVersion: Number(value?.unifiedMetricsVersion) || 0,
+        minimalMode: Boolean(value?.minimalMode),
+        countdownVisualization: Boolean(value?.countdownVisualization),
       };
     } catch {
-      return { metrics: {}, apiKeyMetricsVersion: 0, officialMetricsVersion: 0, unifiedMetricsVersion: 0 };
+      return { metrics: {}, apiKeyMetricsVersion: 0, officialMetricsVersion: 0, unifiedMetricsVersion: 0, minimalMode: false, countdownVisualization: false };
     }
   };
   const saveSettings = (value) => {
@@ -297,6 +299,7 @@
 
   const markup = `
     <button class="usage-summary" type="button" aria-label="Codex 用量详情" aria-expanded="false">
+      <span class="usage-refresh-ring" aria-hidden="true" hidden></span>
       <span class="usage-summary-items"><span class="usage-summary-item">用量 --</span></span>
     </button>
     <div class="usage-popover" role="dialog" aria-label="用量显示设置" hidden>
@@ -330,6 +333,7 @@
       cursor: pointer;
       white-space: nowrap;
       overflow: hidden;
+      font-size: 11px;
     }
     .usage-summary:hover, .usage-summary:focus-visible {
       background: color-mix(in srgb, currentColor 10%, transparent);
@@ -349,12 +353,30 @@
       opacity: .40;
       transform: translateY(-50%);
     }
-    :host([data-density="dense"]) { font-size: 10px; }
-    :host([data-density="dense"]) .usage-summary { padding-inline: 6px; }
+    .usage-refresh-ring {
+      --usage-refresh-progress: 0deg;
+      box-sizing: border-box;
+      position: relative;
+      width: 15px;
+      height: 15px;
+      margin-right: 6px;
+      flex: 0 0 15px;
+      border-radius: 50%;
+      background: conic-gradient(from -90deg, #86efac var(--usage-refresh-progress), color-mix(in srgb, currentColor 13%, transparent) 0deg);
+    }
+    .usage-refresh-ring::after {
+      content: "";
+      position: absolute;
+      inset: 3px;
+      border-radius: 50%;
+      background: var(--usage-surface, Canvas);
+    }
+    :host([data-density="dense"]) .usage-summary { padding-inline: 6px; font-size: 10px; }
+    :host([data-density="dense"]) .usage-refresh-ring { width: 13px; height: 13px; margin-right: 4px; flex-basis: 13px; }
     :host([data-density="dense"]) .usage-summary-item + .usage-summary-item { padding-left: 7px; }
     :host([data-density="dense"]) .usage-summary-item + .usage-summary-item::before { left: 3px; height: 13px; }
-    :host([data-density="packed"]) { font-size: 9px; }
-    :host([data-density="packed"]) .usage-summary { height: 30px; padding: 2px 5px; }
+    :host([data-density="packed"]) .usage-summary { height: 30px; padding: 2px 5px; font-size: 9px; }
+    :host([data-density="packed"]) .usage-refresh-ring { width: 12px; height: 12px; margin-right: 3px; flex-basis: 12px; }
     :host([data-density="packed"]) .usage-summary-items { display: grid; grid-template-rows: repeat(2, minmax(0, 1fr)); grid-auto-flow: column; align-items: center; line-height: 1.05; }
     :host([data-density="packed"]) .usage-summary-item + .usage-summary-item { padding-left: 5px; }
     :host([data-density="packed"]) .usage-summary-item + .usage-summary-item::before { left: 2px; height: 12px; }
@@ -460,13 +482,68 @@
     }
     .usage-brand-product { font-size: 12px; }
     .usage-brand-credit { font-size: 9px; font-weight: 450; text-align: right; }
+    .usage-column-footer {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+      margin-top: auto;
+      padding-top: 4px;
+    }
+    .usage-mode-switches {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 22px;
+      white-space: nowrap;
+    }
+    .usage-mode-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      font-size: 9px;
+      line-height: 1;
+      opacity: .72;
+      cursor: pointer;
+    }
+    .usage-mode-toggle input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .usage-toggle-track {
+      box-sizing: border-box;
+      position: relative;
+      width: 24px;
+      height: 14px;
+      flex: 0 0 24px;
+      border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+      border-radius: 999px;
+      background: color-mix(in srgb, currentColor 9%, transparent);
+      transition: background-color 120ms ease, border-color 120ms ease;
+    }
+    .usage-toggle-track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: color-mix(in srgb, currentColor 72%, Canvas);
+      transition: transform 120ms ease, background-color 120ms ease;
+    }
+    .usage-mode-toggle input:checked + .usage-toggle-track { border-color: #86efac; background: #86efac; }
+    .usage-mode-toggle input:checked + .usage-toggle-track::after { background: #166534; transform: translateX(10px); }
+    .usage-mode-toggle input:focus-visible + .usage-toggle-track { outline: 2px solid color-mix(in srgb, #86efac 60%, transparent); outline-offset: 1px; }
     .usage-column-meta {
       display: flex;
       justify-content: flex-start;
       align-items: center;
       gap: 5px;
       min-height: 27px;
-      margin-top: auto;
       font-size: 10px;
       line-height: 1;
       opacity: .55;
@@ -480,6 +557,10 @@
       .usage-detail-value { max-width: 72px; }
       .usage-brand-product { font-size: 10px; }
       .usage-brand-credit { font-size: 8px; }
+      .usage-mode-switches { gap: 6px; }
+      .usage-mode-toggle { gap: 3px; font-size: 8px; }
+      .usage-toggle-track { width: 22px; flex-basis: 22px; }
+      .usage-mode-toggle input:checked + .usage-toggle-track::after { transform: translateX(8px); }
       .usage-column-meta { font-size: 9px; }
     }
     @supports not (color: color-mix(in srgb, red 50%, transparent)) {
@@ -493,14 +574,26 @@
     if (/(?:Reset|nextRefreshAt)$/.test(String(metric?.id ?? ""))) display = display.replace(/后$/, "");
     return display;
   };
+  const minimalSummaryDisplay = (metric) => {
+    let value = String(metric?.value ?? "--").replace(/\s+/g, "");
+    if (/(?:Reset|nextRefreshAt)$/.test(String(metric?.id ?? ""))) value = value.replace(/后$/, "");
+    return value;
+  };
 
   const updateCountdowns = (host, value) => {
     if (!host?.shadowRoot) return;
     const usage = normalizeUsage(value);
-    const seconds = finiteNumber(usage.nextRefreshAt)
-      ? Math.max(0, Math.ceil((Number(usage.nextRefreshAt) - Date.now()) / 1000))
+    const now = Date.now();
+    const remainingMs = finiteNumber(usage.nextRefreshAt)
+      ? Math.max(0, Number(usage.nextRefreshAt) - now)
       : null;
+    const seconds = remainingMs === null ? null : Math.ceil(remainingMs / 1000);
     setText(host.shadowRoot.querySelector(".usage-refresh-countdown"), `刷新 ${seconds === null ? "--" : `${seconds}秒后`}`);
+    const ring = host.shadowRoot.querySelector(".usage-refresh-ring");
+    if (ring) {
+      const progress = remainingMs === null ? 0 : Math.max(0, Math.min(1, 1 - remainingMs / REFRESH_INTERVAL_MS));
+      ring.style.setProperty("--usage-refresh-progress", `${Math.round(progress * 360)}deg`);
+    }
   };
 
   const render = (host, value) => {
@@ -529,10 +622,17 @@
     }
     if (settingsChanged) saveSettings(settings);
     const availableWidth = Number.parseInt(host.style.getPropertyValue("--usage-max-width"), 10) || 280;
-    host.dataset.density = selected.length >= 7 || (selected.length >= 5 && availableWidth < 280)
-      ? "packed" : selected.length >= 5 ? "dense" : "normal";
-    const summaryDisplay = (metric) => host.dataset.density === "normal" ? metric?.display : compactSummaryDisplay(metric);
+    host.dataset.density = settings.minimalMode
+      ? selected.length >= 7 ? "packed" : "normal"
+      : selected.length >= 7 || (selected.length >= 5 && availableWidth < 280)
+        ? "packed" : selected.length >= 5 ? "dense" : "normal";
+    host.dataset.minimal = String(settings.minimalMode);
+    const summaryDisplay = (metric) => settings.minimalMode
+      ? minimalSummaryDisplay(metric)
+      : host.dataset.density === "normal" ? metric?.display : compactSummaryDisplay(metric);
     const shadow = host.shadowRoot;
+    const refreshRing = shadow.querySelector(".usage-refresh-ring");
+    if (refreshRing) refreshRing.hidden = !settings.countdownVisualization;
     const summaryRoot = shadow.querySelector(".usage-summary-items");
     if (summaryRoot) {
       const items = selected.length ? selected : [{ source: null, metric: { display: "用量 --" } }];
@@ -605,6 +705,26 @@
           brand.append(product, credit);
           column.append(brand);
         } else if (source.accountType === "subscription") {
+          const footer = document.createElement("div");
+          footer.className = "usage-column-footer";
+          const switches = document.createElement("div");
+          switches.className = "usage-mode-switches";
+          for (const [setting, labelText] of [["minimalMode", "极简模式"], ["countdownVisualization", "倒计时可视化"]]) {
+            const toggle = document.createElement("label");
+            toggle.className = "usage-mode-toggle";
+            const toggleLabel = document.createElement("span");
+            toggleLabel.textContent = labelText;
+            const toggleInput = document.createElement("input");
+            toggleInput.type = "checkbox";
+            toggleInput.dataset.setting = setting;
+            toggleInput.checked = Boolean(settings[setting]);
+            toggleInput.setAttribute("aria-label", labelText);
+            const track = document.createElement("span");
+            track.className = "usage-toggle-track";
+            track.setAttribute("aria-hidden", "true");
+            toggle.append(toggleLabel, toggleInput, track);
+            switches.append(toggle);
+          }
           const meta = document.createElement("div");
           meta.className = "usage-column-meta";
           const maximum = document.createElement("span");
@@ -616,7 +736,8 @@
           countdown.className = "usage-refresh-countdown";
           countdown.textContent = "刷新 --";
           meta.append(maximum, separator, countdown);
-          column.append(meta);
+          footer.append(switches, meta);
+          column.append(footer);
         }
         return column;
       }));
@@ -693,9 +814,17 @@
       });
       host.shadowRoot.addEventListener("change", (event) => {
         const input = event.target;
-        if (!(input instanceof HTMLInputElement) || input.type !== "checkbox" || !input.dataset.metric || !input.dataset.source) return;
+        if (!(input instanceof HTMLInputElement) || input.type !== "checkbox") return;
         const state = window[STATE_KEY];
         const usage = normalizeUsage(state?.usage || window[USAGE_KEY]);
+        if (["minimalMode", "countdownVisualization"].includes(input.dataset.setting)) {
+          const settings = loadSettings();
+          settings[input.dataset.setting] = input.checked;
+          saveSettings(settings);
+          render(host, usage);
+          return;
+        }
+        if (!input.dataset.metric || !input.dataset.source) return;
         const rawSource = usage.sources[input.dataset.source]
           || (input.dataset.source === "api-key" ? Object.values(usage.sources).find((item) => item.accountType === "api-key") : null);
         if (!rawSource) return;
@@ -739,7 +868,7 @@
   const countdownTimer = setInterval(() => {
     const state = window[STATE_KEY];
     if (state?.host) updateCountdowns(state.host, state.usage);
-  }, 1000);
+  }, 250);
   const resizeHandler = scheduleEnsure;
   const outsideHandler = (event) => {
     const host = document.getElementById(HOST_ID);

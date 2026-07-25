@@ -92,6 +92,7 @@ if ($runtimeSource -notmatch "Local\\CodexUsageMonitor'") { throw 'Cross-port st
 if ($runtimeSource -notmatch 'TARGET_ABSENCE_EXIT_MS') { throw 'Orphan injector shutdown contract is missing.' }
 if ($runtimeSource -notmatch '\$owned = @\(Get-CodexUsageInjectorProcesses\)') { throw 'Cross-port injector cleanup contract is missing.' }
 if ($runtimeSource -notmatch 'rate-limited' -or $runtimeSource -notmatch 'HTTP 429') { throw 'API rate-limit backoff contract is missing.' }
+if ($runtimeSource -notmatch 'minimalMode' -or $runtimeSource -notmatch 'countdownVisualization' -or $runtimeSource -notmatch 'usage-refresh-ring') { throw 'Display mode controls are missing.' }
 if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state contract is missing.' }
 if ($runtimeSource -notmatch '--remote-debugging-address=127\.0\.0\.1') { throw 'Local CDP binding contract is missing.' }
 if ($runtimeSource -notmatch 'Codex Usage Monitor\.lnk') { throw 'English shortcut name contract is missing.' }
@@ -108,7 +109,7 @@ foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsA
   if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }
 }
 $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw
-foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '30 秒', '有限页数')) {
+foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '30 秒', '有限页数', '极简模式', '倒计时可视化', '环形进度条')) {
   if ($readme -notmatch [regex]::Escape($requiredReadmeText)) { throw "README installation guidance is missing: $requiredReadmeText" }
 }
 if ($readme -match '(?m)^#{2,}\s+[\d.]*\s*界面预览\s*$') { throw 'README preview should be an unnumbered introduction.' }

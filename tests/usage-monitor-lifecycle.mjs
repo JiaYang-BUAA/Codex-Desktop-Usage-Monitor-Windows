@@ -111,6 +111,10 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-detail-label\s*\{[\s\S]*?color:\s*inherit;[\s\S]*?font-weight:\s*650;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-detail-select input\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?width:\s*13px;[\s\S]*?height:\s*13px;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-popover-footer/);
+  assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /:host\(\[data-density="(?:dense|packed)"\]\)\s*\{[^}]*font-size/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /:host\(\[data-density="dense"\]\) \.usage-summary\s*\{[^}]*font-size:\s*10px;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-switches\s*\{[\s\S]*?display:\s*flex;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring\s*\{[\s\S]*?conic-gradient[\s\S]*?#86efac/);
 
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
@@ -141,6 +145,44 @@ try {
   assert.equal(columns[0].querySelector(".usage-column-meta span:first-child").textContent, "最多显示 8 项");
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-meta\s*\{[\s\S]*?justify-content:\s*flex-start;/);
   assert.match(host.shadowRoot.querySelector(".usage-refresh-countdown").textContent, /^刷新 \d+秒后$/);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化"]);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 2);
+  assert.equal(host.shadowRoot.querySelector('.usage-column-footer').firstElementChild.className, "usage-mode-switches");
+  assert.equal(host.shadowRoot.querySelector('.usage-column-footer').lastElementChild.className, "usage-column-meta");
+  assert.equal(host.shadowRoot.querySelector(".usage-summary").firstElementChild.className, "usage-refresh-ring");
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, true);
+
+  host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).minimalMode, true);
+  assert.equal(host.dataset.density, "normal");
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "2天", "¥20", "¥5", "不限"]);
+  host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="totalTokens"]').click();
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 6);
+  assert.equal(host.dataset.density, "normal");
+  host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="todayTokens"]').click();
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
+  assert.equal(host.dataset.density, "packed");
+  for (const selector of [
+    'input[data-source="api-account"][data-metric="todayTokens"]',
+    'input[data-source="api-account"][data-metric="totalTokens"]',
+  ]) {
+    const input = host.shadowRoot.querySelector(selector);
+    input.checked = false;
+    input.dispatchEvent(new window.Event("change", { bubbles: true }));
+  }
+  assert.deepEqual(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).metrics["api-account"], ["balance"]);
+  host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
+  assert.notEqual(host.dataset.density, "normal");
+
+  host.shadowRoot.querySelector('input[data-setting="countdownVisualization"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).countdownVisualization, true);
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, false);
+  const halfCycleUsage = structuredClone(usage);
+  halfCycleUsage.nextRefreshAt = Date.now() + 15000;
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(halfCycleUsage), true);
+  const ringDegrees = Number.parseFloat(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"));
+  assert.ok(ringDegrees >= 175 && ringDegrees <= 185);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
 
   const densityToggle = host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]');
   assert.equal(densityToggle.checked, true);
@@ -192,6 +234,7 @@ try {
   host = window.document.getElementById("codex-usage-monitor");
   assert.ok(host?.shadowRoot);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, false);
 
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.cleanup(), true);
   assert.equal(window.document.getElementById("codex-usage-monitor"), null);
