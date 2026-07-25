@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   ApiAccountUsageClient,
   ApiUsageClient,
+  accountLogIdentity,
   loadApiProviderConfig,
   mergeRateLimitSnapshot,
   normalizeApiUsageView,
@@ -248,18 +249,18 @@ try {
   };
   await accountClient.refresh();
   assert.equal(accountUpdates.at(-1).status, "ready");
-  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "17");
-  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "17");
-  assert.match(accountUpdates.at(-1).error, /最近 2 条日志/);
-  assert.equal(accountUpdates.at(-1).nextRefreshAt - accountUpdates.at(-1).fetchedAt, 30000);
-  assert.deepEqual(requestedLogPages, [1, 2]);
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "36");
+  assert.equal(accountUpdates.at(-1).error, null);
+  assert.equal(accountUpdates.at(-1).nextRefreshAt - accountUpdates.at(-1).fetchedAt, 60000);
+  assert.deepEqual(requestedLogPages, [1, 2, 3]);
   await accountClient.refresh();
-  assert.deepEqual(requestedLogPages, [1, 2, 1, 3]);
+  assert.deepEqual(requestedLogPages, [1, 2, 3, 1]);
   assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
   assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "36");
   assert.equal(accountUpdates.at(-1).error, null);
   await accountClient.refresh();
-  assert.deepEqual(requestedLogPages, [1, 2, 1, 3, 1, 2]);
+  assert.deepEqual(requestedLogPages, [1, 2, 3, 1, 1]);
   assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
 
   const restartedUpdates = [];
@@ -268,6 +269,19 @@ try {
   await restartedClient.refresh();
   assert.equal(restartedUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "36");
   assert.equal(restartedUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
+
+  const incompleteUpdates = [];
+  const incompleteClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath: automaticCounterPath, now: () => accountNow + 1000, onUpdate: (value) => incompleteUpdates.push(value) });
+  incompleteClient.requestJson = async (pathname, query) => {
+    if (pathname === "/api/user/self") return { data: { quota: 1000000, used_quota: 500000 } };
+    if (query.p === 1) return { data: { total: 201, page_size: 100, items: [{ id: 1, created_at: Math.floor((accountNow + 1000) / 1000), prompt_tokens: 100, completion_tokens: 50 }] } };
+    if (query.p === 2) throw new Error("temporary history failure");
+    return { data: { page: 3, total: 201, page_size: 100, items: [] } };
+  };
+  await incompleteClient.refresh();
+  assert.equal(incompleteUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
+  assert.equal(incompleteUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "36");
+  assert.match(incompleteUpdates.at(-1).error, /账本保留原值/);
 } finally {
   rmSync(automaticCounterRoot, { recursive: true, force: true });
 }
@@ -295,7 +309,7 @@ try {
   assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "505");
   assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "5");
   const migratedCounter = JSON.parse(readFileSync(counterPath, "utf8"));
-  assert.equal(migratedCounter.schemaVersion, 4);
+  assert.equal(migratedCounter.schemaVersion, 5);
   assert.equal(migratedCounter.dailyTokens, 5);
   await counterClient.refresh();
   assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "505");
@@ -328,36 +342,59 @@ try {
     ? { data: { quota: 1000000, used_quota: 500000 } }
     : { data: { page: 1, page_size: 100, total: 1, items: [{ id: 101, created_at: Math.floor(accountNow / 1000), prompt_tokens: 2, completion_tokens: 3 }] } };
   await delayedClient.refresh();
-  assert.equal(delayedUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "505");
+  assert.equal(delayedUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "500");
 
   writeFileSync(counterPath, JSON.stringify({
     schemaVersion: 4,
     baselineConfigured: true,
-    baselineSnapshotComplete: true,
-    tokenDeltaTracking: true,
     initialTokens: 500,
-    totalTokens: 500,
+    totalTokens: 450,
     checkpointAt: accountNow,
     recentLogIds: ["id:102"],
-    recentLogTokens: { "id:102": 5 },
     dailyDate: "2026-07-22",
     dailyTokens: 5,
     dailyLogIds: ["id:102"],
-    dailyLogTokens: { "id:102": 5 },
   }));
-  const mutableUpdates = [];
-  let mutableTokens = 5;
-  const mutableClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath, now: () => accountNow, onUpdate: (value) => mutableUpdates.push(value) });
-  mutableClient.requestJson = async (pathname) => pathname === "/api/user/self"
+  const legacyUpdates = [];
+  const legacyClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath, now: () => accountNow, onUpdate: (value) => legacyUpdates.push(value) });
+  legacyClient.requestJson = async (pathname) => pathname === "/api/user/self"
     ? { data: { quota: 1000000, used_quota: 500000 } }
-    : { data: { page: 1, page_size: 100, total: 1, items: [{ id: 102, created_at: Math.floor(accountNow / 1000), prompt_tokens: mutableTokens, completion_tokens: 0 }] } };
-  await mutableClient.refresh();
-  assert.equal(mutableUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "500");
-  assert.equal(mutableUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "5");
-  mutableTokens = 15;
-  await mutableClient.refresh();
-  assert.equal(mutableUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "510");
-  assert.equal(mutableUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "15");
+    : { data: { page: 1, page_size: 100, total: 1, items: [{ id: 102, created_at: Math.floor(accountNow / 1000), prompt_tokens: 5, completion_tokens: 0 }] } };
+  await legacyClient.refresh();
+  assert.equal(legacyUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "500");
+
+  const baselineLog = { id: 1, created_at: Math.floor(accountNow / 1000), prompt_tokens: 2, completion_tokens: 3, quota: 10, model_name: "gpt", use_time: 50 };
+  writeFileSync(counterPath, JSON.stringify({
+    schemaVersion: 5,
+    baselineConfigured: true,
+    initialTokens: 500,
+    totalTokens: 500,
+    checkpointAt: accountNow,
+    recentLogIds: [accountLogIdentity(baselineLog)],
+    dailyDate: "2026-07-22",
+    dailyTokens: 5,
+    dailyCheckpointAt: accountNow,
+    dailyLogIds: [accountLogIdentity(baselineLog)],
+  }));
+  const immutableUpdates = [];
+  let immutableLog = baselineLog;
+  const immutableClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath, now: () => accountNow + 2000, onUpdate: (value) => immutableUpdates.push(value) });
+  immutableClient.requestJson = async (pathname) => pathname === "/api/user/self"
+    ? { data: { quota: 1000000, used_quota: 500000 } }
+    : { data: { page: 1, page_size: 100, total: 1, items: [immutableLog] } };
+  await immutableClient.refresh();
+  assert.equal(immutableUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "500");
+  immutableLog = { id: 1, created_at: Math.floor((accountNow + 1000) / 1000), prompt_tokens: 10, completion_tokens: 5, quota: 20, model_name: "gpt", use_time: 60 };
+  await immutableClient.refresh();
+  assert.equal(immutableUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "515");
+  assert.equal(immutableUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "20");
+  immutableLog = { ...immutableLog, id: 999 };
+  await immutableClient.refresh();
+  assert.equal(immutableUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "515");
+  immutableLog = { id: 1, created_at: Math.floor((accountNow + 1000) / 1000), prompt_tokens: 7, completion_tokens: 3, quota: 21, model_name: "gpt", use_time: 61 };
+  await immutableClient.refresh();
+  assert.equal(immutableUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "525");
+  assert.equal(immutableUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "30");
 } finally {
   rmSync(counterRoot, { recursive: true, force: true });
 }

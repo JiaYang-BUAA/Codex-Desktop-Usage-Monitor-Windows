@@ -8,7 +8,7 @@
   const LEGACY_USAGE_KEY = "__CODEX_DREAM_SKIN_USAGE__";
   const LEGACY_HOST_ID = "codex-dream-skin-usage";
   const LEGACY_SETTINGS_KEY = "codex-dream-skin-usage-settings-v1";
-  const REFRESH_INTERVAL_MS = 30000;
+  const REFRESH_INTERVAL_MS = 60000;
   const MAX_SELECTED_METRICS = 8;
   const MAX_MINIMAL_SELECTED_METRICS = 14;
 

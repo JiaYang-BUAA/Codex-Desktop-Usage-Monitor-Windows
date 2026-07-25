@@ -200,13 +200,13 @@ function Save-CodexUsageTokenBaseline {
     [ValidateRange(0, [long]::MaxValue)]
     [long]$CheckpointAt,
     [string[]]$RecentLogIds = @(),
-    [Collections.IDictionary]$RecentLogTokens = @{},
     [ValidatePattern('^\d{4}-\d{2}-\d{2}$')]
     [string]$DailyDate = (Get-Date -Format 'yyyy-MM-dd'),
     [ValidateRange(0, [long]::MaxValue)]
     [long]$DailyTokens = 0,
-    [string[]]$DailyLogIds = @(),
-    [Collections.IDictionary]$DailyLogTokens = @{}
+    [ValidateRange(0, [long]::MaxValue)]
+    [long]$DailyCheckpointAt = 0,
+    [string[]]$DailyLogIds = @()
   )
 
   New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
@@ -214,19 +214,16 @@ function Save-CodexUsageTokenBaseline {
   try {
     $now = (Get-Date).ToUniversalTime().ToString('o')
     $state = [ordered]@{
-      schemaVersion = 4
+      schemaVersion = 5
       baselineConfigured = $true
-      baselineSnapshotComplete = $true
-      tokenDeltaTracking = $true
       initialTokens = $InitialTokens
       totalTokens = $InitialTokens
       checkpointAt = $CheckpointAt
       recentLogIds = @($RecentLogIds | Where-Object { $_ } | Select-Object -Last 100000)
-      recentLogTokens = $RecentLogTokens
       dailyDate = $DailyDate
       dailyTokens = $DailyTokens
+      dailyCheckpointAt = $DailyCheckpointAt
       dailyLogIds = @($DailyLogIds | Where-Object { $_ } | Select-Object -Last 100000)
-      dailyLogTokens = $DailyLogTokens
       configuredAt = $now
       updatedAt = $now
     }
@@ -240,7 +237,7 @@ function Save-CodexUsageTokenBaseline {
 function Get-CodexUsageTokenBaseline {
   if (-not (Test-Path -LiteralPath $CodexUsageAccountCounterPath -PathType Leaf)) { return $null }
   $state = Get-Content -LiteralPath $CodexUsageAccountCounterPath -Raw | ConvertFrom-Json
-  if ($state.schemaVersion -notin @(1, 2, 3, 4) -or [long]$state.totalTokens -lt 0 -or [long]$state.checkpointAt -lt 0) {
+  if ($state.schemaVersion -notin @(1, 2, 3, 4, 5) -or [long]$state.totalTokens -lt 0 -or [long]$state.checkpointAt -lt 0) {
     throw '累计 Token 初始值配置格式无效，请重新配置。'
   }
   if ($state.schemaVersion -ge 2 -and ($state.dailyDate -notmatch '^\d{4}-\d{2}-\d{2}$' -or [long]$state.dailyTokens -lt 0)) {

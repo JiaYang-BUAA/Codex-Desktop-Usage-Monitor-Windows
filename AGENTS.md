@@ -39,6 +39,9 @@ data sources after the launcher has been verified:
    The same counter file stores a date-scoped, deduplicated daily Token total;
    preserve it when reinstalling or updating so a Codex/Windows restart does not
    reset the current day's value.
+   When upgrading from version 1.7.0 or earlier, ask for the current real cumulative
+   Token value and run the baseline command again because the older row-ID ledger
+   cannot be repaired automatically.
 5. If an API Account or API Key response does not match the example schema, inspect
    the documented/sanitized response shape without exposing credentials. Adapt the
    local account normalization/request mapping or the local Provider JSON selectors,

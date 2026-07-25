@@ -52,10 +52,10 @@ window.Element.prototype.getBoundingClientRect = function getBoundingClientRect(
 const now = Date.now();
 const usage = {
   schemaVersion: 2,
-  nextRefreshAt: now + 30000,
+  nextRefreshAt: now + 60000,
   sources: {
     official: {
-      id: "official", label: "官方订阅", accountType: "subscription", status: "ready", nextRefreshAt: now + 30000,
+      id: "official", label: "官方订阅", accountType: "subscription", status: "ready", nextRefreshAt: now + 60000,
       metrics: [
         { id: "primaryRemaining", label: "周期剩余", display: "剩余 75%", value: "75%", defaultVisible: true },
         { id: "primaryReset", label: "周期重置", display: "重置 2天后", value: "2天后", defaultVisible: false },
@@ -64,7 +64,7 @@ const usage = {
       ],
     },
     "api-account": {
-      id: "api-account", label: "API 账户", accountType: "api-account", status: "loading", nextRefreshAt: now + 30000,
+      id: "api-account", label: "API 账户", accountType: "api-account", status: "loading", nextRefreshAt: now + 60000,
       metrics: [
         { id: "balance", label: "账户余额", value: "¥20", display: "余额 ¥20", defaultVisible: true },
         { id: "usedQuota", label: "累计已用额度", value: "¥8", display: "已用 ¥8" },
@@ -79,7 +79,7 @@ const usage = {
       ],
     },
     acme: {
-      id: "acme", label: "Acme API", accountType: "api-key", status: "error", error: "request failed", nextRefreshAt: now + 30000,
+      id: "acme", label: "Acme API", accountType: "api-key", status: "error", error: "request failed", nextRefreshAt: now + 60000,
       metrics: [
         { id: "usedAmount", label: "已用额度", value: "¥5", display: "已用 ¥5", defaultVisible: true },
         { id: "quotaLimit", label: "限额", value: "不限", display: "限额 不限", defaultVisible: true },
@@ -204,18 +204,18 @@ try {
   let ringNow = realDateNow();
   window.Date.now = () => ringNow;
   const firstCycleUsage = structuredClone(usage);
-  firstCycleUsage.nextRefreshAt = ringNow + 30000;
+  firstCycleUsage.nextRefreshAt = ringNow + 60000;
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(firstCycleUsage), true);
-  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "0deg");
-  ringNow += 15000;
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(firstCycleUsage), true);
-  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "180deg");
-  ringNow += 15000;
-  const reverseCycleUsage = structuredClone(usage);
-  reverseCycleUsage.nextRefreshAt = ringNow + 30000;
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(reverseCycleUsage), true);
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "0deg");
   ringNow += 30000;
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(firstCycleUsage), true);
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "180deg");
+  ringNow += 30000;
+  const reverseCycleUsage = structuredClone(usage);
+  reverseCycleUsage.nextRefreshAt = ringNow + 60000;
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(reverseCycleUsage), true);
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "0deg");
+  ringNow += 60000;
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(reverseCycleUsage), true);
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "360deg");
   window.Date.now = realDateNow;
