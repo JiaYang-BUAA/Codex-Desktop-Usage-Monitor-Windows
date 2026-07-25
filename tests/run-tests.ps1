@@ -115,10 +115,10 @@ foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-col
 if ($readme -match '(?m)^#{2,}\s+[\d.]*\s*界面预览\s*$') { throw 'README preview should be an unnumbered introduction.' }
 $briefInstallAt = $readme.IndexOf('## 1. 简要安装说明')
 $previewAt = $readme.IndexOf('docs/images/monitor-expanded.png')
-$dataSourceAt = $readme.IndexOf('### 1.2 选择数据源并配置')
+$dataSourceAt = $readme.IndexOf('### 1.3 选择数据源并配置')
 $codexHelpAt = $readme.IndexOf('如果不懂如何运行下面的命令')
 $officialSourceAt = $readme.IndexOf('- 官方订阅：数据来自')
-$expandedViewAt = $readme.IndexOf('### 1.3 展开监视栏查看和勾选')
+$expandedViewAt = $readme.IndexOf('### 1.4 展开监视栏查看和勾选')
 if ($previewAt -lt 0 -or $briefInstallAt -lt 0 -or $previewAt -ge $briefInstallAt) { throw 'README preview must appear before the brief installation section.' }
 if ($dataSourceAt -lt 0 -or $codexHelpAt -le $dataSourceAt -or $officialSourceAt -le $codexHelpAt -or $expandedViewAt -le $officialSourceAt) { throw 'README Codex help note must follow the data-source heading and precede its commands.' }
 
