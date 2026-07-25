@@ -10,7 +10,7 @@ const CCTQ_DEFAULT_BASE_URL = "https://www.cctq.ai";
 const CCTQ_ACCOUNT_PAGE_SIZE = 1000;
 const CCTQ_ACCOUNT_MAX_PAGES = 100;
 const CCTQ_ACCOUNT_MAX_LOG_IDS = CCTQ_ACCOUNT_PAGE_SIZE * CCTQ_ACCOUNT_MAX_PAGES;
-const ACCOUNT_COUNTER_SCHEMA_VERSION = 2;
+const ACCOUNT_COUNTER_SCHEMA_VERSION = 4;
 const CCTQ_PROVIDER = Object.freeze({
   schemaVersion: 1,
   id: "cctq",
@@ -464,21 +464,43 @@ function resolveAccountCounterPath(explicit) {
     : null;
 }
 
+function normalizeLogTokenMap(value) {
+  const entries = value && typeof value === "object" && !Array.isArray(value)
+    ? Object.entries(value)
+    : [];
+  return Object.fromEntries(entries
+    .filter(([identity, tokens]) => typeof identity === "string" && identity.length <= 512 && Number.isSafeInteger(tokens) && tokens >= 0)
+    .slice(-CCTQ_ACCOUNT_MAX_LOG_IDS));
+}
+
+function setLogToken(map, identity, tokens) {
+  if (Object.hasOwn(map, identity)) delete map[identity];
+  map[identity] = tokens;
+}
+
+function trimLogTokenMap(map) {
+  return Object.fromEntries(Object.entries(map).slice(-CCTQ_ACCOUNT_MAX_LOG_IDS));
+}
+
 function loadAccountCounter(counterPath) {
   if (!counterPath || !existsSync(counterPath)) return null;
   try {
     const value = JSON.parse(readFileSync(counterPath, "utf8"));
-    if (![1, ACCOUNT_COUNTER_SCHEMA_VERSION].includes(value?.schemaVersion) || !Number.isSafeInteger(value.totalTokens) || value.totalTokens < 0) return null;
+    if (![1, 2, 3, ACCOUNT_COUNTER_SCHEMA_VERSION].includes(value?.schemaVersion) || !Number.isSafeInteger(value.totalTokens) || value.totalTokens < 0) return null;
     return {
       schemaVersion: ACCOUNT_COUNTER_SCHEMA_VERSION,
       baselineConfigured: value.schemaVersion === 1 ? true : value.baselineConfigured !== false,
+      baselineSnapshotComplete: value.schemaVersion >= 3 && value.baselineSnapshotComplete === true,
+      tokenDeltaTracking: value.schemaVersion >= 4 && value.tokenDeltaTracking === true,
       initialTokens: Number.isSafeInteger(value.initialTokens) && value.initialTokens >= 0 ? value.initialTokens : value.totalTokens,
       totalTokens: value.totalTokens,
       checkpointAt: Number.isFinite(Number(value.checkpointAt)) ? Number(value.checkpointAt) : 0,
-      recentLogIds: Array.isArray(value.recentLogIds) ? value.recentLogIds.filter((item) => typeof item === "string").slice(-2000) : [],
+      recentLogIds: Array.isArray(value.recentLogIds) ? value.recentLogIds.filter((item) => typeof item === "string").slice(-CCTQ_ACCOUNT_MAX_LOG_IDS) : [],
+      recentLogTokens: normalizeLogTokenMap(value.recentLogTokens),
       dailyDate: typeof value.dailyDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.dailyDate) ? value.dailyDate : null,
       dailyTokens: Number.isSafeInteger(value.dailyTokens) && value.dailyTokens >= 0 ? value.dailyTokens : 0,
       dailyLogIds: Array.isArray(value.dailyLogIds) ? value.dailyLogIds.filter((item) => typeof item === "string").slice(-CCTQ_ACCOUNT_MAX_LOG_IDS) : [],
+      dailyLogTokens: normalizeLogTokenMap(value.dailyLogTokens),
       configuredAt: typeof value.configuredAt === "string" ? value.configuredAt : null,
       updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : null,
     };
@@ -705,7 +727,7 @@ export class ApiAccountUsageClient {
     this.stopped = true;
     this.cachedLogs = [];
     this.fullLogsLoaded = false;
-    this.nextLogPage = 1;
+    this.nextLogPage = 2;
     this.view = normalizeApiAccountView(null, [], { refreshMs });
   }
 
@@ -717,25 +739,32 @@ export class ApiAccountUsageClient {
       this.counter = {
         schemaVersion: ACCOUNT_COUNTER_SCHEMA_VERSION,
         baselineConfigured: false,
+        baselineSnapshotComplete: false,
+        tokenDeltaTracking: true,
         initialTokens: 0,
         totalTokens: 0,
         checkpointAt: 0,
         recentLogIds: [],
+        recentLogTokens: {},
         dailyDate: today,
         dailyTokens: 0,
         dailyLogIds: [],
+        dailyLogTokens: {},
         configuredAt: nowIso,
         updatedAt: nowIso,
       };
     }
     const recent = new Set(this.counter.recentLogIds);
+    const recentLogTokens = { ...this.counter.recentLogTokens };
     let dailyRecent = new Set(this.counter.dailyLogIds);
+    let dailyLogTokens = { ...this.counter.dailyLogTokens };
     let checkpointAt = this.counter.checkpointAt;
     let totalTokens = this.counter.totalTokens;
     let dailyTokens = this.counter.dailyTokens;
     let changed = this.counter.schemaVersion !== ACCOUNT_COUNTER_SCHEMA_VERSION;
     if (this.counter.dailyDate !== today) {
       dailyRecent = new Set();
+      dailyLogTokens = {};
       dailyTokens = 0;
       changed = true;
     }
@@ -745,18 +774,49 @@ export class ApiAccountUsageClient {
       if (!timestamp) continue;
       const identity = accountLogIdentity(item);
       const tokens = Math.max(0, Number(item?.prompt_tokens) || 0) + Math.max(0, Number(item?.completion_tokens) || 0);
-      if (localDateKey(timestamp) === today && !dailyRecent.has(identity)) {
-        dailyTokens += tokens;
-        dailyRecent.add(identity);
-        changed = true;
+      if (localDateKey(timestamp) === today) {
+        if (this.counter.tokenDeltaTracking) {
+          if (Object.hasOwn(dailyLogTokens, identity)) {
+            const delta = tokens - dailyLogTokens[identity];
+            if (delta !== 0) {
+              dailyTokens = Math.max(0, dailyTokens + delta);
+              changed = true;
+            }
+          } else if (!dailyRecent.has(identity)) {
+            dailyTokens += tokens;
+            changed = true;
+          }
+          if (!Object.hasOwn(dailyLogTokens, identity) || dailyLogTokens[identity] !== tokens) setLogToken(dailyLogTokens, identity, tokens);
+          dailyRecent.add(identity);
+        } else if (!dailyRecent.has(identity)) {
+          dailyTokens += tokens;
+          dailyRecent.add(identity);
+          changed = true;
+        }
       }
-      const shouldCountCumulative = !recent.has(identity) && (!this.counter.baselineConfigured || timestamp >= checkpointAt);
-      if (shouldCountCumulative) {
-        totalTokens += tokens;
-        checkpointAt = Math.max(checkpointAt, timestamp);
-        recent.add(identity);
-        changed = true;
+      if (this.counter.tokenDeltaTracking && Object.hasOwn(recentLogTokens, identity)) {
+        const delta = tokens - recentLogTokens[identity];
+        if (delta !== 0) {
+          totalTokens = Math.max(0, totalTokens + delta);
+          changed = true;
+        }
+        if (delta !== 0) setLogToken(recentLogTokens, identity, tokens);
+      } else {
+        const shouldCountCumulative = !recent.has(identity) && (
+          !this.counter.baselineConfigured
+          || this.counter.baselineSnapshotComplete
+          || timestamp >= checkpointAt
+        );
+        if (shouldCountCumulative) {
+          totalTokens += tokens;
+          changed = true;
+        }
+        if (this.counter.tokenDeltaTracking && (!recent.has(identity) || !Object.hasOwn(recentLogTokens, identity))) {
+          setLogToken(recentLogTokens, identity, tokens);
+        }
       }
+      checkpointAt = Math.max(checkpointAt, timestamp);
+      recent.add(identity);
     }
     if (changed) {
       this.counter = {
@@ -764,10 +824,12 @@ export class ApiAccountUsageClient {
         schemaVersion: ACCOUNT_COUNTER_SCHEMA_VERSION,
         totalTokens,
         checkpointAt,
-        recentLogIds: [...recent].slice(-(this.counter.baselineConfigured ? 2000 : CCTQ_ACCOUNT_MAX_LOG_IDS)),
+        recentLogIds: [...recent].slice(-CCTQ_ACCOUNT_MAX_LOG_IDS),
+        recentLogTokens: trimLogTokenMap(recentLogTokens),
         dailyDate: today,
         dailyTokens,
         dailyLogIds: [...dailyRecent].slice(-CCTQ_ACCOUNT_MAX_LOG_IDS),
+        dailyLogTokens: trimLogTokenMap(dailyLogTokens),
         updatedAt: nowIso,
       };
       saveAccountCounter(this.counterPath, this.counter);
@@ -808,24 +870,43 @@ export class ApiAccountUsageClient {
   }
 
   async readLogs() {
-    const requestedPage = this.fullLogsLoaded ? 1 : this.nextLogPage;
-    const response = await this.requestJson("/api/log/self", { p: requestedPage, size: CCTQ_ACCOUNT_PAGE_SIZE });
+    const response = await this.requestJson("/api/log/self", { p: 1, size: CCTQ_ACCOUNT_PAGE_SIZE });
     const data = response?.data && typeof response.data === "object" ? response.data : response;
     const items = Array.isArray(data?.items) ? [...data.items] : [];
     const total = Math.max(items.length, Number(data?.total) || 0);
     const pageSize = Math.max(1, Number(data?.page_size) || CCTQ_ACCOUNT_PAGE_SIZE);
     const pageCount = Math.ceil(total / pageSize);
     const availablePages = Math.min(pageCount, CCTQ_ACCOUNT_MAX_PAGES);
-    if (!this.fullLogsLoaded) {
-      const currentPage = Math.max(1, Number(data?.page) || requestedPage);
-      if (!items.length || currentPage >= availablePages) {
-        this.fullLogsLoaded = true;
-        this.nextLogPage = 1;
-      } else {
-        this.nextLogPage = currentPage + 1;
+    let historyFailed = false;
+    if (availablePages <= 1) {
+      this.fullLogsLoaded = true;
+      this.nextLogPage = 2;
+    } else {
+      const requestedHistoryPage = Math.min(Math.max(2, this.nextLogPage), availablePages);
+      try {
+        const historyResponse = await this.requestJson("/api/log/self", { p: requestedHistoryPage, size: CCTQ_ACCOUNT_PAGE_SIZE });
+        const historyData = historyResponse?.data && typeof historyResponse.data === "object" ? historyResponse.data : historyResponse;
+        const historyItems = Array.isArray(historyData?.items) ? historyData.items : [];
+        items.push(...historyItems);
+        const currentPage = Math.max(2, Number(historyData?.page) || requestedHistoryPage);
+        if (!historyItems.length || currentPage >= availablePages) {
+          this.fullLogsLoaded = true;
+          this.nextLogPage = 2;
+        } else {
+          this.nextLogPage = currentPage + 1;
+        }
+      } catch {
+        historyFailed = true;
+        if (this.nextLogPage > availablePages) this.nextLogPage = 2;
       }
     }
-    return { items, truncated: !this.fullLogsLoaded || pageCount > CCTQ_ACCOUNT_MAX_PAGES };
+    if (!items.length) {
+      if (availablePages <= 1) {
+        this.fullLogsLoaded = true;
+        this.nextLogPage = 2;
+      }
+    }
+    return { items, truncated: historyFailed || !this.fullLogsLoaded || pageCount > CCTQ_ACCOUNT_MAX_PAGES };
   }
 
   async refresh() {

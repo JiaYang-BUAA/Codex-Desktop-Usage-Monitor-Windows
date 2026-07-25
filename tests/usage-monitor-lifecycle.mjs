@@ -12,7 +12,7 @@ const composerMarkup = (withApproval = true) => `
   <div class="composer-surface-chrome" style="position: relative">
     <div contenteditable="true"></div>
     <button aria-label="添加文件等内容"></button>
-    ${withApproval ? '<button style="color: rgb(70, 80, 90)">替我审批</button>' : ""}
+    ${withApproval ? '<button style="color: rgb(70, 80, 90); font-size: 14px">替我审批</button>' : ""}
     <button>5.6 Sol 极高</button>
     <button aria-label="听写"></button>
     <button aria-label="发送"></button>
@@ -97,6 +97,7 @@ try {
   assert.equal(host.parentElement.id, "composer-wrapper");
   assert.equal(host.dataset.anchor, "approval");
   assert.equal(host.style.getPropertyValue("--usage-color"), "rgb(70, 80, 90)");
+  assert.equal(host.style.getPropertyValue("--usage-font-size"), "14px");
   assert.equal(host.shadowRoot.querySelector(".usage-dot"), null);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /\.usage-source-switch/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /ready[^}]+#22c55e/);
@@ -112,9 +113,16 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-detail-select input\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?width:\s*13px;[\s\S]*?height:\s*13px;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-popover-footer/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /:host\(\[data-density="(?:dense|packed)"\]\)\s*\{[^}]*font-size/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /:host\(\[data-density="dense"\]\) \.usage-summary\s*\{[^}]*font-size:\s*10px;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-summary\s*\{[\s\S]*?font-size:\s*var\(--usage-font-size,\s*11px\);/);
+  assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /:host\(\[data-density="(?:dense|packed)"\]\) \.usage-summary\s*\{[^}]*font-size/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-summary-items\s*\{[^}]*height:\s*100%;[^}]*line-height:\s*1;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-summary-item\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*height:\s*100%;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /data-density="packed"[^}]+\.usage-summary-item:nth-child\(2\)\s*\{\s*padding-left:\s*0;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /data-density="packed"[^}]+\.usage-summary-item:nth-child\(2\)::before\s*\{\s*display:\s*none;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-switches\s*\{[\s\S]*?display:\s*flex;/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring\s*\{[\s\S]*?conic-gradient[\s\S]*?#86efac/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring\s*\{[\s\S]*?top:\s*0;[\s\S]*?width:\s*13px;[\s\S]*?border:\s*1\.5px solid currentColor;[\s\S]*?background:\s*transparent;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring::before\s*\{[\s\S]*?top:\s*-3px;[\s\S]*?width:\s*3px;[\s\S]*?height:\s*3px;[\s\S]*?background:\s*currentColor/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring::after\s*\{[\s\S]*?width:\s*1\.5px;[\s\S]*?height:\s*calc\(50% \+ \.5px\);[\s\S]*?background:\s*#22c55e;[\s\S]*?transform:\s*rotate\(var\(--usage-refresh-progress\)\);[\s\S]*?transform-origin:\s*50% 100%;/);
 
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
@@ -155,17 +163,32 @@ try {
   host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).minimalMode, true);
   assert.equal(host.dataset.density, "normal");
+  assert.equal(host.shadowRoot.querySelector(".usage-column-meta span:first-child").textContent, "极简最多 14 项");
   assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "2天", "¥20", "¥5", "不限"]);
-  host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="totalTokens"]').click();
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 6);
-  assert.equal(host.dataset.density, "normal");
-  host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="todayTokens"]').click();
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
-  assert.equal(host.dataset.density, "packed");
-  for (const selector of [
-    'input[data-source="api-account"][data-metric="todayTokens"]',
+  const minimalExtraSelectors = [
+    'input[data-source="official"][data-metric="todayTokens"]',
+    'input[data-source="official"][data-metric="lifetimeTokens"]',
     'input[data-source="api-account"][data-metric="totalTokens"]',
-  ]) {
+    'input[data-source="api-account"][data-metric="todayTokens"]',
+    'input[data-source="api-account"][data-metric="usedQuota"]',
+    'input[data-source="api-account"][data-metric="lastQuota"]',
+    'input[data-source="api-account"][data-metric="lastModel"]',
+    'input[data-source="api-account"][data-metric="lastRequestAt"]',
+    'input[data-source="api-account"][data-metric="lastLatency"]',
+  ];
+  for (const [index, selector] of minimalExtraSelectors.entries()) {
+    host.shadowRoot.querySelector(selector).click();
+    if (index === 2) assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 8);
+    if (index === 2) assert.equal(host.dataset.density, "normal");
+  }
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 14);
+  assert.equal(host.dataset.density, "packed");
+  const fifteenth = host.shadowRoot.querySelector('input[data-source="acme"][data-metric="expiresAt"]');
+  assert.equal(fifteenth.disabled, true);
+  fifteenth.checked = true;
+  fifteenth.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 14);
+  for (const selector of minimalExtraSelectors) {
     const input = host.shadowRoot.querySelector(selector);
     input.checked = false;
     input.dispatchEvent(new window.Event("change", { bubbles: true }));
@@ -177,11 +200,25 @@ try {
   host.shadowRoot.querySelector('input[data-setting="countdownVisualization"]').click();
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).countdownVisualization, true);
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, false);
-  const halfCycleUsage = structuredClone(usage);
-  halfCycleUsage.nextRefreshAt = Date.now() + 15000;
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(halfCycleUsage), true);
-  const ringDegrees = Number.parseFloat(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"));
-  assert.ok(ringDegrees >= 175 && ringDegrees <= 185);
+  const realDateNow = window.Date.now;
+  let ringNow = realDateNow();
+  window.Date.now = () => ringNow;
+  const firstCycleUsage = structuredClone(usage);
+  firstCycleUsage.nextRefreshAt = ringNow + 30000;
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(firstCycleUsage), true);
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "0deg");
+  ringNow += 15000;
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(firstCycleUsage), true);
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "180deg");
+  ringNow += 15000;
+  const reverseCycleUsage = structuredClone(usage);
+  reverseCycleUsage.nextRefreshAt = ringNow + 30000;
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(reverseCycleUsage), true);
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "0deg");
+  ringNow += 30000;
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(reverseCycleUsage), true);
+  assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "360deg");
+  window.Date.now = realDateNow;
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
 
   const densityToggle = host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]');

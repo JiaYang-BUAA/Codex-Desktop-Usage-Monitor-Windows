@@ -242,31 +242,32 @@ try {
   accountClient.requestJson = async (pathname, query) => {
     if (pathname === "/api/user/self") return { data: { quota: 1000000, used_quota: 500000 } };
     requestedLogPages.push(query.p);
-    if (query.p === 1) return { data: { total: 101, page_size: 100, items: [{ id: 1, created_at: Math.floor(accountNow / 1000), prompt_tokens: 2, completion_tokens: 3 }] } };
-    return { data: { total: 101, page_size: 100, items: [{ id: 2, created_at: Math.floor(accountNow / 1000) - 1, prompt_tokens: 5, completion_tokens: 7 }] } };
+    if (query.p === 1) return { data: { total: 201, page_size: 100, items: [{ id: 1, created_at: Math.floor(accountNow / 1000), prompt_tokens: 2, completion_tokens: 3 }] } };
+    if (query.p === 2) return { data: { page: 2, total: 201, page_size: 100, items: [{ id: 2, created_at: Math.floor(accountNow / 1000) - 1, prompt_tokens: 5, completion_tokens: 7 }] } };
+    return { data: { page: 3, total: 201, page_size: 100, items: [{ id: 3, created_at: Math.floor(accountNow / 1000) - 2, prompt_tokens: 11, completion_tokens: 8 }] } };
   };
   await accountClient.refresh();
   assert.equal(accountUpdates.at(-1).status, "ready");
-  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "5");
-  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "5");
-  assert.match(accountUpdates.at(-1).error, /最近 1 条日志/);
-  assert.equal(accountUpdates.at(-1).nextRefreshAt - accountUpdates.at(-1).fetchedAt, 30000);
-  assert.deepEqual(requestedLogPages, [1]);
-  await accountClient.refresh();
-  assert.deepEqual(requestedLogPages, [1, 2]);
   assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "17");
   assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "17");
+  assert.match(accountUpdates.at(-1).error, /最近 2 条日志/);
+  assert.equal(accountUpdates.at(-1).nextRefreshAt - accountUpdates.at(-1).fetchedAt, 30000);
+  assert.deepEqual(requestedLogPages, [1, 2]);
+  await accountClient.refresh();
+  assert.deepEqual(requestedLogPages, [1, 2, 1, 3]);
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "36");
   assert.equal(accountUpdates.at(-1).error, null);
   await accountClient.refresh();
-  assert.deepEqual(requestedLogPages, [1, 2, 1]);
-  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "17");
+  assert.deepEqual(requestedLogPages, [1, 2, 1, 3, 1, 2]);
+  assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
 
   const restartedUpdates = [];
   const restartedClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath: automaticCounterPath, now: () => accountNow, onUpdate: (value) => restartedUpdates.push(value) });
   restartedClient.requestJson = accountClient.requestJson;
   await restartedClient.refresh();
-  assert.equal(restartedUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "17");
-  assert.equal(restartedUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "17");
+  assert.equal(restartedUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "36");
+  assert.equal(restartedUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
 } finally {
   rmSync(automaticCounterRoot, { recursive: true, force: true });
 }
@@ -294,7 +295,7 @@ try {
   assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "505");
   assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "5");
   const migratedCounter = JSON.parse(readFileSync(counterPath, "utf8"));
-  assert.equal(migratedCounter.schemaVersion, 2);
+  assert.equal(migratedCounter.schemaVersion, 4);
   assert.equal(migratedCounter.dailyTokens, 5);
   await counterClient.refresh();
   assert.equal(counterUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "505");
@@ -308,6 +309,55 @@ try {
   const nextDayCounter = JSON.parse(readFileSync(counterPath, "utf8"));
   assert.equal(nextDayCounter.dailyTokens, 18);
   assert.equal(nextDayCounter.dailyLogIds.length, 1);
+
+  writeFileSync(counterPath, JSON.stringify({
+    schemaVersion: 3,
+    baselineConfigured: true,
+    baselineSnapshotComplete: true,
+    initialTokens: 500,
+    totalTokens: 500,
+    checkpointAt: accountNow + 60000,
+    recentLogIds: [],
+    dailyDate: "2026-07-22",
+    dailyTokens: 0,
+    dailyLogIds: [],
+  }));
+  const delayedUpdates = [];
+  const delayedClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath, now: () => accountNow, onUpdate: (value) => delayedUpdates.push(value) });
+  delayedClient.requestJson = async (pathname) => pathname === "/api/user/self"
+    ? { data: { quota: 1000000, used_quota: 500000 } }
+    : { data: { page: 1, page_size: 100, total: 1, items: [{ id: 101, created_at: Math.floor(accountNow / 1000), prompt_tokens: 2, completion_tokens: 3 }] } };
+  await delayedClient.refresh();
+  assert.equal(delayedUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "505");
+
+  writeFileSync(counterPath, JSON.stringify({
+    schemaVersion: 4,
+    baselineConfigured: true,
+    baselineSnapshotComplete: true,
+    tokenDeltaTracking: true,
+    initialTokens: 500,
+    totalTokens: 500,
+    checkpointAt: accountNow,
+    recentLogIds: ["id:102"],
+    recentLogTokens: { "id:102": 5 },
+    dailyDate: "2026-07-22",
+    dailyTokens: 5,
+    dailyLogIds: ["id:102"],
+    dailyLogTokens: { "id:102": 5 },
+  }));
+  const mutableUpdates = [];
+  let mutableTokens = 5;
+  const mutableClient = new ApiAccountUsageClient({ token: "account-token", userId: "10530", counterPath, now: () => accountNow, onUpdate: (value) => mutableUpdates.push(value) });
+  mutableClient.requestJson = async (pathname) => pathname === "/api/user/self"
+    ? { data: { quota: 1000000, used_quota: 500000 } }
+    : { data: { page: 1, page_size: 100, total: 1, items: [{ id: 102, created_at: Math.floor(accountNow / 1000), prompt_tokens: mutableTokens, completion_tokens: 0 }] } };
+  await mutableClient.refresh();
+  assert.equal(mutableUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "500");
+  assert.equal(mutableUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "5");
+  mutableTokens = 15;
+  await mutableClient.refresh();
+  assert.equal(mutableUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "510");
+  assert.equal(mutableUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "15");
 } finally {
   rmSync(counterRoot, { recursive: true, force: true });
 }

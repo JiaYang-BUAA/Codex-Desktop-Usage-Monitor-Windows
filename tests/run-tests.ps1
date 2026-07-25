@@ -109,7 +109,7 @@ foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsA
   if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }
 }
 $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw
-foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '30 秒', '有限页数', '极简模式', '倒计时可视化', '环形进度条')) {
+foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '30 秒', '有限页数', '极简模式', '倒计时可视化', '圆形表盘')) {
   if ($readme -notmatch [regex]::Escape($requiredReadmeText)) { throw "README installation guidance is missing: $requiredReadmeText" }
 }
 if ($readme -match '(?m)^#{2,}\s+[\d.]*\s*界面预览\s*$') { throw 'README preview should be an unnumbered introduction.' }

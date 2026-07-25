@@ -58,12 +58,14 @@ try {
   Remove-CodexUsagePersistedAccount
   if (Test-CodexUsagePersistedAccount) { throw 'Persisted account files were not removed.' }
   Save-CodexUsageTokenBaseline -InitialTokens 500000000 -CheckpointAt 1784892000000 -RecentLogIds @('id:1', 'id:2') `
-    -DailyDate '2026-07-24' -DailyTokens 125000 -DailyLogIds @('id:10', 'id:11')
+    -RecentLogTokens ([ordered]@{ 'id:1' = 100; 'id:2' = 200 }) -DailyDate '2026-07-24' -DailyTokens 125000 `
+    -DailyLogIds @('id:10', 'id:11') -DailyLogTokens ([ordered]@{ 'id:10' = 50000; 'id:11' = 75000 })
   $baseline = Get-CodexUsageTokenBaseline
   if ([long]$baseline.totalTokens -ne 500000000 -or [long]$baseline.checkpointAt -ne 1784892000000) { throw 'Token baseline round-trip returned incorrect data.' }
-  if ($baseline.schemaVersion -ne 2 -or -not $baseline.baselineConfigured -or $baseline.dailyDate -ne '2026-07-24' -or [long]$baseline.dailyTokens -ne 125000) { throw 'Daily Token state round-trip returned incorrect data.' }
+  if ($baseline.schemaVersion -ne 4 -or -not $baseline.baselineConfigured -or -not $baseline.baselineSnapshotComplete -or -not $baseline.tokenDeltaTracking -or $baseline.dailyDate -ne '2026-07-24' -or [long]$baseline.dailyTokens -ne 125000) { throw 'Daily Token state round-trip returned incorrect data.' }
   if (@($baseline.recentLogIds).Count -ne 2) { throw 'Token baseline checkpoint IDs were not saved.' }
   if (@($baseline.dailyLogIds).Count -ne 2) { throw 'Daily Token log IDs were not saved.' }
+  if ([long]$baseline.recentLogTokens.'id:2' -ne 200 -or [long]$baseline.dailyLogTokens.'id:11' -ne 75000) { throw 'Per-log Token snapshots were not saved.' }
   Remove-CodexUsageTokenBaseline
   if (Test-Path -LiteralPath $CodexUsageAccountCounterPath) { throw 'Token baseline was not removed.' }
   Write-Host 'PASS: DPAPI API provider and API account persistence, import, plaintext protection, and cleanup.'

@@ -10,6 +10,7 @@
   const LEGACY_SETTINGS_KEY = "codex-dream-skin-usage-settings-v1";
   const REFRESH_INTERVAL_MS = 30000;
   const MAX_SELECTED_METRICS = 8;
+  const MAX_MINIMAL_SELECTED_METRICS = 14;
 
   const previousUsage = window[STATE_KEY]?.usage || window[USAGE_KEY] || window[LEGACY_STATE_KEY]?.usage || window[LEGACY_THEME_STATE_KEY]?.usage || window[LEGACY_USAGE_KEY] || null;
   try { window[STATE_KEY]?.cleanup?.(); } catch {}
@@ -333,14 +334,14 @@
       cursor: pointer;
       white-space: nowrap;
       overflow: hidden;
-      font-size: 11px;
+      font-size: var(--usage-font-size, 11px);
     }
     .usage-summary:hover, .usage-summary:focus-visible {
       background: color-mix(in srgb, currentColor 10%, transparent);
       outline: none;
     }
-    .usage-summary-items { display: flex; align-items: center; min-width: 0; max-width: 100%; gap: 0; overflow: hidden; }
-    .usage-summary-item { position: relative; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .usage-summary-items { display: flex; align-items: center; min-width: 0; max-width: 100%; height: 100%; gap: 0; overflow: hidden; line-height: 1; }
+    .usage-summary-item { position: relative; display: inline-flex; align-items: center; min-width: 0; height: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .usage-summary-item + .usage-summary-item { padding-left: 13px; }
     .usage-summary-item + .usage-summary-item::before {
       content: "";
@@ -357,29 +358,49 @@
       --usage-refresh-progress: 0deg;
       box-sizing: border-box;
       position: relative;
-      width: 15px;
-      height: 15px;
+      top: 0;
+      width: 13px;
+      height: 13px;
       margin-right: 6px;
-      flex: 0 0 15px;
+      flex: 0 0 13px;
+      border: 1.5px solid currentColor;
       border-radius: 50%;
-      background: conic-gradient(from -90deg, #86efac var(--usage-refresh-progress), color-mix(in srgb, currentColor 13%, transparent) 0deg);
+      background: transparent;
+    }
+    .usage-refresh-ring::before {
+      content: "";
+      position: absolute;
+      top: -3px;
+      left: 50%;
+      width: 3px;
+      height: 3px;
+      border-radius: 1px 1px 0 0;
+      background: currentColor;
+      transform: translateX(-50%);
     }
     .usage-refresh-ring::after {
       content: "";
       position: absolute;
-      inset: 3px;
-      border-radius: 50%;
-      background: var(--usage-surface, Canvas);
+      left: calc(50% - .75px);
+      bottom: 50%;
+      width: 1.5px;
+      height: calc(50% + .5px);
+      border-radius: 1px;
+      background: #22c55e;
+      transform: rotate(var(--usage-refresh-progress));
+      transform-origin: 50% 100%;
     }
-    :host([data-density="dense"]) .usage-summary { padding-inline: 6px; font-size: 10px; }
-    :host([data-density="dense"]) .usage-refresh-ring { width: 13px; height: 13px; margin-right: 4px; flex-basis: 13px; }
+    :host([data-density="dense"]) .usage-summary { padding-inline: 6px; }
+    :host([data-density="dense"]) .usage-refresh-ring { width: 12px; height: 12px; margin-right: 4px; flex-basis: 12px; }
     :host([data-density="dense"]) .usage-summary-item + .usage-summary-item { padding-left: 7px; }
     :host([data-density="dense"]) .usage-summary-item + .usage-summary-item::before { left: 3px; height: 13px; }
-    :host([data-density="packed"]) .usage-summary { height: 30px; padding: 2px 5px; font-size: 9px; }
-    :host([data-density="packed"]) .usage-refresh-ring { width: 12px; height: 12px; margin-right: 3px; flex-basis: 12px; }
-    :host([data-density="packed"]) .usage-summary-items { display: grid; grid-template-rows: repeat(2, minmax(0, 1fr)); grid-auto-flow: column; align-items: center; line-height: 1.05; }
+    :host([data-density="packed"]) .usage-summary { height: 30px; padding: 2px 5px; }
+    :host([data-density="packed"]) .usage-refresh-ring { width: 11px; height: 11px; margin-right: 3px; flex-basis: 11px; }
+    :host([data-density="packed"]) .usage-summary-items { display: grid; grid-template-rows: repeat(2, minmax(0, 1fr)); grid-auto-flow: column; align-items: stretch; line-height: 1; }
     :host([data-density="packed"]) .usage-summary-item + .usage-summary-item { padding-left: 5px; }
     :host([data-density="packed"]) .usage-summary-item + .usage-summary-item::before { left: 2px; height: 12px; }
+    :host([data-density="packed"]) .usage-summary-item:nth-child(2) { padding-left: 0; }
+    :host([data-density="packed"]) .usage-summary-item:nth-child(2)::before { display: none; }
     [hidden] { display: none !important; }
     .usage-popover {
       box-sizing: border-box;
@@ -579,6 +600,9 @@
     if (/(?:Reset|nextRefreshAt)$/.test(String(metric?.id ?? ""))) value = value.replace(/后$/, "");
     return value;
   };
+  const selectedMetricLimit = (settings) => settings?.minimalMode
+    ? MAX_MINIMAL_SELECTED_METRICS
+    : MAX_SELECTED_METRICS;
 
   const updateCountdowns = (host, value) => {
     if (!host?.shadowRoot) return;
@@ -608,9 +632,10 @@
       { ...apiKeySource, label: "API Key" },
     ].map(selectableSource);
     let selected = sources.flatMap((source) => selectedMetrics(source, settings).map((metric) => ({ source, metric })));
+    const selectedLimit = selectedMetricLimit(settings);
     let settingsChanged = false;
-    if (selected.length > MAX_SELECTED_METRICS) {
-      selected = selected.slice(0, MAX_SELECTED_METRICS);
+    if (selected.length > selectedLimit) {
+      selected = selected.slice(0, selectedLimit);
       for (const source of sources) {
         settings.metrics[source.id] = selected.filter((item) => item.source.id === source.id).map((item) => item.metric.id);
       }
@@ -623,7 +648,7 @@
     if (settingsChanged) saveSettings(settings);
     const availableWidth = Number.parseInt(host.style.getPropertyValue("--usage-max-width"), 10) || 280;
     host.dataset.density = settings.minimalMode
-      ? selected.length >= 7 ? "packed" : "normal"
+      ? selected.length >= 9 ? "packed" : "normal"
       : selected.length >= 7 || (selected.length >= 5 && availableWidth < 280)
         ? "packed" : selected.length >= 5 ? "dense" : "normal";
     host.dataset.minimal = String(settings.minimalMode);
@@ -680,7 +705,7 @@
           input.dataset.source = source.id;
           input.dataset.metric = metric.id;
           input.checked = checked;
-          input.disabled = !checked && selected.length >= MAX_SELECTED_METRICS;
+          input.disabled = !checked && selected.length >= selectedLimit;
           const label = document.createElement("span");
           label.className = "usage-detail-label";
           label.textContent = metric.label;
@@ -728,7 +753,9 @@
           const meta = document.createElement("div");
           meta.className = "usage-column-meta";
           const maximum = document.createElement("span");
-          maximum.textContent = `最多显示 ${MAX_SELECTED_METRICS} 项`;
+          maximum.textContent = settings.minimalMode
+            ? `极简最多 ${MAX_MINIMAL_SELECTED_METRICS} 项`
+            : `最多显示 ${MAX_SELECTED_METRICS} 项`;
           const separator = document.createElement("span");
           separator.setAttribute("aria-hidden", "true");
           separator.textContent = "·";
@@ -772,6 +799,7 @@
     if (reference) {
       const referenceStyle = getComputedStyle(reference);
       host.style.setProperty("--usage-color", referenceStyle.color);
+      if (referenceStyle.fontSize) host.style.setProperty("--usage-font-size", referenceStyle.fontSize);
       const surface = getComputedStyle(composer).backgroundColor;
       host.style.setProperty("--usage-surface", surface && surface !== "rgba(0, 0, 0, 0)" ? surface : "rgba(255, 255, 255, .96)");
     }
@@ -834,7 +862,7 @@
         const selectedCount = Object.values(usage.sources)
           .map(selectableSource)
           .reduce((count, candidate) => count + selectedMetrics(candidate, settings).length, 0);
-        if (input.checked && selectedCount >= MAX_SELECTED_METRICS) {
+        if (input.checked && selectedCount >= selectedMetricLimit(settings)) {
           input.checked = false;
           return;
         }

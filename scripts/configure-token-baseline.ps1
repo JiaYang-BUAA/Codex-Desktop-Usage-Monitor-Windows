@@ -22,9 +22,22 @@ if (-not $env:CODEX_USAGE_ACCOUNT_TOKEN -or -not $env:CODEX_USAGE_ACCOUNT_USER_I
 
 $baseUrl = $(if ($env:CODEX_USAGE_ACCOUNT_BASE_URL) { $env:CODEX_USAGE_ACCOUNT_BASE_URL } else { 'https://www.cctq.ai' }).TrimEnd('/')
 $headers = @{ Authorization = "Bearer $env:CODEX_USAGE_ACCOUNT_TOKEN"; 'New-Api-User' = $env:CODEX_USAGE_ACCOUNT_USER_ID; Accept = 'application/json' }
-$response = Invoke-RestMethod -Uri "$baseUrl/api/log/self?p=1&size=100" -Headers $headers -Method Get -TimeoutSec 20
+$requestedPageSize = 1000
+$maximumPages = 100
+$response = Invoke-RestMethod -Uri "$baseUrl/api/log/self?p=1&size=$requestedPageSize" -Headers $headers -Method Get -TimeoutSec 20
 $data = if ($response.data) { $response.data } else { $response }
-$items = @($data.items)
+$items = [Collections.Generic.List[object]]::new()
+foreach ($item in @($data.items)) { $items.Add($item) }
+$reportedTotal = [Math]::Max($items.Count, [long]$data.total)
+$reportedPageSize = [Math]::Max(1, [int]$data.page_size)
+$pageCount = [Math]::Min($maximumPages, [Math]::Ceiling($reportedTotal / $reportedPageSize))
+for ($page = 2; $page -le $pageCount; $page++) {
+  $pageResponse = Invoke-RestMethod -Uri "$baseUrl/api/log/self?p=$page&size=$requestedPageSize" -Headers $headers -Method Get -TimeoutSec 20
+  $pageData = if ($pageResponse.data) { $pageResponse.data } else { $pageResponse }
+  $pageItems = @($pageData.items)
+  if ($pageItems.Count -eq 0) { break }
+  foreach ($item in $pageItems) { $items.Add($item) }
+}
 
 function Get-TokenLogIdentity($Item) {
   if ($null -ne $Item.id) { return "id:$($Item.id)" }
@@ -32,39 +45,39 @@ function Get-TokenLogIdentity($Item) {
 }
 
 $checkpointAt = 0L
-$recentLogIds = @()
+$recentLogIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$recentLogTokens = [ordered]@{}
 foreach ($item in $items) {
   $timestamp = 0L
   if ([long]::TryParse([string]$item.created_at, [ref]$timestamp) -and $timestamp -gt 0) {
     if ($timestamp -lt 100000000000) { $timestamp *= 1000 }
     if ($timestamp -gt $checkpointAt) { $checkpointAt = $timestamp }
   }
-  $recentLogIds += Get-TokenLogIdentity $item
+  $identity = Get-TokenLogIdentity $item
+  $tokens = [Math]::Max(0L, [long]$item.prompt_tokens) + [Math]::Max(0L, [long]$item.completion_tokens)
+  [void]$recentLogIds.Add($identity)
+  $recentLogTokens[$identity] = $tokens
 }
 
 $dailyDate = Get-Date -Format 'yyyy-MM-dd'
 $dailyTokens = 0L
 $dailyLogIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-try {
-  $existing = Get-CodexUsageTokenBaseline
-  if ($existing -and $existing.dailyDate -eq $dailyDate) {
-    $dailyTokens = [long]$existing.dailyTokens
-    foreach ($identity in @($existing.dailyLogIds)) { if ($identity) { [void]$dailyLogIds.Add([string]$identity) } }
-  }
-} catch {}
+$dailyLogTokens = [ordered]@{}
 foreach ($item in $items) {
   $timestamp = 0L
   if (-not [long]::TryParse([string]$item.created_at, [ref]$timestamp) -or $timestamp -le 0) { continue }
   if ($timestamp -lt 100000000000) { $timestamp *= 1000 }
   if ([DateTimeOffset]::FromUnixTimeMilliseconds($timestamp).LocalDateTime.ToString('yyyy-MM-dd') -ne $dailyDate) { continue }
   $identity = Get-TokenLogIdentity $item
-  if ($dailyLogIds.Add($identity)) {
-    $dailyTokens += [Math]::Max(0L, [long]$item.prompt_tokens) + [Math]::Max(0L, [long]$item.completion_tokens)
-  }
+  $tokens = [Math]::Max(0L, [long]$item.prompt_tokens) + [Math]::Max(0L, [long]$item.completion_tokens)
+  $previous = if ($dailyLogTokens.Contains($identity)) { [long]$dailyLogTokens[$identity] } else { 0L }
+  $dailyTokens += $tokens - $previous
+  [void]$dailyLogIds.Add($identity)
+  $dailyLogTokens[$identity] = $tokens
 }
 
-Save-CodexUsageTokenBaseline -InitialTokens $InitialTokens -CheckpointAt $checkpointAt -RecentLogIds $recentLogIds `
-  -DailyDate $dailyDate -DailyTokens $dailyTokens -DailyLogIds @($dailyLogIds)
+Save-CodexUsageTokenBaseline -InitialTokens $InitialTokens -CheckpointAt $checkpointAt -RecentLogIds @($recentLogIds) -RecentLogTokens $recentLogTokens `
+  -DailyDate $dailyDate -DailyTokens $dailyTokens -DailyLogIds @($dailyLogIds) -DailyLogTokens $dailyLogTokens
 $env:CODEX_USAGE_ACCOUNT_COUNTER_PATH = $CodexUsageAccountCounterPath
 $activePort = Resolve-CodexUsageCdpPort $Port
 if ($activePort) {
