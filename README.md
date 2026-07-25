@@ -7,9 +7,17 @@
 
 监视栏位于“替我审批”右侧。普通模式最多显示 8 项数据，极简模式最多显示 14 项。截图仅用于界面示意，不包含 API key 或访问令牌。
 
-![Codex Usage Monitor 折叠监视栏](docs/images/monitor-collapsed.png)
+**普通模式**
+
+![Codex Usage Monitor 普通模式监视栏](docs/images/monitor-collapsed.png)
+
+**极简模式**
+
+![Codex Usage Monitor 极简模式监视栏](docs/images/monitor-minimal.png)
 
 点击监视栏后可同时查看官方订阅、API 账户和 API Key 三类数据。
+
+**展开面板**
 
 ![Codex Usage Monitor 三栏展开面板](docs/images/monitor-expanded.png)
 
