@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.2 - 2026-07-26
+
+- 隐藏启动器增加 `-ExecutionPolicy Bypass`、入口校验和退出码捕获；PowerShell 脚本加载前失败也会写入 `launcher-error.log`。
+- Microsoft Store 版 `codex.exe` 自动复制到当前用户状态目录运行，避免从受保护的 `WindowsApps` 直接启动时出现 `spawn EPERM`；Store 更新后自动刷新副本。
+- 增加隐藏 VBS 参数/错误日志及 Store/非 Store CLI 路径回归测试。
+
 ## 1.7.1 - 2026-07-25
 
 - 官方订阅、API 账户和 API Key 的统一刷新周期由 30 秒调整为 60 秒，倒计时表盘同步改为每 60 秒一圈。

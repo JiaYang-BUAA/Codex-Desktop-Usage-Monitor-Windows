@@ -97,7 +97,10 @@ if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state co
 if ($runtimeSource -notmatch '--remote-debugging-address=127\.0\.0\.1') { throw 'Local CDP binding contract is missing.' }
 if ($runtimeSource -notmatch 'Codex Usage Monitor\.lnk') { throw 'English shortcut name contract is missing.' }
 if ($runtimeSource -notmatch 'launch-codex-monitor-hidden\.vbs') { throw 'Hidden launcher contract is missing.' }
-if ($runtimeSource -notmatch 'shell\.Run command, 0, False') { throw 'Hidden WindowStyle contract is missing.' }
+if ($runtimeSource -notmatch 'Resolve-CodexUsageRunnableCliPath') { throw 'Store Codex CLI mirroring contract is missing.' }
+if ($runtimeSource -notmatch '-ExecutionPolicy Bypass') { throw 'Hidden launcher execution-policy bypass is missing.' }
+if ($runtimeSource -notmatch 'exitCode = shell\.Run\(command, 0, True\)') { throw 'Hidden launcher exit-code capture is missing.' }
+if ($runtimeSource -notmatch 'launcher-error\.log') { throw 'Hidden launcher bootstrap log contract is missing.' }
 
 $releaseWorkflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\release.yml') -Raw
 foreach ($requiredReleaseText in @('gh release list', 'gh release upload', '--clobber', 'gh release create')) {
@@ -160,6 +163,28 @@ if (-not $SkipPackageTest) {
     )
     if ($resolvedDesktop -ne [IO.Path]::GetFullPath($fakeDesktop)) { throw 'Non-Store desktop discovery did not select the valid candidate.' }
 
+    $fakeNonStoreCli = Join-Path $testRoot 'non-store\resources\codex.exe'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fakeNonStoreCli) | Out-Null
+    Set-Content -LiteralPath $fakeNonStoreCli -Value 'non-store-cli' -Encoding ascii
+    $resolvedNonStoreCli = Resolve-CodexUsageRunnableCliPath -CliPath $fakeNonStoreCli -MirrorRoot (Join-Path $testRoot 'unused-mirror')
+    if ($resolvedNonStoreCli -ne [IO.Path]::GetFullPath($fakeNonStoreCli)) { throw 'Non-Store Codex CLI must run from its original path.' }
+
+    $fakeStoreCli = Join-Path $testRoot 'WindowsApps\OpenAI.Codex_1.0.0.0_x64__test\app\resources\codex.exe'
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $fakeStoreCli) | Out-Null
+    Set-Content -LiteralPath $fakeStoreCli -Value 'store-cli-v1' -Encoding ascii
+    $mirrorRoot = Join-Path $testRoot 'state\runtime\codex-cli'
+    $firstMirror = Resolve-CodexUsageRunnableCliPath -CliPath $fakeStoreCli -MirrorRoot $mirrorRoot
+    if ($firstMirror -eq [IO.Path]::GetFullPath($fakeStoreCli)) { throw 'Store Codex CLI must not run directly from WindowsApps.' }
+    if (-not (Test-Path -LiteralPath $firstMirror -PathType Leaf)) { throw 'Store Codex CLI mirror was not created.' }
+    if ((Get-Content -LiteralPath $firstMirror -Raw).Trim() -ne 'store-cli-v1') { throw 'Store Codex CLI mirror content differs from the source.' }
+    if ((Resolve-CodexUsageRunnableCliPath -CliPath $fakeStoreCli -MirrorRoot $mirrorRoot) -ne $firstMirror) { throw 'Unchanged Store CLI should reuse its existing mirror.' }
+
+    Set-Content -LiteralPath $fakeStoreCli -Value 'store-cli-v2-updated' -Encoding ascii
+    $secondMirror = Resolve-CodexUsageRunnableCliPath -CliPath $fakeStoreCli -MirrorRoot $mirrorRoot
+    if ($secondMirror -eq $firstMirror) { throw 'Updated Store CLI should create a refreshed mirror path.' }
+    if ((Get-Content -LiteralPath $secondMirror -Raw).Trim() -ne 'store-cli-v2-updated') { throw 'Updated Store CLI mirror content differs from the source.' }
+    if (@(Get-ChildItem -LiteralPath $mirrorRoot -Filter 'codex-*.exe' -File).Count -ne 1) { throw 'Stale Store CLI mirrors were not cleaned up.' }
+
     $installerSource = Get-Content -LiteralPath (Join-Path $root 'install.ps1') -Raw
     foreach ($pattern in @('Read-Host', "SetEnvironmentVariable\('CODEX_USAGE_DESKTOP_PATH'", "SetEnvironmentVariable\('CODEX_USAGE_CODEX_PATH'", 'NonInteractive')) {
       if ($installerSource -notmatch $pattern) { throw "Installer discovery contract is missing: $pattern" }
@@ -203,6 +228,35 @@ if (-not $SkipPackageTest) {
     Set-Content -LiteralPath (Join-Path $shortcutDirectory 'Codex 监视器版.lnk') -Value 'legacy' -Encoding ascii
     & (Join-Path $root 'scripts\install-monitor-launcher.ps1') -DestinationDirectory $shortcutDirectory
     $shortcutPath = Join-Path $shortcutDirectory 'Codex Usage Monitor.lnk'
+
+    $installedVbs = Join-Path $installedDirectory 'scripts\launch-codex-monitor-hidden.vbs'
+    $fakePowerShell = Join-Path $testRoot 'fake-powershell.cmd'
+    $capturedArguments = Join-Path $testRoot 'captured-powershell-arguments.txt'
+    $vbsLocalAppData = Join-Path $testRoot 'vbs-local-app-data'
+    $launcherErrorPath = Join-Path $vbsLocalAppData 'CodexUsageMonitor\launcher-error.log'
+    $cscript = Join-Path $env:SystemRoot 'System32\cscript.exe'
+    $previousLocalAppData = $env:LOCALAPPDATA
+    try {
+      $env:LOCALAPPDATA = $vbsLocalAppData
+      Set-Content -LiteralPath $fakePowerShell -Encoding ascii -Value @(
+        '@echo off',
+        "echo %*>`"$capturedArguments`"",
+        'exit /b 0'
+      )
+      & $cscript //nologo $installedVbs $fakePowerShell 9335
+      if ($LASTEXITCODE -ne 0) { throw "Hidden VBS parameter test failed with exit code $LASTEXITCODE." }
+      $captured = Get-Content -LiteralPath $capturedArguments -Raw
+      if ($captured -notmatch '(?i)-ExecutionPolicy\s+Bypass') { throw 'Hidden VBS did not pass -ExecutionPolicy Bypass.' }
+      if ($captured -notmatch '(?i)-File\s+.*launch-codex-monitor\.ps1') { throw 'Hidden VBS did not pass the PowerShell launcher path.' }
+
+      Set-Content -LiteralPath $fakePowerShell -Encoding ascii -Value @('@echo off', 'exit /b 17')
+      & $cscript //nologo $installedVbs $fakePowerShell 9335
+      if ($LASTEXITCODE -ne 17) { throw "Hidden VBS failure test returned $LASTEXITCODE instead of 17." }
+      if (-not (Test-Path -LiteralPath $launcherErrorPath -PathType Leaf)) { throw 'Hidden VBS did not create launcher-error.log.' }
+      if ((Get-Content -LiteralPath $launcherErrorPath -Raw) -notmatch 'exited with code 17') { throw 'Hidden VBS launcher log does not include the PowerShell exit code.' }
+    } finally {
+      $env:LOCALAPPDATA = $previousLocalAppData
+    }
     if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) { throw 'Hidden launcher shortcut was not created.' }
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($shortcutPath)

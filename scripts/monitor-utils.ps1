@@ -391,6 +391,69 @@ function Resolve-CodexUsageCliPath {
   return $null
 }
 
+function Test-CodexUsageWindowsAppsPath([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+  try { $fullPath = [IO.Path]::GetFullPath($Path) } catch { return $false }
+  return $fullPath -match '(?i)(?:^|[\\/])WindowsApps(?:[\\/]|$)'
+}
+
+function Resolve-CodexUsageRunnableCliPath {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$CliPath,
+    [string]$MirrorRoot = (Join-Path $CodexUsageStateRoot 'runtime\codex-cli')
+  )
+
+  $sourcePath = [IO.Path]::GetFullPath($CliPath)
+  if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "Codex CLI 不存在：$sourcePath" }
+  if (-not (Test-CodexUsageWindowsAppsPath $sourcePath)) { return $sourcePath }
+
+  $source = Get-Item -LiteralPath $sourcePath -ErrorAction Stop
+  $identity = "$sourcePath|$($source.Length)|$($source.LastWriteTimeUtc.Ticks)"
+  $identityBytes = [Text.Encoding]::UTF8.GetBytes($identity)
+  $hasher = [Security.Cryptography.SHA256]::Create()
+  try {
+    $fingerprint = ([BitConverter]::ToString($hasher.ComputeHash($identityBytes))).Replace('-', '').ToLowerInvariant().Substring(0, 20)
+  } finally {
+    $hasher.Dispose()
+    [Array]::Clear($identityBytes, 0, $identityBytes.Length)
+  }
+
+  $MirrorRoot = [IO.Path]::GetFullPath($MirrorRoot)
+  $destination = Join-Path $MirrorRoot "codex-$fingerprint.exe"
+  if ((Test-Path -LiteralPath $destination -PathType Leaf) -and (Get-Item -LiteralPath $destination).Length -eq $source.Length) {
+    return $destination
+  }
+
+  New-Item -ItemType Directory -Force -Path $MirrorRoot | Out-Null
+  $temporary = Join-Path $MirrorRoot ".$fingerprint-$PID.tmp"
+  try {
+    $sourceStream = $null
+    $destinationStream = $null
+    try {
+      $sourceStream = [IO.File]::Open($sourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+      $destinationStream = [IO.File]::Open($temporary, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+      $sourceStream.CopyTo($destinationStream, 1MB)
+      $destinationStream.Flush()
+    } finally {
+      if ($destinationStream) { $destinationStream.Dispose() }
+      if ($sourceStream) { $sourceStream.Dispose() }
+    }
+    if ((Get-Item -LiteralPath $temporary -ErrorAction Stop).Length -ne $source.Length) { throw '复制后的 Codex CLI 大小不一致。' }
+    Move-Item -LiteralPath $temporary -Destination $destination -Force
+  } catch {
+    throw "无法为 Microsoft Store 版 Codex 创建用户级 CLI 副本：$($_.Exception.Message)"
+  } finally {
+    Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+  }
+
+  Get-ChildItem -LiteralPath $MirrorRoot -Filter 'codex-*.exe' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -ne $destination } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+  return $destination
+}
+
 function Get-CodexUsageState {
   foreach ($statePath in @($CodexUsageStatePath, $CodexUsageLegacyStatePath)) {
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { continue }

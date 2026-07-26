@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 $injector = Join-Path $PSScriptRoot 'injector.mjs'
 $node = Resolve-CodexUsageNodePath
 $cliPath = Resolve-CodexUsageCliPath
-if ($cliPath -and -not $env:CODEX_USAGE_CODEX_PATH) { $env:CODEX_USAGE_CODEX_PATH = $cliPath }
+if ($cliPath) { $env:CODEX_USAGE_CODEX_PATH = Resolve-CodexUsageRunnableCliPath -CliPath $cliPath }
 try {
   [void](Import-CodexUsagePersistedProvider)
 } catch {

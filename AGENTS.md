@@ -12,6 +12,7 @@ When the user asks to install this project:
 4. The installer must create a versioned copy under `%LOCALAPPDATA%\Programs\CodexUsageMonitor` and a desktop shortcut named `Codex Usage Monitor`.
 5. Verify the installed version directory and shortcut. Its target must be `wscript.exe`, which launches PowerShell invisibly through `launch-codex-monitor-hidden.vbs`. Do not launch, restart, or terminate the user's current Codex session. Tell the user to exit Codex normally and then use the new shortcut.
 6. Official subscription monitoring needs no API key or additional configuration.
+   For Microsoft Store installations, run the official usage CLI from the versioned user-state mirror under `%LOCALAPPDATA%\CodexUsageMonitor\runtime\codex-cli`; never execute it directly from or modify `WindowsApps`.
 
 ## Codex-Assisted Configuration
 
