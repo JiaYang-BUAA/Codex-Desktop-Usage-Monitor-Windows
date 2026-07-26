@@ -47,7 +47,7 @@
 
 > **如果不懂如何运行下面的命令，请直接让 Codex 按本教程帮你完成安装和配置，无需自己手动操作。**
 
-- 官方订阅：周期和账户汇总来自 Codex Desktop 本机 app-server；“今日 Token”读取使用 ChatGPT 账户认证的本机任务 Token 事件，并按 OpenAI 当前 Codex 官方费率折算。监视器根据提供方的 `requires_openai_auth` 属性判断，不依赖提供方名称，因此名为 `custom` 的官方认证别名也能正确识别。无需配置，启动后自动读取。
+- 官方订阅：周期和账户汇总来自 Codex Desktop 本机 app-server；“今日 Token”读取本机任务的 `token_count` 事件，并把确认使用当前 ChatGPT 官方认证的每回合 `total_token_usage` 正增量直接累加。监视器结合每回合的 `thread_settings_applied.model_provider_id` 与当前认证信息判断来源；API、API Key 和无法确认来源的回合不计入。无需配置，启动后自动读取。
 - API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备服务商的接口文档、账户访问令牌和数字用户 ID。Base URL 通常在“API 文档”或“开发者文档”；用户 ID 通常在“用户资料”“账户信息”或“个人中心”；访问令牌通常在“用户资料”“安全设置”“Access Token”或“用户令牌”页面。访问令牌不一定等于 API Key。先让 Codex 按接口文档确认或适配请求路径与返回字段，再复制令牌并运行：
 
   ```powershell
@@ -91,7 +91,7 @@ pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完
 
 | 栏位 | 数据来源 | 所需凭据 |
 | --- | --- | --- |
-| 官方订阅 | Codex Desktop 本机 app-server 返回的账户周期与 Token 汇总；“今日 Token”由使用 ChatGPT 账户认证的本机任务事件按官方费率实时折算，本机无有效计数时才回退到官方当天日期桶。 | 无需额外凭据。 |
+| 官方订阅 | Codex Desktop 本机 app-server 返回账户周期与 Token 汇总；“今日 Token”读取本机 `token_count` 的 `total_token_usage` 正增量，仅累计确认使用当前 ChatGPT 官方认证的回合。 | 无需额外凭据。 |
 | API 账户 | 第三方服务商的账户信息接口与请求日志接口；当前内置实现兼容 CCTQ 风格接口。 | API 账户访问令牌和数字用户 ID。访问令牌一般在服务商的用户资料或个人中心页面获取。 |
 | API Key | 第三方服务商为某个 API key 提供的额度、限额和有效期查询接口，由 Provider JSON 映射响应字段。 | 对应 API key。 |
 
@@ -105,21 +105,14 @@ API 账户与 API Key 是两种不同的数据来源：前者读取整个用户�
 | --- | --- |
 | 周期剩余 | 当前短周期的剩余百分比；百分比越低表示消耗越多。 |
 | 周期重置 | 当前短周期距离重置的时间，例如“2天后”。 |
-| 今日 Token | 本机当天官方认证任务按 OpenAI 当前 Codex 费率计算出的 **GPT-5.6 Sol 标准输入等效 Token**；展开详情显示“今日 Token（官方折算）”。内置 `openai` 以及配置了 `requires_openai_auth: true`、且当前账户为 ChatGPT 登录的提供方都会统计；名称是 `custom` 不代表第三方。本机暂时没有有效计数时才回退到官方当天日期桶。 |
+| 今日 Token | 从本机当天 00:00 起，把确认使用当前 ChatGPT 官方认证的每回合 `token_count.total_token_usage` 正增量直接累加；显示原始 Token 总量，不做费率折算。API、API Key 和无法确认来源的回合不计入。 |
 | 累计 Token | 官方接口返回的累计 Token 数；接口没有提供时不伪造数值。 |
 
-本机实时累计只统计这台电脑上 Codex 已写入任务记录、并由 ChatGPT 账户认证的用量，包含符合条件的当前任务、其他本机任务和子任务，不能覆盖其他电脑或网页端。监视器通过 app-server 的账户类型和各提供方 `requires_openai_auth` 属性建立归属关系，而不是只看 `model_provider` 的名字；真正不使用 OpenAI 认证的第三方 API 与 API Key 任务不会计入官方订阅。程序只解析任务记录中的模型、运行模式和 `token_count` 用量事件，不保存或上传对话正文。
+本机实时累计只统计这台电脑上 Codex 已写入任务记录、并能确认由当前 ChatGPT 账户官方认证的用量，包含符合条件的当前任务、其他本机任务和子任务，不能覆盖其他电脑或网页端。程序按每回合最近的 `thread_settings_applied.model_provider_id` 识别提供方，再结合当前 ChatGPT 官方认证信息判断归属；仅官方订阅回合计入，API、API Key 和无法确认来源的回合一律不计。程序只解析来源设置和 `token_count` 用量事件，不保存或上传对话正文。
 
-“今日 Token”先按 [OpenAI Codex 官方费率表](https://help.openai.com/en/articles/20001106-codex-rate-card)计算 Credits，再统一换算成 Sol 标准输入等效 Token，公式为：
+“今日 Token”直接读取连续 `token_count` 快照中 `total_token_usage` 的正增量。重复快照不会重复累计；fork 任务重放父任务历史时也会去重，避免同一批 Token 被再次计入。该数值是日志记录的原始 Token 增量，不再按模型、缓存、输出或 Fast 模式做官方费率折算，也不会在本机没有有效计数时回退到官方日期桶。
 
-```text
-Credits = (非缓存输入 × 输入费率 + 缓存输入 × 缓存输入费率 + 输出 × 输出费率) ÷ 1,000,000 × 模式倍率
-今日 Token = Credits ÷ 125 × 1,000,000
-```
-
-因此标准模式下，Sol 的相对权重是 `非缓存输入 × 1 + 缓存输入 × 0.1 + 输出 × 6`；Terra 是 `0.5 / 0.05 / 3`；Luna 是 `0.2 / 0.02 / 1.2`。程序会按每轮记录的实际模型分别计算，代码审查的 `codex-auto-review` 按官方说明映射到 GPT-5.3-Codex。Fast 模式下，GPT-5.6/GPT-5.5 再乘 `2.5`，GPT-5.4 再乘 `2`；日志没有提供运行模式时按标准模式处理。未知模型暂以 Sol 标准费率兜底，待官方公布对应费率后再补充。这个“今日 Token”是用于统一比较官方消耗的折算值，不等同于日志中的原始 Token 总和；“当前任务累计 Token”和“上次对话消耗 Token”仍显示模型日志返回的原始总 Token。
-
-重复快照会去重，累计计数只增加不回退。今日计数按本机日期和认证提供方集合持久化到 `%LOCALAPPDATA%\CodexUsageMonitor\official-token-counter.json`，Codex 或 Windows 重启后不会归零，第二天自动重新统计。官方日期桶存在延迟且单位口径可能不同，因此本机存在有效折算计数时优先显示本机值。
+今日计数按本机日期持久化到 `%LOCALAPPDATA%\CodexUsageMonitor\official-token-counter.json`。Codex 或 Windows 当天重启后会继续累加；本机日期跨过 00:00 后自动清零，并从新日期的官方订阅回合重新统计。
 
 Token 显示规则：少于 `10,000` 时显示完整数值；达到 `10,000` 后以整数“万”显示；达到 `100,000,000` 后以两位小数“亿”显示。展开面板的数值遵循相同单位规则。
 

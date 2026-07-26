@@ -17,29 +17,13 @@ import path from "node:path";
 
 const DEFAULT_REFRESH_MS = 60000;
 const LOCAL_TOKEN_SCAN_MS = 2000;
-const LOCAL_TOKEN_COUNTER_SCHEMA_VERSION = 5;
+const LOCAL_TOKEN_COUNTER_SCHEMA_VERSION = 6;
 const LOCAL_TOKEN_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 const TOKEN_COUNT_MARKER = Buffer.from('"token_count"', "utf8");
 const TURN_CONTEXT_MARKER = Buffer.from('"turn_context"', "utf8");
 const THREAD_SETTINGS_MARKER = Buffer.from('"thread_settings_applied"', "utf8");
+const SESSION_META_MARKER = Buffer.from('"session_meta"', "utf8");
 const OFFICIAL_MODEL_PROVIDER_ID = "openai";
-const OFFICIAL_EQUIVALENT_BASE_CREDITS_PER_MILLION = 125;
-const OFFICIAL_MODEL_CREDIT_RATES = Object.freeze({
-  "gpt-5.6-sol": Object.freeze({ input: 125, cachedInput: 12.5, output: 750 }),
-  "gpt-5.6-terra": Object.freeze({ input: 62.5, cachedInput: 6.25, output: 375 }),
-  "gpt-5.6-luna": Object.freeze({ input: 25, cachedInput: 2.5, output: 150 }),
-  "gpt-5.5": Object.freeze({ input: 125, cachedInput: 12.5, output: 750 }),
-  "gpt-5.5-cyber": Object.freeze({ input: 500, cachedInput: 50, output: 3000 }),
-  "gpt-5.4": Object.freeze({ input: 62.5, cachedInput: 6.25, output: 375 }),
-  "gpt-5.4-mini": Object.freeze({ input: 18.75, cachedInput: 1.875, output: 113 }),
-  "gpt-5.3-codex": Object.freeze({ input: 43.75, cachedInput: 4.375, output: 350 }),
-  "gpt-5.2": Object.freeze({ input: 43.75, cachedInput: 4.375, output: 350 }),
-});
-const OFFICIAL_MODEL_RATE_ALIASES = Object.freeze({
-  "codex-auto-review": "gpt-5.3-codex",
-  "gpt-5.6": "gpt-5.6-sol",
-  "gpt-5.2-codex": "gpt-5.2",
-});
 const REQUEST_TIMEOUT_MS = 12000;
 const RATE_LIMIT_BASE_BACKOFF_MS = 60000;
 const RATE_LIMIT_MAX_BACKOFF_MS = 300000;
@@ -223,71 +207,71 @@ function readTokenField(value, camelCase, snakeCase) {
   return Number.isSafeInteger(number) && number >= 0 ? number : null;
 }
 
-function normalizeOfficialModelName(value) {
-  const model = String(value ?? "").trim().toLowerCase();
-  if (!model) return null;
-  const alias = OFFICIAL_MODEL_RATE_ALIASES[model] || model;
-  if (OFFICIAL_MODEL_CREDIT_RATES[alias]) return alias;
-  return Object.keys(OFFICIAL_MODEL_CREDIT_RATES)
-    .sort((left, right) => right.length - left.length)
-    .find((name) => alias.startsWith(`${name}-`)) || null;
+function normalizeProviderId(value) {
+  return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : null;
 }
 
-function officialFastMultiplier(modelName, serviceTier) {
-  if (String(serviceTier ?? "").trim().toLowerCase() !== "fast") return 1;
-  if (modelName?.startsWith("gpt-5.6") || modelName?.startsWith("gpt-5.5")) return 2.5;
-  if (modelName?.startsWith("gpt-5.4")) return 2;
-  return 1;
+function normalizeLocalId(value) {
+  return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : null;
 }
 
-function cumulativeTokenDelta(current, previous) {
+export function conversationTokenDelta(current, previous) {
   if (!Number.isSafeInteger(current) || current < 0) return null;
   if (!Number.isSafeInteger(previous) || previous < 0) return current;
-  return current >= previous ? current - previous : current;
+  return current >= previous ? current - previous : 0;
 }
 
-export function officialEquivalentTokenDelta(current, previous = null, model = null, serviceTier = null) {
-  const modelName = normalizeOfficialModelName(model) || "gpt-5.6-sol";
-  const rates = OFFICIAL_MODEL_CREDIT_RATES[modelName];
-  const inputDelta = cumulativeTokenDelta(current?.inputTokens, previous?.inputTokens);
-  const outputDelta = cumulativeTokenDelta(current?.outputTokens, previous?.outputTokens);
-  if (inputDelta === null || outputDelta === null) {
-    return cumulativeTokenDelta(current?.totalTokens, previous?.totalTokens);
-  }
-  const cachedDelta = Math.min(
-    inputDelta,
-    cumulativeTokenDelta(current?.cachedInputTokens ?? 0, previous?.cachedInputTokens ?? 0) ?? 0,
-  );
-  const uncachedInputDelta = Math.max(0, inputDelta - cachedDelta);
-  const multiplier = officialFastMultiplier(modelName, serviceTier);
-  const equivalentTokens = (
-    uncachedInputDelta * rates.input
-    + cachedDelta * rates.cachedInput
-    + outputDelta * rates.output
-  ) * multiplier / OFFICIAL_EQUIVALENT_BASE_CREDITS_PER_MILLION;
-  return Math.max(0, Math.round(equivalentTokens));
+function uuidV7Timestamp(value) {
+  const compact = String(value ?? "").trim().toLowerCase().replace(/-/g, "");
+  if (!/^[0-9a-f]{32}$/.test(compact)) return null;
+  const timestamp = Number.parseInt(compact.slice(0, 12), 16);
+  return Number.isSafeInteger(timestamp) ? timestamp : null;
 }
 
 export function parseLocalTokenContextEvent(line) {
   const text = String(line ?? "");
-  if (!text.includes('"turn_context"') && !text.includes('"thread_settings_applied"')) return null;
+  if (!text.includes('"turn_context"')
+    && !text.includes('"thread_settings_applied"')
+    && !text.includes('"session_meta"')) return null;
   let item;
   try { item = JSON.parse(text); } catch { return null; }
-  const payload = item?.payload;
-  const context = item?.type === "turn_context"
-    ? payload
-    : payload?.type === "thread_settings_applied"
-      ? payload?.thread_settings
-      : null;
-  if (!context || typeof context !== "object") return null;
-  const model = typeof context.model === "string" && context.model.trim()
-    ? context.model.trim().toLowerCase()
-    : null;
-  const serviceTierValue = context.service_tier ?? context.serviceTier;
-  const serviceTier = typeof serviceTierValue === "string" && serviceTierValue.trim()
-    ? serviceTierValue.trim().toLowerCase()
-    : null;
-  return model || serviceTier ? { model, serviceTier } : null;
+  const timestamp = Date.parse(String(item?.timestamp ?? ""));
+  if (item?.type === "session_meta") {
+    const payload = item?.payload;
+    if (!payload || typeof payload !== "object") return null;
+    const source = payload?.source;
+    return {
+      kind: "session",
+      timestamp: Number.isFinite(timestamp) ? timestamp : null,
+      sessionId: normalizeLocalId(payload?.id ?? payload?.session_id),
+      parentThreadId: normalizeLocalId(payload?.parent_thread_id),
+      modelProvider: normalizeProviderId(payload?.model_provider ?? payload?.modelProvider),
+      forked: Boolean(payload?.parent_thread_id || (source && typeof source === "object" && source?.subagent)),
+    };
+  }
+  if (item?.type === "turn_context") {
+    const turnId = normalizeLocalId(item?.payload?.turn_id ?? item?.payload?.turnId);
+    return turnId ? {
+      kind: "turn",
+      timestamp: Number.isFinite(timestamp) ? timestamp : null,
+      turnId,
+    } : null;
+  }
+  if (item?.type === "event_msg" && item?.payload?.type === "thread_settings_applied") {
+    const settings = item?.payload?.thread_settings ?? item?.payload?.threadSettings;
+    const modelProvider = normalizeProviderId(
+      settings?.model_provider_id
+      ?? settings?.modelProviderId
+      ?? settings?.model_provider
+      ?? settings?.modelProvider,
+    );
+    return modelProvider ? {
+      kind: "settings",
+      timestamp: Number.isFinite(timestamp) ? timestamp : null,
+      modelProvider,
+    } : null;
+  }
+  return null;
 }
 
 export function parseLocalTokenUsageEvent(line, expectedDate = null) {
@@ -306,17 +290,11 @@ export function parseLocalTokenUsageEvent(line, expectedDate = null) {
   if (tokens === null) return null;
   const total = payload?.info?.total_token_usage ?? payload?.tokenUsage?.total ?? null;
   const totalTokens = readTokenField(total, "totalTokens", "total_tokens");
-  const inputTokens = readTokenField(total, "inputTokens", "input_tokens");
-  const cachedInputTokens = readTokenField(total, "cachedInputTokens", "cached_input_tokens");
-  const outputTokens = readTokenField(total, "outputTokens", "output_tokens");
   return {
     date,
     timestamp,
     tokens,
     totalTokens,
-    inputTokens,
-    cachedInputTokens,
-    outputTokens,
     identity: createHash("sha256").update(text).digest("hex").slice(0, 32),
   };
 }
@@ -338,31 +316,34 @@ function resolveLocalTokenCounterPath(explicit) {
     : null;
 }
 
-function loadLocalTokenCounter(counterPath, date, providerKey) {
-  if (!counterPath || !existsSync(counterPath)) return 0;
+function loadLocalTokenCounter(counterPath, date) {
+  const empty = { todayTokens: 0, seenEvents: [] };
+  if (!counterPath || !existsSync(counterPath)) return empty;
   try {
     const value = JSON.parse(readFileSync(counterPath, "utf8"));
-    return value?.schemaVersion === LOCAL_TOKEN_COUNTER_SCHEMA_VERSION
-      && value?.dailyDate === date
-      && value?.providerKey === providerKey
-      && Number.isSafeInteger(value?.todayTokens)
-      && value.todayTokens >= 0
+    if (value?.schemaVersion !== LOCAL_TOKEN_COUNTER_SCHEMA_VERSION || value?.dailyDate !== date) return empty;
+    const todayTokens = Number.isSafeInteger(value?.todayTokens) && value.todayTokens >= 0
       ? value.todayTokens
       : 0;
+    const seenEvents = Array.isArray(value?.seenEvents)
+      ? value.seenEvents.filter((item) => typeof item === "string" && item.length > 0 && item.length <= 160)
+      : [];
+    return { todayTokens, seenEvents };
   } catch {
-    return 0;
+    return empty;
   }
 }
 
-function saveLocalTokenCounter(counterPath, date, providerKey, todayTokens, now) {
+function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, now) {
   if (!counterPath || !Number.isSafeInteger(todayTokens) || todayTokens < 0) return;
   mkdirSync(path.dirname(counterPath), { recursive: true });
   const temporaryPath = `${counterPath}.${process.pid}.tmp`;
   writeFileSync(temporaryPath, `${JSON.stringify({
     schemaVersion: LOCAL_TOKEN_COUNTER_SCHEMA_VERSION,
     dailyDate: date,
-    providerKey,
+    mode: "official-conversation-raw",
     todayTokens,
+    seenEvents: [...seenEvents].sort(),
     updatedAt: new Date(now).toISOString(),
   }, null, 2)}\n`, "utf8");
   renameSync(temporaryPath, counterPath);
@@ -370,25 +351,6 @@ function saveLocalTokenCounter(counterPath, date, providerKey, todayTokens, now)
 
 function sessionThreadIdFromPath(filePath) {
   return path.basename(filePath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1]?.toLowerCase() || null;
-}
-
-function readSessionModelProvider(filePath) {
-  let handle = null;
-  try {
-    handle = openSync(filePath, "r");
-    const size = Math.min(fstatSync(handle).size, 64 * 1024);
-    if (!size) return null;
-    const buffer = Buffer.allocUnsafe(size);
-    const bytesRead = readSync(handle, buffer, 0, size, 0);
-    const firstLine = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0].replace(/^\uFEFF/, "");
-    const item = JSON.parse(firstLine);
-    const provider = item?.type === "session_meta" ? item?.payload?.model_provider : null;
-    return typeof provider === "string" && provider.trim() ? provider.trim().toLowerCase() : null;
-  } catch {
-    return null;
-  } finally {
-    if (handle !== null) closeSync(handle);
-  }
 }
 
 function discoverRecentSessionFiles(root, dayStart, currentThreadId = null) {
@@ -437,7 +399,8 @@ function readAppendedUsageLines(filePath, fileState, onLine) {
         if (line.at(-1) === 0x0D) line = line.subarray(0, -1);
         if (line.indexOf(TOKEN_COUNT_MARKER) >= 0
           || line.indexOf(TURN_CONTEXT_MARKER) >= 0
-          || line.indexOf(THREAD_SETTINGS_MARKER) >= 0) {
+          || line.indexOf(THREAD_SETTINGS_MARKER) >= 0
+          || line.indexOf(SESSION_META_MARKER) >= 0) {
           onLine(line.toString("utf8"));
         }
         lineStart = index + 1;
@@ -455,7 +418,7 @@ export class LocalCodexTokenTracker {
     sessionRoot = resolveLocalTokenSessionRoot(process.env.CODEX_USAGE_SESSION_ROOT),
     counterPath = resolveLocalTokenCounterPath(process.env.CODEX_USAGE_OFFICIAL_COUNTER_PATH),
     scanIntervalMs = LOCAL_TOKEN_SCAN_MS,
-    officialModelProviders = [],
+    officialModelProviders = null,
     now = () => Date.now(),
     onUpdate = () => {},
   } = {}) {
@@ -474,13 +437,11 @@ export class LocalCodexTokenTracker {
         ? officialModelProviders.map((value) => String(value).trim().toLowerCase()).filter(Boolean)
         : [],
     );
+    this.classificationReady = Array.isArray(officialModelProviders);
     this.currentThreadId = null;
     this.dailyDate = null;
-    this.cutoffAt = 0;
-    this.persistedFloor = 0;
-    this.historicalTokens = 0;
-    this.liveTokens = 0;
-    this.lastSavedTokens = null;
+    this.todayTokens = 0;
+    this.counterDirty = false;
     this.view = {
       status: "loading",
       dailyDate: null,
@@ -495,13 +456,11 @@ export class LocalCodexTokenTracker {
 
   resetDate(now) {
     this.dailyDate = localDateKey(now);
-    this.cutoffAt = now;
-    this.persistedFloor = loadLocalTokenCounter(this.counterPath, this.dailyDate, this.officialProviderKey());
-    this.historicalTokens = 0;
-    this.liveTokens = 0;
-    this.lastSavedTokens = this.persistedFloor;
+    const saved = loadLocalTokenCounter(this.counterPath, this.dailyDate);
+    this.todayTokens = saved.todayTokens;
+    this.seenEvents = new Set(saved.seenEvents);
+    this.counterDirty = false;
     this.fileStates.clear();
-    this.seenEvents.clear();
     this.threadLatest.clear();
   }
 
@@ -510,7 +469,7 @@ export class LocalCodexTokenTracker {
   }
 
   currentTokens() {
-    return Math.max(this.persistedFloor, this.historicalTokens) + this.liveTokens;
+    return this.todayTokens;
   }
 
   emit(view) {
@@ -541,11 +500,17 @@ export class LocalCodexTokenTracker {
         ? values.map((value) => String(value).trim().toLowerCase()).filter(Boolean)
         : [],
     );
+    const wasReady = this.classificationReady;
     const previousKey = this.officialProviderKey();
     const nextKey = [...normalized].sort().join(",");
-    if (nextKey === previousKey) return false;
+    this.classificationReady = true;
+    if (wasReady && nextKey === previousKey) return false;
     this.officialModelProviders = normalized;
-    this.resetDate(this.now());
+    if (this.dailyDate === null) this.resetDate(this.now());
+    else {
+      this.fileStates.clear();
+      this.threadLatest.clear();
+    }
     this.refresh().catch(() => {});
     return true;
   }
@@ -562,17 +527,46 @@ export class LocalCodexTokenTracker {
         const state = this.fileStates.get(filePath) || {
           offset: 0,
           threadId: sessionThreadIdFromPath(filePath),
-          modelProvider: readSessionModelProvider(filePath),
-          currentModel: null,
-          serviceTier: null,
-          lastUsage: null,
+          logicalSessionId: null,
+          fallbackProvider: null,
+          currentProvider: null,
+          currentTurnId: null,
+          lastTotalTokens: null,
+          totalEpoch: 0,
+          fileMetaSeen: false,
+          forked: false,
+          forkReady: true,
+          forkSessionTimestamp: null,
         };
         try {
           readAppendedUsageLines(filePath, state, (line) => {
             const context = parseLocalTokenContextEvent(line);
             if (context) {
-              if (context.model) state.currentModel = context.model;
-              if (context.serviceTier) state.serviceTier = context.serviceTier;
+              if (context.kind === "session") {
+                if (context.modelProvider) {
+                  state.fallbackProvider = context.modelProvider;
+                  if (!state.currentProvider) state.currentProvider = context.modelProvider;
+                }
+                if (context.sessionId) state.logicalSessionId = context.sessionId;
+                if (!state.fileMetaSeen && (!state.threadId || context.sessionId === state.threadId)) {
+                  state.fileMetaSeen = true;
+                  state.forked = context.forked;
+                  state.forkReady = !context.forked;
+                  state.forkSessionTimestamp = uuidV7Timestamp(context.sessionId) ?? context.timestamp;
+                }
+              } else if (context.kind === "settings") {
+                state.currentProvider = context.modelProvider || state.fallbackProvider;
+              } else if (context.kind === "turn") {
+                state.currentTurnId = context.turnId;
+                if (state.forked && !state.forkReady) {
+                  const turnTimestamp = uuidV7Timestamp(context.turnId) ?? context.timestamp;
+                  if (Number.isFinite(turnTimestamp)
+                    && Number.isFinite(state.forkSessionTimestamp)
+                    && turnTimestamp >= state.forkSessionTimestamp) {
+                    state.forkReady = true;
+                  }
+                }
+              }
               return;
             }
             const event = parseLocalTokenUsageEvent(line);
@@ -580,36 +574,36 @@ export class LocalCodexTokenTracker {
             if (state.threadId && (!this.threadLatest.has(state.threadId) || event.timestamp >= this.threadLatest.get(state.threadId).timestamp)) {
               this.threadLatest.set(state.threadId, event);
             }
-            const currentUsage = {
-              totalTokens: event.totalTokens,
-              inputTokens: event.inputTokens,
-              cachedInputTokens: event.cachedInputTokens,
-              outputTokens: event.outputTokens,
-            };
-            const previousUsage = state.lastUsage;
-            state.lastUsage = currentUsage;
-            if (!this.officialModelProviders.has(state.modelProvider)
-              || event.date !== this.dailyDate
-              || this.seenEvents.has(event.identity)) return;
-            this.seenEvents.add(event.identity);
-            const delta = officialEquivalentTokenDelta(
-              currentUsage,
-              previousUsage,
-              state.currentModel,
-              state.serviceTier,
-            );
-            if (delta === null) return;
-            if (event.timestamp <= this.cutoffAt) this.historicalTokens += delta;
-            else this.liveTokens += delta;
+            const previousTotalTokens = state.lastTotalTokens;
+            if (event.totalTokens !== null
+              && Number.isSafeInteger(previousTotalTokens)
+              && event.totalTokens < previousTotalTokens) {
+              state.totalEpoch += 1;
+            }
+            if (event.totalTokens !== null) state.lastTotalTokens = event.totalTokens;
+            if (!this.classificationReady || event.date !== this.dailyDate) return;
+            if (state.forked && !state.forkReady) return;
+            const identityScope = state.currentTurnId || state.logicalSessionId || state.threadId || "unknown";
+            const identity = event.totalTokens === null
+              ? `${identityScope}:last:${event.tokens}:${event.identity}`
+              : `${identityScope}:epoch:${state.totalEpoch}:total:${event.totalTokens}`;
+            if (this.seenEvents.has(identity)) return;
+            this.seenEvents.add(identity);
+            this.counterDirty = true;
+            const delta = conversationTokenDelta(event.totalTokens, previousTotalTokens);
+            const modelProvider = state.currentProvider || state.fallbackProvider;
+            if (delta === null || delta <= 0 || !this.officialModelProviders.has(modelProvider)) return;
+            const nextTodayTokens = this.todayTokens + delta;
+            if (Number.isSafeInteger(nextTodayTokens)) this.todayTokens = nextTodayTokens;
           });
           this.fileStates.set(filePath, state);
         } catch {}
       }
       const todayTokens = this.currentTokens();
       const currentTask = this.currentThreadId ? this.threadLatest.get(this.currentThreadId) || null : null;
-      if (todayTokens !== this.lastSavedTokens) {
-        saveLocalTokenCounter(this.counterPath, this.dailyDate, this.officialProviderKey(), todayTokens, now);
-        this.lastSavedTokens = todayTokens;
+      if (this.counterDirty) {
+        saveLocalTokenCounter(this.counterPath, this.dailyDate, todayTokens, this.seenEvents, now);
+        this.counterDirty = false;
       }
       const available = Boolean(this.sessionRoot && existsSync(this.sessionRoot));
       this.emit({
@@ -688,7 +682,7 @@ export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = 
 
 export function officialModelProvidersFromAccount(accountResponse, configResponse) {
   const accountType = String(accountResponse?.account?.type || "").trim().toLowerCase();
-  if (!["chatgpt", "personalaccesstoken"].includes(accountType)) return [];
+  if (!["chatgpt", "chatgptauthtokens", "personalaccesstoken"].includes(accountType)) return [];
   const config = configResponse?.config && typeof configResponse.config === "object"
     ? configResponse.config
     : configResponse && typeof configResponse === "object" ? configResponse : {};
@@ -703,6 +697,13 @@ export function officialModelProvidersFromAccount(accountResponse, configRespons
   return [...providers].sort();
 }
 
+function officialModelProviderResolutionReady(accountResponse, configResponse) {
+  return Boolean(
+    accountResponse && typeof accountResponse === "object"
+    && configResponse && typeof configResponse === "object",
+  );
+}
+
 export function mergeOfficialLocalUsage(officialView, localView, now = new Date()) {
   const todayKey = localDateKey(now);
   const taskUsage = {
@@ -710,35 +711,19 @@ export function mergeOfficialLocalUsage(officialView, localView, now = new Date(
     currentTaskTokens: Number.isSafeInteger(localView?.currentTaskTokens) && localView.currentTaskTokens >= 0 ? localView.currentTaskTokens : null,
     lastTurnTokens: Number.isSafeInteger(localView?.lastTurnTokens) && localView.lastTurnTokens >= 0 ? localView.lastTurnTokens : null,
   };
-  const officialToday = Number.isSafeInteger(officialView?.todayTokens) && officialView.todayTokens >= 0
-    ? officialView.todayTokens
-    : null;
   const localToday = localView?.dailyDate === todayKey
     && Number.isSafeInteger(localView?.todayTokens)
     && localView.todayTokens >= 0
     ? localView.todayTokens
     : null;
-  if (localToday === null) {
-    return {
-      ...officialView,
-      ...taskUsage,
-      todayTokenScope: officialToday === null ? null : "official",
-    };
-  }
-  const useLocalEquivalent = localToday > 0 || officialToday === null;
-  const todayTokens = useLocalEquivalent ? localToday : officialToday;
-  const todayTokenScope = useLocalEquivalent ? "local-official-equivalent" : "official";
-  const missingNotice = useLocalEquivalent && officialToday === null && officialView?.tokenUsageAvailable
-    ? `${officialView?.error || `官方接口暂无 ${todayKey} 的 Token 数据`}；当前显示本机官方费率折算`
-    : officialView?.error || null;
   return {
     ...officialView,
     ...taskUsage,
-    todayTokens,
-    tokenUsageAvailable: Boolean(officialView?.tokenUsageAvailable || localToday !== null),
-    todayTokenScope,
+    todayTokens: localToday,
+    tokenUsageAvailable: true,
+    todayTokenScope: localToday === null ? null : "local-official-conversations",
     localTodayTokens: localToday,
-    error: missingNotice,
+    error: localView?.error || officialView?.error || null,
   };
 }
 
@@ -799,14 +784,11 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
     const todayValue = view?.todayTokens === null || view?.todayTokens === undefined
       ? "--"
       : formatMetricTokens(view.todayTokens);
-    const todayLabel = view?.todayTokenScope === "local-official-equivalent"
-      ? "今日 Token（官方折算）"
-      : "今日 Token";
     metrics.push({
       id: "todayTokens",
       label: "今日 Token",
       display: `今日 ${view?.todayTokens === null || view?.todayTokens === undefined ? "--" : formatMetricTokens(view.todayTokens)}`,
-      detail: `${todayLabel}：${todayValue}`,
+      detail: `今日 Token：${todayValue}`,
       value: todayValue,
       defaultVisible: true,
     });
@@ -1520,7 +1502,9 @@ export class CombinedUsageClient {
       managed: true,
       onUpdate: (view) => {
         this.officialView = view;
-        this.localOfficial.setOfficialModelProviders(view?.officialModelProviders);
+        if (view?.officialModelProvidersResolved) {
+          this.localOfficial.setOfficialModelProviders(view?.officialModelProviders);
+        }
         this.emit();
       },
     });
@@ -1734,6 +1718,7 @@ export class UsageClient {
       todayTokens: null,
       lifetimeTokens: null,
       officialModelProviders: [],
+      officialModelProvidersResolved: false,
       fetchedAt: null,
       error: null,
     };
@@ -1770,6 +1755,7 @@ export class UsageClient {
     this.emit({
       ...normalizeUsageView(this.rateLimits, this.tokenUsage),
       officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
+      officialModelProvidersResolved: officialModelProviderResolutionReady(this.accountSnapshot, this.configSnapshot),
     });
   }
 
@@ -1801,6 +1787,7 @@ export class UsageClient {
         this.emit({
           ...normalizeUsageView(this.rateLimits, this.tokenUsage),
           officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
+          officialModelProvidersResolved: officialModelProviderResolutionReady(this.accountSnapshot, this.configSnapshot),
         });
       } catch (error) {
         if (this.rpc) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.1 - 2026-07-26
+
+- 重写官方订阅“今日 Token”口径：读取本机 `token_count` 事件的 `total_token_usage` 正增量，直接累加原始 Token，不再按官方费率折算，也不再回退到官方当天日期桶。
+- 每回合结合 `thread_settings_applied.model_provider_id` 与当前 ChatGPT 官方认证状态判断来源；仅官方订阅回合计入，API、API Key 和无法确认来源的回合均不计入。
+- 对重复 Token 快照与 fork 重放事件去重；今日计数按本机日期持久化，在本地日期跨过零点时自动清零，Codex 或 Windows 当天重启后继续累加。
+
 ## 1.8.0 - 2026-07-26
 
 - 官方订阅“今日 Token”增加本机实时计数：按 ChatGPT 认证提供方归属任务，并依照 OpenAI Codex 官方费率区分非缓存输入、缓存输入、输出、实际模型和 Fast 模式，统一显示为 GPT-5.6 Sol 标准输入等效 Token。

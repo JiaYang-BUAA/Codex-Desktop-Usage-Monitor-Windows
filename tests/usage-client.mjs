@@ -14,7 +14,7 @@ import {
   normalizeApiAccountView,
   normalizeCctqUsageView,
   normalizeUsageView,
-  officialEquivalentTokenDelta,
+  conversationTokenDelta,
   officialModelProvidersFromAccount,
   parseAppServerLine,
   parseLocalTokenContextEvent,
@@ -28,10 +28,12 @@ assert.equal(parseAppServerLine("  "), null);
 assert.throws(() => parseAppServerLine("[]"), /JSON object/);
 assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
 
-assert.deepEqual(officialModelProvidersFromAccount(
-  { account: { type: "chatgpt" }, requiresOpenaiAuth: true },
-  { config: { model_provider: "custom", model_providers: { custom: { requires_openai_auth: true } } } },
-), ["custom", "openai"]);
+for (const accountType of ["chatgpt", "chatgptAuthTokens", "personalAccessToken"]) {
+  assert.deepEqual(officialModelProvidersFromAccount(
+    { account: { type: accountType }, requiresOpenaiAuth: true },
+    { config: { model_provider: "custom", model_providers: { custom: { requires_openai_auth: true } } } },
+  ), ["custom", "openai"]);
+}
 assert.deepEqual(officialModelProvidersFromAccount(
   { account: { type: "chatgpt" }, requiresOpenaiAuth: false },
   { config: { model_provider: "custom", model_providers: { custom: { requires_openai_auth: false } } } },
@@ -115,237 +117,293 @@ const tokenEventLine = JSON.stringify({
 });
 assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.tokens, 50);
 assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.totalTokens, 150);
-assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.inputTokens, 120);
-assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.cachedInputTokens, 80);
-assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.outputTokens, 30);
 assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-21"), null);
 assert.equal(parseLocalTokenUsageEvent('{"payload":{"type":"user_message","text":"token_count"}}'), null);
 assert.deepEqual(parseLocalTokenContextEvent(JSON.stringify({
+  timestamp: "2026-07-22T04:00:00.000Z",
   type: "turn_context",
-  payload: { model: "gpt-5.6-sol" },
-})), { model: "gpt-5.6-sol", serviceTier: null });
+  payload: { turn_id: "019f8e6a-f751-7963-8474-551fcc730496" },
+})), {
+  kind: "turn",
+  timestamp: Date.parse("2026-07-22T04:00:00.000Z"),
+  turnId: "019f8e6a-f751-7963-8474-551fcc730496",
+});
 assert.deepEqual(parseLocalTokenContextEvent(JSON.stringify({
+  timestamp: "2026-07-22T04:00:01.000Z",
   type: "event_msg",
   payload: {
     type: "thread_settings_applied",
-    thread_settings: { model: "gpt-5.6-sol", service_tier: "fast" },
+    thread_settings: { model_provider_id: "OpenAI" },
   },
-})), { model: "gpt-5.6-sol", serviceTier: "fast" });
-const previousOfficialUsage = { totalTokens: 100, inputTokens: 80, cachedInputTokens: 60, outputTokens: 20 };
-const currentOfficialUsage = { totalTokens: 150, inputTokens: 120, cachedInputTokens: 80, outputTokens: 30 };
-assert.equal(officialEquivalentTokenDelta(currentOfficialUsage, previousOfficialUsage, "gpt-5.6-sol"), 82);
-assert.equal(officialEquivalentTokenDelta(currentOfficialUsage, previousOfficialUsage, "gpt-5.6-sol", "fast"), 205);
-assert.equal(officialEquivalentTokenDelta({
-  totalTokens: 500,
-  inputTokens: 400,
-  cachedInputTokens: 350,
-  outputTokens: 100,
-}, null, "gpt-5.6-terra"), 343);
-assert.equal(officialEquivalentTokenDelta({
-  totalTokens: 110,
-  inputTokens: 100,
-  cachedInputTokens: 50,
-  outputTokens: 10,
-}, null, "codex-auto-review"), 47);
+})), {
+  kind: "settings",
+  timestamp: Date.parse("2026-07-22T04:00:01.000Z"),
+  modelProvider: "openai",
+});
+assert.deepEqual(parseLocalTokenContextEvent(JSON.stringify({
+  timestamp: "2026-07-22T04:00:02.000Z",
+  type: "session_meta",
+  payload: {
+    id: "019f8e6a-f751-7963-8474-551fcc730496",
+    parent_thread_id: "019f8e6a-f751-7963-8474-551fcc730400",
+    model_provider: "ChatGPT",
+  },
+})), {
+  kind: "session",
+  timestamp: Date.parse("2026-07-22T04:00:02.000Z"),
+  sessionId: "019f8e6a-f751-7963-8474-551fcc730496",
+  parentThreadId: "019f8e6a-f751-7963-8474-551fcc730400",
+  modelProvider: "chatgpt",
+  forked: true,
+});
 
-const localTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-official-token-test-"));
-try {
-  const sessionRoot = path.join(localTrackerRoot, "sessions");
-  const counterPath = path.join(localTrackerRoot, "official-token-counter.json");
-  const currentThreadId = "019f8e6a-f751-7963-8474-551fcc730496";
-  const customThreadId = "019f9da1-961d-7fe2-ac1d-bc4e68452ce6";
-  mkdirSync(sessionRoot, { recursive: true });
-  const sessionPath = path.join(sessionRoot, `rollout-test-${currentThreadId}.jsonl`);
-  const customSessionPath = path.join(sessionRoot, `rollout-test-${customThreadId}.jsonl`);
-  let trackerNow = Date.now();
-  const dayStart = new Date(trackerNow);
-  dayStart.setHours(0, 0, 0, 0);
-  const beforeToday = new Date(dayStart.getTime() - 1000).toISOString();
-  const firstToday = new Date(dayStart.getTime() + 60_000).toISOString();
-  const localDate = new Date(trackerNow);
-  const trackerDateKey = `${localDate.getFullYear()}-${String(localDate.getMonth() + 1).padStart(2, "0")}-${String(localDate.getDate()).padStart(2, "0")}`;
-  const firstEvent = JSON.stringify({
-    timestamp: firstToday,
+assert.equal(conversationTokenDelta(150, 100), 50);
+assert.equal(conversationTokenDelta(150, null), 150);
+assert.equal(conversationTokenDelta(0, null), 0);
+assert.equal(conversationTokenDelta(0, 0), 0);
+assert.equal(conversationTokenDelta(20, 50), 0);
+assert.equal(conversationTokenDelta(-1, 0), null);
+
+function localDateString(value) {
+  const date = new Date(value);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function uuidAt(timestamp, suffix = 1) {
+  const prefix = Math.trunc(timestamp).toString(16).padStart(12, "0").slice(-12);
+  const tail = `${Math.trunc(suffix).toString(16).padStart(20, "0")}`.slice(-20);
+  const compact = `${prefix}${tail}`;
+  return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
+}
+
+function sessionMeta(timestamp, id, provider, extra = {}) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
+    type: "session_meta",
+    payload: { id, model_provider: provider, ...extra },
+  });
+}
+
+function turnContext(timestamp, turnId) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
+    type: "turn_context",
+    payload: { turn_id: turnId },
+  });
+}
+
+function providerSettings(timestamp, provider) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
+    type: "event_msg",
+    payload: {
+      type: "thread_settings_applied",
+      thread_settings: { model_provider_id: provider },
+    },
+  });
+}
+
+function tokenCount(timestamp, totalTokens, lastTokens = totalTokens) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
     type: "event_msg",
     payload: {
       type: "token_count",
       info: {
-        total_token_usage: {
-          total_tokens: 150,
-          input_tokens: 120,
-          cached_input_tokens: 80,
-          output_tokens: 30,
-        },
-        last_token_usage: { total_tokens: 50 },
+        total_token_usage: { total_tokens: totalTokens },
+        last_token_usage: { total_tokens: lastTokens },
       },
     },
   });
+}
+
+const providerTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-provider-token-test-"));
+try {
+  const sessionRoot = path.join(providerTrackerRoot, "sessions");
+  const counterPath = path.join(providerTrackerRoot, "official-token-counter.json");
+  mkdirSync(sessionRoot, { recursive: true });
+  const trackerNow = Date.now();
+  const trackerDateKey = localDateString(trackerNow);
+  const threadId = uuidAt(trackerNow - 60_000, 1);
+  const sessionPath = path.join(sessionRoot, `rollout-provider-${threadId}.jsonl`);
+  const at = (seconds) => trackerNow - 50_000 + seconds * 1000;
+  const zeroEvent = tokenCount(at(2), 0, 0);
   writeFileSync(sessionPath, [
-    JSON.stringify({
-      timestamp: beforeToday,
-      type: "session_meta",
-      payload: { id: currentThreadId, model_provider: "openai" },
-    }),
-    JSON.stringify({
-      timestamp: beforeToday,
-      type: "turn_context",
-      payload: { model: "gpt-5.6-sol" },
-    }),
-    JSON.stringify({
-      timestamp: beforeToday,
-      type: "event_msg",
-      payload: {
-        type: "token_count",
-        info: {
-          total_token_usage: {
-            total_tokens: 100,
-            input_tokens: 80,
-            cached_input_tokens: 60,
-            output_tokens: 20,
-          },
-          last_token_usage: { total_tokens: 100 },
-        },
-      },
-    }),
-    firstEvent,
-    firstEvent,
-    "",
-  ].join("\n"), "utf8");
-  writeFileSync(customSessionPath, [
-    JSON.stringify({
-      timestamp: firstToday,
-      type: "session_meta",
-      payload: { id: customThreadId, model_provider: "custom" },
-    }),
-    JSON.stringify({
-      timestamp: firstToday,
-      type: "turn_context",
-      payload: { model: "gpt-5.6-terra" },
-    }),
-    JSON.stringify({
-      timestamp: firstToday,
-      type: "event_msg",
-      payload: {
-        type: "token_count",
-        info: {
-          total_token_usage: {
-            total_tokens: 500,
-            input_tokens: 400,
-            cached_input_tokens: 350,
-            output_tokens: 100,
-          },
-          last_token_usage: { total_tokens: 500 },
-        },
-      },
-    }),
+    sessionMeta(at(0), threadId, "custom"),
+    turnContext(at(1), uuidAt(at(1), 11)),
+    providerSettings(at(1), "openai"),
+    zeroEvent,
+    zeroEvent,
+    turnContext(at(3), uuidAt(at(3), 12)),
+    providerSettings(at(3), "custom"),
+    tokenCount(at(4), 10, 10),
+    turnContext(at(5), uuidAt(at(5), 13)),
+    providerSettings(at(5), "openai"),
+    tokenCount(at(6), 30, 20),
+    turnContext(at(7), uuidAt(at(7), 14)),
+    providerSettings(at(7), "custom"),
+    tokenCount(at(8), 50, 20),
+    turnContext(at(9), uuidAt(at(9), 15)),
+    providerSettings(at(9), "openai"),
+    tokenCount(at(10), 70, 20),
+    turnContext(at(11), uuidAt(at(11), 16)),
+    tokenCount(at(12), 20, 20),
+    turnContext(at(13), uuidAt(at(13), 17)),
+    tokenCount(at(14), 27, 7),
     "",
   ].join("\n"), "utf8");
   writeFileSync(counterPath, `${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 5,
     dailyDate: trackerDateKey,
     todayTokens: 999999,
+    seenEvents: ["legacy:event"],
   })}\n`, "utf8");
-  const trackerUpdates = [];
+
   const tracker = new LocalCodexTokenTracker({
     sessionRoot,
     counterPath,
-    officialModelProviders: ["openai"],
     now: () => trackerNow,
-    onUpdate: (value) => trackerUpdates.push(value),
   });
-  tracker.setCurrentThreadId(currentThreadId);
-  await tracker.refresh();
-  assert.equal(trackerUpdates.at(-1).todayTokens, 82);
-  assert.equal(trackerUpdates.at(-1).currentTaskTokens, 150);
-  assert.equal(trackerUpdates.at(-1).lastTurnTokens, 50);
-  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).todayTokens, 82);
-  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).schemaVersion, 5);
-  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).providerKey, "openai");
-  tracker.setCurrentThreadId(customThreadId);
-  await tracker.refresh();
-  assert.equal(trackerUpdates.at(-1).todayTokens, 82);
-  assert.equal(trackerUpdates.at(-1).currentTaskTokens, 500);
-  assert.equal(trackerUpdates.at(-1).lastTurnTokens, 500);
-  tracker.setOfficialModelProviders(["openai", "custom"]);
-  await tracker.refresh();
-  assert.equal(trackerUpdates.at(-1).todayTokens, 425);
-  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).providerKey, "custom,openai");
+  tracker.setCurrentThreadId(threadId);
+  assert.equal((await tracker.refresh()).todayTokens, 0);
   tracker.setOfficialModelProviders(["openai"]);
-  await tracker.refresh();
-  assert.equal(trackerUpdates.at(-1).todayTokens, 82);
-  tracker.setCurrentThreadId(currentThreadId);
-  await tracker.refresh();
-  trackerNow += 120_000;
-  appendFileSync(sessionPath, `${JSON.stringify({
-    timestamp: new Date(trackerNow).toISOString(),
-    type: "event_msg",
-    payload: {
-      type: "token_count",
-      info: {
-        total_token_usage: {
-          total_tokens: 190,
-          input_tokens: 150,
-          cached_input_tokens: 90,
-          output_tokens: 40,
-        },
-        last_token_usage: { total_tokens: 40 },
-      },
-    },
-  })}\n`, "utf8");
-  await tracker.refresh();
-  assert.equal(trackerUpdates.at(-1).todayTokens, 163);
-  assert.equal(trackerUpdates.at(-1).currentTaskTokens, 190);
-  assert.equal(trackerUpdates.at(-1).lastTurnTokens, 40);
-  const restartedUpdates = [];
+  const firstView = await tracker.refresh();
+  assert.equal(firstView.todayTokens, 47);
+  assert.equal(firstView.currentTaskTokens, 27);
+  assert.equal(firstView.lastTurnTokens, 7);
+  const persisted = JSON.parse(readFileSync(counterPath, "utf8"));
+  assert.equal(persisted.schemaVersion, 6);
+  assert.equal(persisted.mode, "official-conversation-raw");
+  assert.equal(persisted.todayTokens, 47);
+  assert.ok(!persisted.seenEvents.includes("legacy:event"));
+  assert.equal(persisted.seenEvents.filter((identity) => identity.endsWith(":total:0")).length, 1);
+
   const restartedTracker = new LocalCodexTokenTracker({
     sessionRoot,
     counterPath,
     officialModelProviders: ["openai"],
     now: () => trackerNow + 1,
-    onUpdate: (value) => restartedUpdates.push(value),
   });
-  restartedTracker.setCurrentThreadId(currentThreadId);
-  await restartedTracker.refresh();
-  assert.equal(restartedUpdates.at(-1).todayTokens, 163);
-  assert.equal(restartedUpdates.at(-1).currentTaskTokens, 190);
-
-  const mergeDate = new Date(trackerNow);
-  const delayedOfficial = mergeOfficialLocalUsage(missingToday, {
-    status: "ready",
-    dailyDate: trackerDateKey,
-    todayTokens: 90,
-    currentThreadId,
-    currentTaskTokens: 190,
-    lastTurnTokens: 40,
-  }, mergeDate);
-  assert.equal(delayedOfficial.todayTokens, 90);
-  assert.equal(delayedOfficial.todayTokenScope, "local-official-equivalent");
-  assert.match(delayedOfficial.error, /官方费率折算/);
-  const delayedSource = toOfficialUsageSource(delayedOfficial, trackerNow);
-  assert.equal(delayedSource.metrics.find((item) => item.id === "todayTokens").value, "90");
-  assert.equal(delayedSource.metrics.find((item) => item.id === "currentTaskTokens").value, "190");
-  assert.equal(delayedSource.metrics.find((item) => item.id === "lastTurnTokens").value, "40");
-  const officialBehind = mergeOfficialLocalUsage({ ...view, todayTokens: 80 }, {
-    dailyDate: trackerDateKey,
-    todayTokens: 90,
-  }, mergeDate);
-  assert.equal(officialBehind.todayTokens, 90);
-  assert.equal(officialBehind.todayTokenScope, "local-official-equivalent");
-  const officialAhead = mergeOfficialLocalUsage({ ...view, todayTokens: 120 }, {
-    dailyDate: trackerDateKey,
-    todayTokens: 90,
-  }, mergeDate);
-  assert.equal(officialAhead.todayTokens, 90);
-  assert.equal(officialAhead.todayTokenScope, "local-official-equivalent");
-  const officialFallback = mergeOfficialLocalUsage({ ...view, todayTokens: 120 }, {
-    dailyDate: trackerDateKey,
-    todayTokens: 0,
-  }, mergeDate);
-  assert.equal(officialFallback.todayTokens, 120);
-  assert.equal(officialFallback.todayTokenScope, "official");
+  restartedTracker.setCurrentThreadId(threadId);
+  const restartedView = await restartedTracker.refresh();
+  assert.equal(restartedView.todayTokens, 47);
+  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).todayTokens, 47);
 } finally {
-  rmSync(localTrackerRoot, { recursive: true, force: true });
+  rmSync(providerTrackerRoot, { recursive: true, force: true });
 }
+
+const forkTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-fork-token-test-"));
+try {
+  const sessionRoot = path.join(forkTrackerRoot, "sessions");
+  const counterPath = path.join(forkTrackerRoot, "official-token-counter.json");
+  mkdirSync(sessionRoot, { recursive: true });
+  const trackerNow = Date.now();
+  const parentId = uuidAt(trackerNow - 90_000, 21);
+  const childCreatedAt = trackerNow - 40_000;
+  const childId = uuidAt(childCreatedAt, 22);
+  const replayedTurnId = uuidAt(childCreatedAt - 10_000, 23);
+  const childTurnId = uuidAt(childCreatedAt + 10_000, 24);
+  const childPath = path.join(sessionRoot, `a-rollout-child-${childId}.jsonl`);
+  const parentPath = path.join(sessionRoot, `b-rollout-parent-${parentId}.jsonl`);
+  writeFileSync(parentPath, [
+    sessionMeta(trackerNow - 80_000, parentId, "openai"),
+    turnContext(trackerNow - 70_000, replayedTurnId),
+    tokenCount(trackerNow - 60_000, 100, 100),
+    "",
+  ].join("\n"), "utf8");
+  writeFileSync(childPath, [
+    sessionMeta(childCreatedAt, childId, "openai", {
+      parent_thread_id: parentId,
+      source: { subagent: { role: "worker" } },
+    }),
+    turnContext(childCreatedAt + 1000, replayedTurnId),
+    tokenCount(childCreatedAt + 2000, 100, 100),
+    turnContext(childCreatedAt + 10_000, childTurnId),
+    tokenCount(childCreatedAt + 20_000, 130, 30),
+    "",
+  ].join("\n"), "utf8");
+
+  const tracker = new LocalCodexTokenTracker({
+    sessionRoot,
+    counterPath,
+    officialModelProviders: ["openai"],
+    now: () => trackerNow,
+  });
+  tracker.setCurrentThreadId(parentId);
+  const forkView = await tracker.refresh();
+  assert.equal(forkView.todayTokens, 130);
+  const persisted = JSON.parse(readFileSync(counterPath, "utf8"));
+  assert.equal(persisted.seenEvents.filter((identity) => identity === `${replayedTurnId}:epoch:0:total:100`).length, 1);
+  assert.ok(persisted.seenEvents.includes(`${childTurnId}:epoch:0:total:130`));
+} finally {
+  rmSync(forkTrackerRoot, { recursive: true, force: true });
+}
+
+const midnightTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-midnight-token-test-"));
+try {
+  const sessionRoot = path.join(midnightTrackerRoot, "sessions");
+  const counterPath = path.join(midnightTrackerRoot, "official-token-counter.json");
+  mkdirSync(sessionRoot, { recursive: true });
+  const dayOne = new Date();
+  dayOne.setHours(23, 59, 30, 0);
+  let trackerNow = dayOne.getTime();
+  const dayTwo = new Date(dayOne);
+  dayTwo.setDate(dayTwo.getDate() + 1);
+  dayTwo.setHours(0, 1, 0, 0);
+  const threadId = uuidAt(trackerNow - 60_000, 31);
+  const sessionPath = path.join(sessionRoot, `rollout-midnight-${threadId}.jsonl`);
+  writeFileSync(sessionPath, [
+    sessionMeta(trackerNow - 50_000, threadId, "openai"),
+    turnContext(trackerNow - 40_000, uuidAt(trackerNow - 40_000, 32)),
+    tokenCount(trackerNow - 30_000, 200, 200),
+    "",
+  ].join("\n"), "utf8");
+  const tracker = new LocalCodexTokenTracker({
+    sessionRoot,
+    counterPath,
+    officialModelProviders: ["openai"],
+    now: () => trackerNow,
+  });
+  tracker.setCurrentThreadId(threadId);
+  assert.equal((await tracker.refresh()).todayTokens, 200);
+
+  trackerNow = dayTwo.getTime();
+  appendFileSync(sessionPath, [
+    turnContext(trackerNow - 20_000, uuidAt(trackerNow - 20_000, 33)),
+    tokenCount(trackerNow - 10_000, 260, 60),
+    "",
+  ].join("\n"), "utf8");
+  const dayTwoView = await tracker.refresh();
+  assert.equal(dayTwoView.dailyDate, localDateString(trackerNow));
+  assert.equal(dayTwoView.todayTokens, 60);
+  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).todayTokens, 60);
+} finally {
+  rmSync(midnightTrackerRoot, { recursive: true, force: true });
+}
+
+const trackerDate = new Date();
+const trackerDateKey = localDateString(trackerDate);
+const mergeThreadId = "019f8e6a-f751-7963-8474-551fcc730496";
+const delayedOfficial = mergeOfficialLocalUsage(missingToday, {
+  status: "ready",
+  dailyDate: trackerDateKey,
+  todayTokens: 90,
+  currentThreadId: mergeThreadId,
+  currentTaskTokens: 190,
+  lastTurnTokens: 40,
+}, trackerDate);
+assert.equal(delayedOfficial.todayTokens, 90);
+assert.equal(delayedOfficial.todayTokenScope, "local-official-conversations");
+const delayedSource = toOfficialUsageSource(delayedOfficial, trackerDate.getTime());
+assert.equal(delayedSource.metrics.find((item) => item.id === "todayTokens").value, "90");
+assert.equal(delayedSource.metrics.find((item) => item.id === "currentTaskTokens").value, "190");
+assert.equal(delayedSource.metrics.find((item) => item.id === "lastTurnTokens").value, "40");
+const localZeroOverridesOfficialBucket = mergeOfficialLocalUsage({ ...view, todayTokens: 120 }, {
+  dailyDate: trackerDateKey,
+  todayTokens: 0,
+}, trackerDate);
+assert.equal(localZeroOverridesOfficialBucket.todayTokens, 0);
+assert.equal(localZeroOverridesOfficialBucket.todayTokenScope, "local-official-conversations");
 
 const reversed = toOfficialUsageSource({ ...view, windows: [...view.windows].reverse() }, now.getTime());
 assert.equal(reversed.metrics.find((item) => item.id === "primaryRemaining").value, "68%");
