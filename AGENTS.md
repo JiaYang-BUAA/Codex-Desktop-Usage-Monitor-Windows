@@ -23,16 +23,31 @@ data sources after the launcher has been verified:
    combination of the three. Official Subscription requires no credential.
 2. For API Account, explain that the current implementation expects a CCTQ-style
    account endpoint, a numeric user ID, and an account access token. Ask the user to
+   look for the Base URL in the provider's API/developer documentation, the numeric
+   user ID in User Profile, Account Information, or Personal Center, and the account
+   access token in User Profile, Security Settings, Access Token, or User Token.
+   Names vary by provider; make clear that the account access token may be different
+   from an API key. If an item is not visible, ask for the provider name, public
+   documentation, or a redacted screenshot instead of guessing. Ask the user to
    copy the complete token to the Windows clipboard and run
    `scripts/configure-api-account.ps1 -FromClipboard -UserId <real-id>`; never ask for
    the token in chat or print it. The script validates `/api/user/self` before saving
    the token with Windows DPAPI.
 3. For API Key, ask for the provider's endpoint documentation and response example,
-   not the key itself. Copy the key through the clipboard and use the appropriate
+   not the key itself. Explain that API keys are usually created or copied from the
+   provider's Developer Console, API Keys, Key Management, or Token Management page,
+   while the usage endpoint is usually documented under Usage, Quota, Billing, or
+   API documentation. Copy the key through the clipboard and use the appropriate
    `configure-*.ps1 -FromClipboard` command. Keep the key in DPAPI and keep the
-   provider JSON limited to endpoint and field mappings.
+   provider JSON limited to endpoint and field mappings. If the provider uses
+   unfamiliar labels, ask for public documentation or a redacted screenshot and do
+   not infer that an account access token and an API key are interchangeable.
 4. Ask for the user's current real cumulative Token count when API Account is
-   enabled. It must be a complete non-negative integer, without `万` or `亿`. Run
+   enabled. It must be a complete non-negative integer, without `万` or `亿`.
+   Explain that this value is normally shown on the provider's Usage Statistics,
+   Billing, Consumption Records, or Token Statistics page. If only a rounded value
+   is visible, ask the user to open its details or export rather than inventing a
+   precise number. Run
    `scripts/configure-token-baseline.ps1 -InitialTokens <value>` after the account is
    configured. If the user does not know the value, explicitly explain that `0` is
    used and new visible logs are accumulated from there. This baseline is needed
