@@ -254,6 +254,7 @@ if (-not $SkipPackageTest) {
       if ($LASTEXITCODE -ne 17) { throw "Hidden VBS failure test returned $LASTEXITCODE instead of 17." }
       if (-not (Test-Path -LiteralPath $launcherErrorPath -PathType Leaf)) { throw 'Hidden VBS did not create launcher-error.log.' }
       if ((Get-Content -LiteralPath $launcherErrorPath -Raw) -notmatch 'exited with code 17') { throw 'Hidden VBS launcher log does not include the PowerShell exit code.' }
+      $global:LASTEXITCODE = 0
     } finally {
       $env:LOCALAPPDATA = $previousLocalAppData
     }
