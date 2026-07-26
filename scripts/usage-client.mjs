@@ -17,7 +17,7 @@ import path from "node:path";
 
 const DEFAULT_REFRESH_MS = 60000;
 const LOCAL_TOKEN_SCAN_MS = 2000;
-const LOCAL_TOKEN_COUNTER_SCHEMA_VERSION = 6;
+const LOCAL_TOKEN_COUNTER_SCHEMA_VERSION = 7;
 const LOCAL_TOKEN_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 const TOKEN_COUNT_MARKER = Buffer.from('"token_count"', "utf8");
 const TURN_CONTEXT_MARKER = Buffer.from('"turn_context"', "utf8");
@@ -221,6 +221,12 @@ export function conversationTokenDelta(current, previous) {
   return current >= previous ? current - previous : 0;
 }
 
+function turnTokenDelta(current, previous) {
+  if (!Number.isSafeInteger(current) || current < 0) return null;
+  if (!Number.isSafeInteger(previous) || previous < 0 || current < previous) return current;
+  return current - previous;
+}
+
 function uuidV7Timestamp(value) {
   const compact = String(value ?? "").trim().toLowerCase().replace(/-/g, "");
   if (!/^[0-9a-f]{32}$/.test(compact)) return null;
@@ -317,24 +323,59 @@ function resolveLocalTokenCounterPath(explicit) {
 }
 
 function loadLocalTokenCounter(counterPath, date) {
-  const empty = { todayTokens: 0, seenEvents: [] };
+  const empty = {
+    todayTokens: 0,
+    seenEvents: [],
+    officialLifetimeTokens: null,
+    officialLifetimeCheckpointAt: null,
+    officialLifetimePendingTokens: 0,
+    officialLifetimeSeenEvents: [],
+  };
   if (!counterPath || !existsSync(counterPath)) return empty;
   try {
     const value = JSON.parse(readFileSync(counterPath, "utf8"));
-    if (value?.schemaVersion !== LOCAL_TOKEN_COUNTER_SCHEMA_VERSION || value?.dailyDate !== date) return empty;
-    const todayTokens = Number.isSafeInteger(value?.todayTokens) && value.todayTokens >= 0
+    if (![6, LOCAL_TOKEN_COUNTER_SCHEMA_VERSION].includes(value?.schemaVersion)) return empty;
+    const sameDate = value?.dailyDate === date;
+    const todayTokens = sameDate && Number.isSafeInteger(value?.todayTokens) && value.todayTokens >= 0
       ? value.todayTokens
       : 0;
-    const seenEvents = Array.isArray(value?.seenEvents)
+    const seenEvents = sameDate && Array.isArray(value?.seenEvents)
       ? value.seenEvents.filter((item) => typeof item === "string" && item.length > 0 && item.length <= 160)
       : [];
-    return { todayTokens, seenEvents };
+    const lifetime = value?.schemaVersion === LOCAL_TOKEN_COUNTER_SCHEMA_VERSION
+      && value?.officialLifetime && typeof value.officialLifetime === "object"
+      ? value.officialLifetime
+      : null;
+    const officialLifetimeTokens = Number.isSafeInteger(lifetime?.baseTokens) && lifetime.baseTokens >= 0
+      ? lifetime.baseTokens
+      : null;
+    const officialLifetimeCheckpointAt = officialLifetimeTokens !== null
+      && Number.isFinite(Number(lifetime?.checkpointAt))
+      && Number(lifetime.checkpointAt) >= 0
+      ? Number(lifetime.checkpointAt)
+      : null;
+    const officialLifetimePendingTokens = officialLifetimeTokens !== null
+      && Number.isSafeInteger(lifetime?.pendingTokens)
+      && lifetime.pendingTokens >= 0
+      ? lifetime.pendingTokens
+      : 0;
+    const officialLifetimeSeenEvents = officialLifetimeTokens !== null && Array.isArray(lifetime?.seenEvents)
+      ? lifetime.seenEvents.filter((item) => typeof item === "string" && item.length > 0 && item.length <= 160)
+      : [];
+    return {
+      todayTokens,
+      seenEvents,
+      officialLifetimeTokens,
+      officialLifetimeCheckpointAt,
+      officialLifetimePendingTokens,
+      officialLifetimeSeenEvents,
+    };
   } catch {
     return empty;
   }
 }
 
-function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, now) {
+function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, officialLifetime, now) {
   if (!counterPath || !Number.isSafeInteger(todayTokens) || todayTokens < 0) return;
   mkdirSync(path.dirname(counterPath), { recursive: true });
   const temporaryPath = `${counterPath}.${process.pid}.tmp`;
@@ -344,6 +385,14 @@ function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, now) 
     mode: "official-conversation-raw",
     todayTokens,
     seenEvents: [...seenEvents].sort(),
+    officialLifetime: officialLifetime?.baseTokens === null || officialLifetime?.baseTokens === undefined
+      ? null
+      : {
+          baseTokens: officialLifetime.baseTokens,
+          checkpointAt: officialLifetime.checkpointAt,
+          pendingTokens: officialLifetime.pendingTokens,
+          seenEvents: [...officialLifetime.seenEvents].sort(),
+        },
     updatedAt: new Date(now).toISOString(),
   }, null, 2)}\n`, "utf8");
   renameSync(temporaryPath, counterPath);
@@ -441,11 +490,16 @@ export class LocalCodexTokenTracker {
     this.currentThreadId = null;
     this.dailyDate = null;
     this.todayTokens = 0;
+    this.officialLifetimeTokens = null;
+    this.officialLifetimeCheckpointAt = null;
+    this.officialLifetimePendingTokens = 0;
+    this.officialLifetimeSeenEvents = new Set();
     this.counterDirty = false;
     this.view = {
       status: "loading",
       dailyDate: null,
       todayTokens: null,
+      lifetimeTokens: null,
       currentThreadId: null,
       currentTaskTokens: null,
       lastTurnTokens: null,
@@ -459,6 +513,10 @@ export class LocalCodexTokenTracker {
     const saved = loadLocalTokenCounter(this.counterPath, this.dailyDate);
     this.todayTokens = saved.todayTokens;
     this.seenEvents = new Set(saved.seenEvents);
+    this.officialLifetimeTokens = saved.officialLifetimeTokens;
+    this.officialLifetimeCheckpointAt = saved.officialLifetimeCheckpointAt;
+    this.officialLifetimePendingTokens = saved.officialLifetimePendingTokens;
+    this.officialLifetimeSeenEvents = new Set(saved.officialLifetimeSeenEvents);
     this.counterDirty = false;
     this.fileStates.clear();
     this.threadLatest.clear();
@@ -472,16 +530,61 @@ export class LocalCodexTokenTracker {
     return this.todayTokens;
   }
 
+  currentLifetimeTokens() {
+    if (!Number.isSafeInteger(this.officialLifetimeTokens) || this.officialLifetimeTokens < 0) return null;
+    const total = this.officialLifetimeTokens + this.officialLifetimePendingTokens;
+    return Number.isSafeInteger(total) ? total : this.officialLifetimeTokens;
+  }
+
+  saveCounter(now = this.now()) {
+    if (this.dailyDate === null) this.resetDate(now);
+    saveLocalTokenCounter(
+      this.counterPath,
+      this.dailyDate,
+      this.todayTokens,
+      this.seenEvents,
+      {
+        baseTokens: this.officialLifetimeTokens,
+        checkpointAt: this.officialLifetimeCheckpointAt,
+        pendingTokens: this.officialLifetimePendingTokens,
+        seenEvents: this.officialLifetimeSeenEvents,
+      },
+      now,
+    );
+    this.counterDirty = false;
+  }
+
   emit(view) {
     const unchanged = this.view.status === view.status
       && this.view.dailyDate === view.dailyDate
       && this.view.todayTokens === view.todayTokens
+      && this.view.lifetimeTokens === view.lifetimeTokens
       && this.view.currentThreadId === view.currentThreadId
       && this.view.currentTaskTokens === view.currentTaskTokens
       && this.view.lastTurnTokens === view.lastTurnTokens
       && this.view.error === view.error;
     this.view = view;
     if (!unchanged) this.onUpdate(view);
+  }
+
+  setOfficialLifetimeTokens(value, observedAt = this.now()) {
+    const normalized = Number(value);
+    if (!Number.isSafeInteger(normalized) || normalized < 0) return false;
+    const timestamp = Number.isFinite(Number(observedAt)) ? Number(observedAt) : this.now();
+    if (this.dailyDate === null) this.resetDate(timestamp);
+    if (normalized === this.officialLifetimeTokens) return false;
+    this.officialLifetimeTokens = normalized;
+    this.officialLifetimeCheckpointAt = timestamp;
+    this.officialLifetimePendingTokens = 0;
+    this.officialLifetimeSeenEvents.clear();
+    this.counterDirty = true;
+    this.saveCounter(timestamp);
+    this.emit({
+      ...this.view,
+      lifetimeTokens: normalized,
+      fetchedAt: timestamp,
+    });
+    return true;
   }
 
   setCurrentThreadId(value) {
@@ -522,7 +625,10 @@ export class LocalCodexTokenTracker {
       const date = localDateKey(now);
       if (date !== this.dailyDate) this.resetDate(now);
       const dayStart = localStartOfDay(now);
-      const files = discoverRecentSessionFiles(this.sessionRoot, dayStart, this.currentThreadId);
+      const scanStart = Number.isFinite(this.officialLifetimeCheckpointAt)
+        ? Math.min(dayStart, this.officialLifetimeCheckpointAt)
+        : dayStart;
+      const files = discoverRecentSessionFiles(this.sessionRoot, scanStart, this.currentThreadId);
       for (const filePath of files) {
         const state = this.fileStates.get(filePath) || {
           offset: 0,
@@ -531,6 +637,7 @@ export class LocalCodexTokenTracker {
           fallbackProvider: null,
           currentProvider: null,
           currentTurnId: null,
+          currentTurnTokens: 0,
           lastTotalTokens: null,
           totalEpoch: 0,
           fileMetaSeen: false,
@@ -557,7 +664,10 @@ export class LocalCodexTokenTracker {
               } else if (context.kind === "settings") {
                 state.currentProvider = context.modelProvider || state.fallbackProvider;
               } else if (context.kind === "turn") {
-                state.currentTurnId = context.turnId;
+                if (context.turnId !== state.currentTurnId) {
+                  state.currentTurnId = context.turnId;
+                  state.currentTurnTokens = 0;
+                }
                 if (state.forked && !state.forkReady) {
                   const turnTimestamp = uuidV7Timestamp(context.turnId) ?? context.timestamp;
                   if (Number.isFinite(turnTimestamp)
@@ -571,9 +681,6 @@ export class LocalCodexTokenTracker {
             }
             const event = parseLocalTokenUsageEvent(line);
             if (!event) return;
-            if (state.threadId && (!this.threadLatest.has(state.threadId) || event.timestamp >= this.threadLatest.get(state.threadId).timestamp)) {
-              this.threadLatest.set(state.threadId, event);
-            }
             const previousTotalTokens = state.lastTotalTokens;
             if (event.totalTokens !== null
               && Number.isSafeInteger(previousTotalTokens)
@@ -581,18 +688,44 @@ export class LocalCodexTokenTracker {
               state.totalEpoch += 1;
             }
             if (event.totalTokens !== null) state.lastTotalTokens = event.totalTokens;
-            if (!this.classificationReady || event.date !== this.dailyDate) return;
+            const delta = conversationTokenDelta(event.totalTokens, previousTotalTokens);
+            const currentTurnDelta = turnTokenDelta(event.totalTokens, previousTotalTokens);
+            if (state.currentTurnId && Number.isSafeInteger(currentTurnDelta) && currentTurnDelta > 0) {
+              const nextCurrentTurnTokens = state.currentTurnTokens + currentTurnDelta;
+              if (Number.isSafeInteger(nextCurrentTurnTokens)) state.currentTurnTokens = nextCurrentTurnTokens;
+            }
+            const latestTurnTokens = state.currentTurnId ? state.currentTurnTokens : event.tokens;
+            if (state.threadId && (!this.threadLatest.has(state.threadId) || event.timestamp >= this.threadLatest.get(state.threadId).timestamp)) {
+              this.threadLatest.set(state.threadId, {
+                ...event,
+                tokens: latestTurnTokens,
+                turnId: state.currentTurnId,
+              });
+            }
+            if (!this.classificationReady) return;
             if (state.forked && !state.forkReady) return;
             const identityScope = state.currentTurnId || state.logicalSessionId || state.threadId || "unknown";
             const identity = event.totalTokens === null
               ? `${identityScope}:last:${event.tokens}:${event.identity}`
               : `${identityScope}:epoch:${state.totalEpoch}:total:${event.totalTokens}`;
-            if (this.seenEvents.has(identity)) return;
+            const modelProvider = state.currentProvider || state.fallbackProvider;
+            const officialUsage = delta !== null && delta > 0 && this.officialModelProviders.has(modelProvider);
+            if (officialUsage
+              && Number.isSafeInteger(this.officialLifetimeTokens)
+              && Number.isFinite(this.officialLifetimeCheckpointAt)
+              && event.timestamp > this.officialLifetimeCheckpointAt
+              && !this.officialLifetimeSeenEvents.has(identity)) {
+              const nextPendingTokens = this.officialLifetimePendingTokens + delta;
+              if (Number.isSafeInteger(nextPendingTokens)) {
+                this.officialLifetimePendingTokens = nextPendingTokens;
+                this.officialLifetimeSeenEvents.add(identity);
+                this.counterDirty = true;
+              }
+            }
+            if (event.date !== this.dailyDate || this.seenEvents.has(identity)) return;
             this.seenEvents.add(identity);
             this.counterDirty = true;
-            const delta = conversationTokenDelta(event.totalTokens, previousTotalTokens);
-            const modelProvider = state.currentProvider || state.fallbackProvider;
-            if (delta === null || delta <= 0 || !this.officialModelProviders.has(modelProvider)) return;
+            if (!officialUsage) return;
             const nextTodayTokens = this.todayTokens + delta;
             if (Number.isSafeInteger(nextTodayTokens)) this.todayTokens = nextTodayTokens;
           });
@@ -600,16 +733,17 @@ export class LocalCodexTokenTracker {
         } catch {}
       }
       const todayTokens = this.currentTokens();
+      const lifetimeTokens = this.currentLifetimeTokens();
       const currentTask = this.currentThreadId ? this.threadLatest.get(this.currentThreadId) || null : null;
       if (this.counterDirty) {
-        saveLocalTokenCounter(this.counterPath, this.dailyDate, todayTokens, this.seenEvents, now);
-        this.counterDirty = false;
+        this.saveCounter(now);
       }
       const available = Boolean(this.sessionRoot && existsSync(this.sessionRoot));
       this.emit({
         status: available ? "ready" : todayTokens > 0 ? "stale" : "unavailable",
         dailyDate: this.dailyDate,
         todayTokens: available || todayTokens > 0 ? todayTokens : null,
+        lifetimeTokens,
         currentThreadId: this.currentThreadId,
         currentTaskTokens: currentTask?.totalTokens ?? null,
         lastTurnTokens: currentTask?.tokens ?? null,
@@ -716,10 +850,15 @@ export function mergeOfficialLocalUsage(officialView, localView, now = new Date(
     && localView.todayTokens >= 0
     ? localView.todayTokens
     : null;
+  const localLifetime = Number.isSafeInteger(localView?.lifetimeTokens)
+    && localView.lifetimeTokens >= 0
+    ? localView.lifetimeTokens
+    : null;
   return {
     ...officialView,
     ...taskUsage,
     todayTokens: localToday,
+    lifetimeTokens: localLifetime ?? officialView?.lifetimeTokens ?? null,
     tokenUsageAvailable: true,
     todayTokenScope: localToday === null ? null : "local-official-conversations",
     localTodayTokens: localToday,
@@ -1492,7 +1631,7 @@ export class CombinedUsageClient {
     this.timer = null;
     this.nextRefreshAt = null;
     this.officialView = { status: "loading", windows: [], todayTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
-    this.localOfficialView = { status: "loading", dailyDate: null, todayTokens: null, fetchedAt: null, error: null };
+    this.localOfficialView = { status: "loading", dailyDate: null, todayTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
     this.accountView = normalizeApiAccountView(null, [], { refreshMs });
     this.apiView = normalizeApiUsageView(null, null, provider);
     this.localOfficial = new LocalCodexTokenTracker({ onUpdate: (view) => { this.localOfficialView = view; this.emit(); } });
@@ -1502,6 +1641,9 @@ export class CombinedUsageClient {
       managed: true,
       onUpdate: (view) => {
         this.officialView = view;
+        if (Number.isSafeInteger(view?.lifetimeTokens) && view.lifetimeTokens >= 0) {
+          this.localOfficial.setOfficialLifetimeTokens(view.lifetimeTokens, view.fetchedAt);
+        }
         if (view?.officialModelProvidersResolved) {
           this.localOfficial.setOfficialModelProviders(view?.officialModelProviders);
         }

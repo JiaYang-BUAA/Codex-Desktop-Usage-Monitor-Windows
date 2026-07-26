@@ -47,7 +47,7 @@
 
 > **如果不懂如何运行下面的命令，请直接让 Codex 按本教程帮你完成安装和配置，无需自己手动操作。**
 
-- 官方订阅：周期和账户汇总来自 Codex Desktop 本机 app-server；“今日 Token”读取本机任务的 `token_count` 事件，并把确认使用当前 ChatGPT 官方认证的每回合 `total_token_usage` 正增量直接累加。监视器结合每回合的 `thread_settings_applied.model_provider_id` 与当前认证信息判断来源；API、API Key 和无法确认来源的回合不计入。无需配置，启动后自动读取。
+- 官方订阅：周期和账户汇总来自 Codex Desktop 本机 app-server；“今日 Token”读取本机任务的 `token_count` 事件，并把确认使用当前 ChatGPT 官方认证的每回合 `total_token_usage` 正增量直接累加。“累计 Token”以最近一次官方值为基准，在官方值不变时叠加此后本机产生的官方订阅 Token；官方完整整数一旦变化，立即清空本机临时增量并直接采用新官方值。API、API Key 和无法确认来源的回合不计入。无需配置，启动后自动读取。
 - API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备服务商的接口文档、账户访问令牌和数字用户 ID。Base URL 通常在“API 文档”或“开发者文档”；用户 ID 通常在“用户资料”“账户信息”或“个人中心”；访问令牌通常在“用户资料”“安全设置”“Access Token”或“用户令牌”页面。访问令牌不一定等于 API Key。先让 Codex 按接口文档确认或适配请求路径与返回字段，再复制令牌并运行：
 
   ```powershell
@@ -91,7 +91,7 @@ pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完
 
 | 栏位 | 数据来源 | 所需凭据 |
 | --- | --- | --- |
-| 官方订阅 | Codex Desktop 本机 app-server 返回账户周期与 Token 汇总；“今日 Token”读取本机 `token_count` 的 `total_token_usage` 正增量，仅累计确认使用当前 ChatGPT 官方认证的回合。 | 无需额外凭据。 |
+| 官方订阅 | Codex Desktop 本机 app-server 返回账户周期与 Token 汇总；“今日 Token”读取本机 `token_count` 的 `total_token_usage` 正增量；“累计 Token”在官方值不变时临时叠加此后本机产生的官方订阅 Token。 | 无需额外凭据。 |
 | API 账户 | 第三方服务商的账户信息接口与请求日志接口；当前内置实现兼容 CCTQ 风格接口。 | API 账户访问令牌和数字用户 ID。访问令牌一般在服务商的用户资料或个人中心页面获取。 |
 | API Key | 第三方服务商为某个 API key 提供的额度、限额和有效期查询接口，由 Provider JSON 映射响应字段。 | 对应 API key。 |
 
@@ -106,13 +106,15 @@ API 账户与 API Key 是两种不同的数据来源：前者读取整个用户�
 | 周期剩余 | 当前短周期的剩余百分比；百分比越低表示消耗越多。 |
 | 周期重置 | 当前短周期距离重置的时间，例如“2天后”。 |
 | 今日 Token | 从本机当天 00:00 起，把确认使用当前 ChatGPT 官方认证的每回合 `token_count.total_token_usage` 正增量直接累加；显示原始 Token 总量，不做费率折算。API、API Key 和无法确认来源的回合不计入。 |
-| 累计 Token | 官方接口返回的累计 Token 数；接口没有提供时不伪造数值。 |
+| 累计 Token | 以最近一次官方接口返回的累计 Token 完整整数为基准；官方值不变时，叠加该检查点之后本机确认使用官方订阅产生的 Token。官方值一旦变化，清空临时增量并直接显示新的官方值。 |
 
 本机实时累计只统计这台电脑上 Codex 已写入任务记录、并能确认由当前 ChatGPT 账户官方认证的用量，包含符合条件的当前任务、其他本机任务和子任务，不能覆盖其他电脑或网页端。程序按每回合最近的 `thread_settings_applied.model_provider_id` 识别提供方，再结合当前 ChatGPT 官方认证信息判断归属；仅官方订阅回合计入，API、API Key 和无法确认来源的回合一律不计。程序只解析来源设置和 `token_count` 用量事件，不保存或上传对话正文。
 
 “今日 Token”直接读取连续 `token_count` 快照中 `total_token_usage` 的正增量。重复快照不会重复累计；fork 任务重放父任务历史时也会去重，避免同一批 Token 被再次计入。该数值是日志记录的原始 Token 增量，不再按模型、缓存、输出或 Fast 模式做官方费率折算，也不会在本机没有有效计数时回退到官方日期桶。
 
-今日计数按本机日期持久化到 `%LOCALAPPDATA%\CodexUsageMonitor\official-token-counter.json`。Codex 或 Windows 当天重启后会继续累加；本机日期跨过 00:00 后自动清零，并从新日期的官方订阅回合重新统计。
+“累计 Token”比较的是官方接口返回的完整整数，不比较格式化后的“万/亿”。官方值连续相同时，本机临时增量约每 2 秒更新；官方值在 60 秒轮询中被发现变化时，立即建立新检查点并直接采用官方值，不做增量抵扣或防回退。因此，若官方只汇总了部分近期用量，显示值可能在更新瞬间暂时变小。
+
+今日计数和累计临时增量均持久化到 `%LOCALAPPDATA%\CodexUsageMonitor\official-token-counter.json`。Codex 或 Windows 重启后不会重复读取已经计入的历史事件；本机日期跨过 00:00 后只清零今日计数，累计临时增量继续保留，直到官方累计值发生变化。
 
 Token 显示规则：少于 `10,000` 时显示完整数值；达到 `10,000` 后以整数“万”显示；达到 `100,000,000` 后以两位小数“亿”显示。展开面板的数值遵循相同单位规则。
 
@@ -123,7 +125,9 @@ Token 显示规则：少于 `10,000` 时显示完整数值；达到 `10,000` 后
 | 指标 | 含义 |
 | --- | --- |
 | 当前任务累计 Token | 当前任务从开始至今累计使用的原始 Token，取最新 `token_count` 事件中的 `total_token_usage.total_tokens`。 |
-| 上次对话消耗 Token | 当前任务最近一次模型调用使用的原始 Token，取 `last_token_usage.total_tokens`；一次可见对话包含多次模型调用时，它只代表最后一次调用。 |
+| 上次对话消耗 Token | 当前任务最近一轮可见对话中全部模型调用使用的原始 Token。程序以 `turn_context.turn_id` 划分对话边界，并把该轮连续 `token_count.total_token_usage` 的正增量相加；重复快照不重复计算。 |
+
+“上次对话”是从用户发送一条消息开始，到该轮回答完成为止。若回答过程中包含工具调用、重试或多步推理，这些模型调用都会计入；它不再只显示最后一次模型调用的 `last_token_usage`。回答仍在生成时，该数值会随本轮新增调用实时增加。
 
 #### 2.1.4 API 账户
 

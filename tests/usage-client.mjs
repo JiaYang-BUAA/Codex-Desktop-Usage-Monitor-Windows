@@ -248,8 +248,9 @@ try {
     tokenCount(at(10), 70, 20),
     turnContext(at(11), uuidAt(at(11), 16)),
     tokenCount(at(12), 20, 20),
-    turnContext(at(13), uuidAt(at(13), 17)),
     tokenCount(at(14), 27, 7),
+    tokenCount(at(15), 33, 6),
+    tokenCount(at(16), 33, 99),
     "",
   ].join("\n"), "utf8");
   writeFileSync(counterPath, `${JSON.stringify({
@@ -268,13 +269,13 @@ try {
   assert.equal((await tracker.refresh()).todayTokens, 0);
   tracker.setOfficialModelProviders(["openai"]);
   const firstView = await tracker.refresh();
-  assert.equal(firstView.todayTokens, 47);
-  assert.equal(firstView.currentTaskTokens, 27);
-  assert.equal(firstView.lastTurnTokens, 7);
+  assert.equal(firstView.todayTokens, 53);
+  assert.equal(firstView.currentTaskTokens, 33);
+  assert.equal(firstView.lastTurnTokens, 33);
   const persisted = JSON.parse(readFileSync(counterPath, "utf8"));
-  assert.equal(persisted.schemaVersion, 6);
+  assert.equal(persisted.schemaVersion, 7);
   assert.equal(persisted.mode, "official-conversation-raw");
-  assert.equal(persisted.todayTokens, 47);
+  assert.equal(persisted.todayTokens, 53);
   assert.ok(!persisted.seenEvents.includes("legacy:event"));
   assert.equal(persisted.seenEvents.filter((identity) => identity.endsWith(":total:0")).length, 1);
 
@@ -286,10 +287,77 @@ try {
   });
   restartedTracker.setCurrentThreadId(threadId);
   const restartedView = await restartedTracker.refresh();
-  assert.equal(restartedView.todayTokens, 47);
-  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).todayTokens, 47);
+  assert.equal(restartedView.todayTokens, 53);
+  assert.equal(restartedView.currentTaskTokens, 33);
+  assert.equal(restartedView.lastTurnTokens, 33);
+  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).todayTokens, 53);
 } finally {
   rmSync(providerTrackerRoot, { recursive: true, force: true });
+}
+
+const lifetimeTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-official-lifetime-test-"));
+try {
+  const sessionRoot = path.join(lifetimeTrackerRoot, "sessions");
+  const counterPath = path.join(lifetimeTrackerRoot, "official-token-counter.json");
+  mkdirSync(sessionRoot, { recursive: true });
+  let trackerNow = Date.now();
+  const threadId = uuidAt(trackerNow - 10_000, 18);
+  const sessionPath = path.join(sessionRoot, `rollout-lifetime-${threadId}.jsonl`);
+  writeFileSync(sessionPath, [
+    sessionMeta(trackerNow - 3000, threadId, "openai"),
+    turnContext(trackerNow - 2000, uuidAt(trackerNow - 2000, 19)),
+    tokenCount(trackerNow - 1000, 100, 100),
+    "",
+  ].join("\n"), "utf8");
+
+  const tracker = new LocalCodexTokenTracker({
+    sessionRoot,
+    counterPath,
+    officialModelProviders: ["openai"],
+    now: () => trackerNow,
+  });
+  tracker.setCurrentThreadId(threadId);
+  assert.equal((await tracker.refresh()).lifetimeTokens, null);
+  assert.equal(tracker.setOfficialLifetimeTokens(1000, trackerNow), true);
+  assert.equal(tracker.view.lifetimeTokens, 1000);
+
+  appendFileSync(sessionPath, [
+    turnContext(trackerNow + 1000, uuidAt(trackerNow + 1000, 20)),
+    tokenCount(trackerNow + 2000, 130, 30),
+    "",
+  ].join("\n"), "utf8");
+  trackerNow += 2500;
+  assert.equal((await tracker.refresh()).lifetimeTokens, 1030);
+  assert.equal(tracker.setOfficialLifetimeTokens(1000, trackerNow), false);
+  assert.equal(tracker.view.lifetimeTokens, 1030);
+
+  trackerNow += 500;
+  assert.equal(tracker.setOfficialLifetimeTokens(1015, trackerNow), true);
+  assert.equal(tracker.view.lifetimeTokens, 1015);
+  appendFileSync(sessionPath, [
+    turnContext(trackerNow + 1000, uuidAt(trackerNow + 1000, 21)),
+    tokenCount(trackerNow + 2000, 140, 10),
+    "",
+  ].join("\n"), "utf8");
+  trackerNow += 2500;
+  assert.equal((await tracker.refresh()).lifetimeTokens, 1025);
+
+  const restartedTracker = new LocalCodexTokenTracker({
+    sessionRoot,
+    counterPath,
+    officialModelProviders: ["openai"],
+    now: () => trackerNow + 1000,
+  });
+  restartedTracker.setCurrentThreadId(threadId);
+  assert.equal((await restartedTracker.refresh()).lifetimeTokens, 1025);
+  assert.equal(restartedTracker.setOfficialLifetimeTokens(1020, trackerNow + 1000), true);
+  assert.equal((await restartedTracker.refresh()).lifetimeTokens, 1020);
+  const persisted = JSON.parse(readFileSync(counterPath, "utf8"));
+  assert.equal(persisted.schemaVersion, 7);
+  assert.equal(persisted.officialLifetime.baseTokens, 1020);
+  assert.equal(persisted.officialLifetime.pendingTokens, 0);
+} finally {
+  rmSync(lifetimeTrackerRoot, { recursive: true, force: true });
 }
 
 const forkTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-fork-token-test-"));
@@ -388,11 +456,13 @@ const delayedOfficial = mergeOfficialLocalUsage(missingToday, {
   status: "ready",
   dailyDate: trackerDateKey,
   todayTokens: 90,
+  lifetimeTokens: 1300000,
   currentThreadId: mergeThreadId,
   currentTaskTokens: 190,
   lastTurnTokens: 40,
 }, trackerDate);
 assert.equal(delayedOfficial.todayTokens, 90);
+assert.equal(delayedOfficial.lifetimeTokens, 1300000);
 assert.equal(delayedOfficial.todayTokenScope, "local-official-conversations");
 const delayedSource = toOfficialUsageSource(delayedOfficial, trackerDate.getTime());
 assert.equal(delayedSource.metrics.find((item) => item.id === "todayTokens").value, "90");
