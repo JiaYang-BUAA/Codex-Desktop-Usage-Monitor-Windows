@@ -35,8 +35,14 @@ try {
   if (-not $mutexAcquired) { throw '另一个监视器启动操作仍在进行，请稍后再试。' }
 
 function Test-MonitorInjection([int]$CandidatePort, [int]$TimeoutMs = 4000) {
-  & $node $injector --verify --port $CandidatePort --monitor-only --timeout-ms $TimeoutMs *> $null
-  return $LASTEXITCODE -eq 0
+  $probeTimeoutMs = [Math]::Min(120000, [Math]::Max(1000, $TimeoutMs + 2000))
+  $argumentLine = "`"$injector`" --verify --port $CandidatePort --monitor-only --timeout-ms $TimeoutMs"
+  $result = Invoke-CodexUsageProcessWithTimeout -FilePath $node -ArgumentLine $argumentLine -TimeoutMs $probeTimeoutMs
+  if ($result.TimedOut) {
+    Write-Warning "注入验证进程超过 $probeTimeoutMs 毫秒，已自动终止。"
+    return $false
+  }
+  return $result.ExitCode -eq 0
 }
 
 $activePort = Resolve-CodexUsageCdpPort $Port

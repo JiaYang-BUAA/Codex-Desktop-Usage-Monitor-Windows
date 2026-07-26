@@ -204,6 +204,19 @@ async function verifySession(session) {
   return session.evaluate(`(() => { const host = document.getElementById(${JSON.stringify(HOST_ID)}); return { installed: Boolean(host?.shadowRoot), anchor: host?.dataset?.anchor || null, status: host?.dataset?.status || null }; })()`);
 }
 
+async function syncCurrentThread(session, usageClient) {
+  const threadId = await session.evaluate(`(() => {
+    const nodes = [...document.querySelectorAll("[data-above-composer-conversation-id]")];
+    const active = nodes.filter((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }).at(-1) || nodes.at(-1) || null;
+    const value = active?.getAttribute("data-above-composer-conversation-id") || "";
+    return value.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0] || null;
+  })()`);
+  usageClient.setCurrentThreadId(threadId);
+}
+
 async function capture(session, targetPath) {
   const result = await session.send("Page.captureScreenshot", { format: "png" });
   await fs.writeFile(targetPath, Buffer.from(result.data, "base64"));
@@ -218,14 +231,13 @@ async function runOnce(options) {
   const targets = await waitForTargets(options.port, options.timeoutMs);
   const results = [];
   for (const target of targets) {
+    if (!isMonitorTarget(target)) {
+      results.push({ targetId: target.id, auxiliary: true, skipped: true });
+      continue;
+    }
     const session = new CdpSession(target, Math.min(options.timeoutMs, 10000));
     await session.open();
     try {
-      if (!isMonitorTarget(target)) {
-        await removeFromSession(session);
-        results.push({ targetId: target.id, auxiliary: true, removed: true });
-        continue;
-      }
       if (options.mode === "remove") {
         results.push({ targetId: target.id, removed: await removeFromSession(session) });
         continue;
@@ -251,6 +263,7 @@ async function runWatch(options) {
   let latestUsage = null;
   let stopping = false;
   let targetsMissingSince = null;
+  let usageStartPromise = Promise.resolve();
   const usageClient = new CombinedUsageClient({
     refreshMs: 60000,
     onUpdate: (usage) => {
@@ -275,9 +288,12 @@ async function runWatch(options) {
         if (sessions.get(target.id)?.session === session) sessions.delete(target.id);
       }, { once: true });
       session.on("Page.loadEventFired", () => {
-        applyMonitor(session, latestUsage).catch((error) => console.error(`[usage-monitor] renderer reload failed: ${error.message}`));
+        applyMonitor(session, latestUsage)
+          .then(() => syncCurrentThread(session, usageClient))
+          .catch((error) => console.error(`[usage-monitor] renderer reload failed: ${error.message}`));
       });
       await applyMonitor(session, latestUsage);
+      await syncCurrentThread(session, usageClient);
     } catch (error) {
       if (sessions.get(target.id)?.session === session) sessions.delete(target.id);
       await session.close().catch(() => {});
@@ -288,6 +304,7 @@ async function runWatch(options) {
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    await usageStartPromise.catch(() => {});
     await usageClient.stop().catch(() => {});
     await closeSessions(sessions);
   };
@@ -295,7 +312,11 @@ async function runWatch(options) {
   process.once("SIGTERM", () => { stop().finally(() => process.exit(0)); });
 
   try {
-    await usageClient.start();
+    // Inject the monitor as soon as the renderer appears. The first account usage
+    // request can take several seconds and must not delay the UI.
+    usageStartPromise = usageClient.start().catch((error) => {
+      console.error(`[usage-monitor] initial usage refresh failed: ${error.message}`);
+    });
     while (!stopping) {
       const targets = await getTargets(options.port);
       const monitorTargets = targets.filter(isMonitorTarget);
@@ -315,6 +336,9 @@ async function runWatch(options) {
       for (const target of monitorTargets) {
         try { await attach(target); } catch (error) { console.error(`[usage-monitor] target attach failed: ${error.message}`); }
       }
+      for (const entry of sessions.values()) {
+        try { await syncCurrentThread(entry.session, usageClient); } catch {}
+      }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   } finally {
@@ -324,11 +348,20 @@ async function runWatch(options) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (options.mode === "watch") return runWatch(options);
-  return runOnce(options);
+  if (options.mode === "watch") await runWatch(options);
+  else await runOnce(options);
+  return options.mode;
 }
 
-main().catch((error) => {
+function scheduleOneShotExit(code) {
+  // A real Electron CDP endpoint can occasionally keep the WebSocket handle alive
+  // after close(). One-shot probes must still release the PowerShell startup mutex.
+  setTimeout(() => process.exit(code), 50);
+}
+
+main().then((mode) => {
+  if (mode !== "watch") scheduleOneShotExit(process.exitCode ?? 0);
+}).catch((error) => {
   console.error(`[usage-monitor] ${error.message}`);
-  process.exitCode = 1;
+  scheduleOneShotExit(1);
 });

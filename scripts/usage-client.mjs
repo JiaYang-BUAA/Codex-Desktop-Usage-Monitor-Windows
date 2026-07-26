@@ -1,8 +1,45 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 const DEFAULT_REFRESH_MS = 60000;
+const LOCAL_TOKEN_SCAN_MS = 2000;
+const LOCAL_TOKEN_COUNTER_SCHEMA_VERSION = 5;
+const LOCAL_TOKEN_READ_CHUNK_BYTES = 4 * 1024 * 1024;
+const TOKEN_COUNT_MARKER = Buffer.from('"token_count"', "utf8");
+const TURN_CONTEXT_MARKER = Buffer.from('"turn_context"', "utf8");
+const THREAD_SETTINGS_MARKER = Buffer.from('"thread_settings_applied"', "utf8");
+const OFFICIAL_MODEL_PROVIDER_ID = "openai";
+const OFFICIAL_EQUIVALENT_BASE_CREDITS_PER_MILLION = 125;
+const OFFICIAL_MODEL_CREDIT_RATES = Object.freeze({
+  "gpt-5.6-sol": Object.freeze({ input: 125, cachedInput: 12.5, output: 750 }),
+  "gpt-5.6-terra": Object.freeze({ input: 62.5, cachedInput: 6.25, output: 375 }),
+  "gpt-5.6-luna": Object.freeze({ input: 25, cachedInput: 2.5, output: 150 }),
+  "gpt-5.5": Object.freeze({ input: 125, cachedInput: 12.5, output: 750 }),
+  "gpt-5.5-cyber": Object.freeze({ input: 500, cachedInput: 50, output: 3000 }),
+  "gpt-5.4": Object.freeze({ input: 62.5, cachedInput: 6.25, output: 375 }),
+  "gpt-5.4-mini": Object.freeze({ input: 18.75, cachedInput: 1.875, output: 113 }),
+  "gpt-5.3-codex": Object.freeze({ input: 43.75, cachedInput: 4.375, output: 350 }),
+  "gpt-5.2": Object.freeze({ input: 43.75, cachedInput: 4.375, output: 350 }),
+});
+const OFFICIAL_MODEL_RATE_ALIASES = Object.freeze({
+  "codex-auto-review": "gpt-5.3-codex",
+  "gpt-5.6": "gpt-5.6-sol",
+  "gpt-5.2-codex": "gpt-5.2",
+});
 const REQUEST_TIMEOUT_MS = 12000;
 const RATE_LIMIT_BASE_BACKOFF_MS = 60000;
 const RATE_LIMIT_MAX_BACKOFF_MS = 300000;
@@ -181,6 +218,433 @@ function localDateKey(now) {
   return `${year}-${month}-${day}`;
 }
 
+function readTokenField(value, camelCase, snakeCase) {
+  const number = Number(value?.[camelCase] ?? value?.[snakeCase]);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
+}
+
+function normalizeOfficialModelName(value) {
+  const model = String(value ?? "").trim().toLowerCase();
+  if (!model) return null;
+  const alias = OFFICIAL_MODEL_RATE_ALIASES[model] || model;
+  if (OFFICIAL_MODEL_CREDIT_RATES[alias]) return alias;
+  return Object.keys(OFFICIAL_MODEL_CREDIT_RATES)
+    .sort((left, right) => right.length - left.length)
+    .find((name) => alias.startsWith(`${name}-`)) || null;
+}
+
+function officialFastMultiplier(modelName, serviceTier) {
+  if (String(serviceTier ?? "").trim().toLowerCase() !== "fast") return 1;
+  if (modelName?.startsWith("gpt-5.6") || modelName?.startsWith("gpt-5.5")) return 2.5;
+  if (modelName?.startsWith("gpt-5.4")) return 2;
+  return 1;
+}
+
+function cumulativeTokenDelta(current, previous) {
+  if (!Number.isSafeInteger(current) || current < 0) return null;
+  if (!Number.isSafeInteger(previous) || previous < 0) return current;
+  return current >= previous ? current - previous : current;
+}
+
+export function officialEquivalentTokenDelta(current, previous = null, model = null, serviceTier = null) {
+  const modelName = normalizeOfficialModelName(model) || "gpt-5.6-sol";
+  const rates = OFFICIAL_MODEL_CREDIT_RATES[modelName];
+  const inputDelta = cumulativeTokenDelta(current?.inputTokens, previous?.inputTokens);
+  const outputDelta = cumulativeTokenDelta(current?.outputTokens, previous?.outputTokens);
+  if (inputDelta === null || outputDelta === null) {
+    return cumulativeTokenDelta(current?.totalTokens, previous?.totalTokens);
+  }
+  const cachedDelta = Math.min(
+    inputDelta,
+    cumulativeTokenDelta(current?.cachedInputTokens ?? 0, previous?.cachedInputTokens ?? 0) ?? 0,
+  );
+  const uncachedInputDelta = Math.max(0, inputDelta - cachedDelta);
+  const multiplier = officialFastMultiplier(modelName, serviceTier);
+  const equivalentTokens = (
+    uncachedInputDelta * rates.input
+    + cachedDelta * rates.cachedInput
+    + outputDelta * rates.output
+  ) * multiplier / OFFICIAL_EQUIVALENT_BASE_CREDITS_PER_MILLION;
+  return Math.max(0, Math.round(equivalentTokens));
+}
+
+export function parseLocalTokenContextEvent(line) {
+  const text = String(line ?? "");
+  if (!text.includes('"turn_context"') && !text.includes('"thread_settings_applied"')) return null;
+  let item;
+  try { item = JSON.parse(text); } catch { return null; }
+  const payload = item?.payload;
+  const context = item?.type === "turn_context"
+    ? payload
+    : payload?.type === "thread_settings_applied"
+      ? payload?.thread_settings
+      : null;
+  if (!context || typeof context !== "object") return null;
+  const model = typeof context.model === "string" && context.model.trim()
+    ? context.model.trim().toLowerCase()
+    : null;
+  const serviceTierValue = context.service_tier ?? context.serviceTier;
+  const serviceTier = typeof serviceTierValue === "string" && serviceTierValue.trim()
+    ? serviceTierValue.trim().toLowerCase()
+    : null;
+  return model || serviceTier ? { model, serviceTier } : null;
+}
+
+export function parseLocalTokenUsageEvent(line, expectedDate = null) {
+  const text = String(line ?? "");
+  if (!text.includes('"token_count"')) return null;
+  let item;
+  try { item = JSON.parse(text); } catch { return null; }
+  const payload = item?.payload;
+  if (payload?.type !== "token_count") return null;
+  const timestamp = Date.parse(String(item?.timestamp ?? ""));
+  if (!Number.isFinite(timestamp)) return null;
+  const date = localDateKey(timestamp);
+  if (expectedDate && date !== expectedDate) return null;
+  const last = payload?.info?.last_token_usage ?? payload?.tokenUsage?.last ?? null;
+  const tokens = readTokenField(last, "totalTokens", "total_tokens");
+  if (tokens === null) return null;
+  const total = payload?.info?.total_token_usage ?? payload?.tokenUsage?.total ?? null;
+  const totalTokens = readTokenField(total, "totalTokens", "total_tokens");
+  const inputTokens = readTokenField(total, "inputTokens", "input_tokens");
+  const cachedInputTokens = readTokenField(total, "cachedInputTokens", "cached_input_tokens");
+  const outputTokens = readTokenField(total, "outputTokens", "output_tokens");
+  return {
+    date,
+    timestamp,
+    tokens,
+    totalTokens,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    identity: createHash("sha256").update(text).digest("hex").slice(0, 32),
+  };
+}
+
+function resolveLocalTokenSessionRoot(explicit) {
+  if (explicit) return path.resolve(explicit);
+  const codexHome = process.env.CODEX_HOME
+    ? path.resolve(process.env.CODEX_HOME)
+    : process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, ".codex")
+      : null;
+  return codexHome ? path.join(codexHome, "sessions") : null;
+}
+
+function resolveLocalTokenCounterPath(explicit) {
+  if (explicit) return path.resolve(explicit);
+  return process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor", "official-token-counter.json")
+    : null;
+}
+
+function loadLocalTokenCounter(counterPath, date, providerKey) {
+  if (!counterPath || !existsSync(counterPath)) return 0;
+  try {
+    const value = JSON.parse(readFileSync(counterPath, "utf8"));
+    return value?.schemaVersion === LOCAL_TOKEN_COUNTER_SCHEMA_VERSION
+      && value?.dailyDate === date
+      && value?.providerKey === providerKey
+      && Number.isSafeInteger(value?.todayTokens)
+      && value.todayTokens >= 0
+      ? value.todayTokens
+      : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveLocalTokenCounter(counterPath, date, providerKey, todayTokens, now) {
+  if (!counterPath || !Number.isSafeInteger(todayTokens) || todayTokens < 0) return;
+  mkdirSync(path.dirname(counterPath), { recursive: true });
+  const temporaryPath = `${counterPath}.${process.pid}.tmp`;
+  writeFileSync(temporaryPath, `${JSON.stringify({
+    schemaVersion: LOCAL_TOKEN_COUNTER_SCHEMA_VERSION,
+    dailyDate: date,
+    providerKey,
+    todayTokens,
+    updatedAt: new Date(now).toISOString(),
+  }, null, 2)}\n`, "utf8");
+  renameSync(temporaryPath, counterPath);
+}
+
+function sessionThreadIdFromPath(filePath) {
+  return path.basename(filePath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1]?.toLowerCase() || null;
+}
+
+function readSessionModelProvider(filePath) {
+  let handle = null;
+  try {
+    handle = openSync(filePath, "r");
+    const size = Math.min(fstatSync(handle).size, 64 * 1024);
+    if (!size) return null;
+    const buffer = Buffer.allocUnsafe(size);
+    const bytesRead = readSync(handle, buffer, 0, size, 0);
+    const firstLine = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0].replace(/^\uFEFF/, "");
+    const item = JSON.parse(firstLine);
+    const provider = item?.type === "session_meta" ? item?.payload?.model_provider : null;
+    return typeof provider === "string" && provider.trim() ? provider.trim().toLowerCase() : null;
+  } catch {
+    return null;
+  } finally {
+    if (handle !== null) closeSync(handle);
+  }
+}
+
+function discoverRecentSessionFiles(root, dayStart, currentThreadId = null) {
+  if (!root || !existsSync(root)) return [];
+  const files = [];
+  const pending = [root];
+  while (pending.length) {
+    const directory = pending.pop();
+    let entries;
+    try { entries = readdirSync(directory, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(candidate);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".jsonl")) continue;
+      try {
+        if (statSync(candidate).mtimeMs >= dayStart || sessionThreadIdFromPath(candidate) === currentThreadId) files.push(candidate);
+      } catch {}
+    }
+  }
+  return files.sort();
+}
+
+function readAppendedUsageLines(filePath, fileState, onLine) {
+  let handle = null;
+  try {
+    handle = openSync(filePath, "r");
+    const size = fstatSync(handle).size;
+    if (size < fileState.offset) fileState.offset = 0;
+    let readPosition = fileState.offset;
+    let pending = Buffer.alloc(0);
+    while (readPosition < size) {
+      const length = Math.min(LOCAL_TOKEN_READ_CHUNK_BYTES, size - readPosition);
+      const chunk = Buffer.allocUnsafe(length);
+      const bytesRead = readSync(handle, chunk, 0, length, readPosition);
+      if (!bytesRead) break;
+      readPosition += bytesRead;
+      const current = pending.length
+        ? Buffer.concat([pending, chunk.subarray(0, bytesRead)])
+        : chunk.subarray(0, bytesRead);
+      let lineStart = 0;
+      for (let index = current.indexOf(0x0A); index >= 0; index = current.indexOf(0x0A, lineStart)) {
+        let line = current.subarray(lineStart, index);
+        if (line.at(-1) === 0x0D) line = line.subarray(0, -1);
+        if (line.indexOf(TOKEN_COUNT_MARKER) >= 0
+          || line.indexOf(TURN_CONTEXT_MARKER) >= 0
+          || line.indexOf(THREAD_SETTINGS_MARKER) >= 0) {
+          onLine(line.toString("utf8"));
+        }
+        lineStart = index + 1;
+      }
+      pending = current.subarray(lineStart);
+    }
+    fileState.offset = readPosition - pending.length;
+  } finally {
+    if (handle !== null) closeSync(handle);
+  }
+}
+
+export class LocalCodexTokenTracker {
+  constructor({
+    sessionRoot = resolveLocalTokenSessionRoot(process.env.CODEX_USAGE_SESSION_ROOT),
+    counterPath = resolveLocalTokenCounterPath(process.env.CODEX_USAGE_OFFICIAL_COUNTER_PATH),
+    scanIntervalMs = LOCAL_TOKEN_SCAN_MS,
+    officialModelProviders = [],
+    now = () => Date.now(),
+    onUpdate = () => {},
+  } = {}) {
+    this.sessionRoot = sessionRoot ? path.resolve(sessionRoot) : null;
+    this.counterPath = counterPath ? path.resolve(counterPath) : null;
+    this.scanIntervalMs = Math.max(500, Number(scanIntervalMs) || LOCAL_TOKEN_SCAN_MS);
+    this.now = typeof now === "function" ? now : () => Date.now();
+    this.onUpdate = onUpdate;
+    this.timer = null;
+    this.refreshing = null;
+    this.fileStates = new Map();
+    this.seenEvents = new Set();
+    this.threadLatest = new Map();
+    this.officialModelProviders = new Set(
+      Array.isArray(officialModelProviders)
+        ? officialModelProviders.map((value) => String(value).trim().toLowerCase()).filter(Boolean)
+        : [],
+    );
+    this.currentThreadId = null;
+    this.dailyDate = null;
+    this.cutoffAt = 0;
+    this.persistedFloor = 0;
+    this.historicalTokens = 0;
+    this.liveTokens = 0;
+    this.lastSavedTokens = null;
+    this.view = {
+      status: "loading",
+      dailyDate: null,
+      todayTokens: null,
+      currentThreadId: null,
+      currentTaskTokens: null,
+      lastTurnTokens: null,
+      fetchedAt: null,
+      error: null,
+    };
+  }
+
+  resetDate(now) {
+    this.dailyDate = localDateKey(now);
+    this.cutoffAt = now;
+    this.persistedFloor = loadLocalTokenCounter(this.counterPath, this.dailyDate, this.officialProviderKey());
+    this.historicalTokens = 0;
+    this.liveTokens = 0;
+    this.lastSavedTokens = this.persistedFloor;
+    this.fileStates.clear();
+    this.seenEvents.clear();
+    this.threadLatest.clear();
+  }
+
+  officialProviderKey() {
+    return [...this.officialModelProviders].sort().join(",");
+  }
+
+  currentTokens() {
+    return Math.max(this.persistedFloor, this.historicalTokens) + this.liveTokens;
+  }
+
+  emit(view) {
+    const unchanged = this.view.status === view.status
+      && this.view.dailyDate === view.dailyDate
+      && this.view.todayTokens === view.todayTokens
+      && this.view.currentThreadId === view.currentThreadId
+      && this.view.currentTaskTokens === view.currentTaskTokens
+      && this.view.lastTurnTokens === view.lastTurnTokens
+      && this.view.error === view.error;
+    this.view = view;
+    if (!unchanged) this.onUpdate(view);
+  }
+
+  setCurrentThreadId(value) {
+    const normalized = typeof value === "string"
+      ? value.trim().toLowerCase().match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)?.[0] || null
+      : null;
+    if (normalized === this.currentThreadId) return false;
+    this.currentThreadId = normalized;
+    this.refresh().catch(() => {});
+    return true;
+  }
+
+  setOfficialModelProviders(values) {
+    const normalized = new Set(
+      Array.isArray(values)
+        ? values.map((value) => String(value).trim().toLowerCase()).filter(Boolean)
+        : [],
+    );
+    const previousKey = this.officialProviderKey();
+    const nextKey = [...normalized].sort().join(",");
+    if (nextKey === previousKey) return false;
+    this.officialModelProviders = normalized;
+    this.resetDate(this.now());
+    this.refresh().catch(() => {});
+    return true;
+  }
+
+  async refresh() {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = Promise.resolve().then(() => {
+      const now = this.now();
+      const date = localDateKey(now);
+      if (date !== this.dailyDate) this.resetDate(now);
+      const dayStart = localStartOfDay(now);
+      const files = discoverRecentSessionFiles(this.sessionRoot, dayStart, this.currentThreadId);
+      for (const filePath of files) {
+        const state = this.fileStates.get(filePath) || {
+          offset: 0,
+          threadId: sessionThreadIdFromPath(filePath),
+          modelProvider: readSessionModelProvider(filePath),
+          currentModel: null,
+          serviceTier: null,
+          lastUsage: null,
+        };
+        try {
+          readAppendedUsageLines(filePath, state, (line) => {
+            const context = parseLocalTokenContextEvent(line);
+            if (context) {
+              if (context.model) state.currentModel = context.model;
+              if (context.serviceTier) state.serviceTier = context.serviceTier;
+              return;
+            }
+            const event = parseLocalTokenUsageEvent(line);
+            if (!event) return;
+            if (state.threadId && (!this.threadLatest.has(state.threadId) || event.timestamp >= this.threadLatest.get(state.threadId).timestamp)) {
+              this.threadLatest.set(state.threadId, event);
+            }
+            const currentUsage = {
+              totalTokens: event.totalTokens,
+              inputTokens: event.inputTokens,
+              cachedInputTokens: event.cachedInputTokens,
+              outputTokens: event.outputTokens,
+            };
+            const previousUsage = state.lastUsage;
+            state.lastUsage = currentUsage;
+            if (!this.officialModelProviders.has(state.modelProvider)
+              || event.date !== this.dailyDate
+              || this.seenEvents.has(event.identity)) return;
+            this.seenEvents.add(event.identity);
+            const delta = officialEquivalentTokenDelta(
+              currentUsage,
+              previousUsage,
+              state.currentModel,
+              state.serviceTier,
+            );
+            if (delta === null) return;
+            if (event.timestamp <= this.cutoffAt) this.historicalTokens += delta;
+            else this.liveTokens += delta;
+          });
+          this.fileStates.set(filePath, state);
+        } catch {}
+      }
+      const todayTokens = this.currentTokens();
+      const currentTask = this.currentThreadId ? this.threadLatest.get(this.currentThreadId) || null : null;
+      if (todayTokens !== this.lastSavedTokens) {
+        saveLocalTokenCounter(this.counterPath, this.dailyDate, this.officialProviderKey(), todayTokens, now);
+        this.lastSavedTokens = todayTokens;
+      }
+      const available = Boolean(this.sessionRoot && existsSync(this.sessionRoot));
+      this.emit({
+        status: available ? "ready" : todayTokens > 0 ? "stale" : "unavailable",
+        dailyDate: this.dailyDate,
+        todayTokens: available || todayTokens > 0 ? todayTokens : null,
+        currentThreadId: this.currentThreadId,
+        currentTaskTokens: currentTask?.totalTokens ?? null,
+        lastTurnTokens: currentTask?.tokens ?? null,
+        fetchedAt: now,
+        error: available ? null : "未找到本机 Codex 任务记录",
+      });
+      return this.view;
+    }).finally(() => {
+      this.refreshing = null;
+    });
+    return this.refreshing;
+  }
+
+  async start() {
+    await this.refresh();
+    if (!this.timer) {
+      this.timer = setInterval(() => this.refresh().catch(() => {}), this.scanIntervalMs);
+      this.timer.unref?.();
+    }
+    return this.view;
+  }
+
+  async stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    await this.refreshing?.catch(() => {});
+  }
+}
+
 export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = new Date()) {
   const windows = windowsFromSnapshot(rateLimitResponse?.rateLimits);
   const seen = new Set(windows.map((item) => `${item.limitId || ""}:${item.position}:${item.windowDurationMins || ""}`));
@@ -197,7 +661,16 @@ export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = 
   const buckets = Array.isArray(tokenUsageResponse?.dailyUsageBuckets) ? tokenUsageResponse.dailyUsageBuckets : null;
   const todayKey = localDateKey(now);
   const todayBucket = buckets?.find((item) => item?.startDate === todayKey);
-  const todayTokens = buckets ? Math.max(0, Number(todayBucket?.tokens) || 0) : null;
+  const todayTokens = todayBucket ? Math.max(0, Number(todayBucket.tokens) || 0) : null;
+  const latestUsageDate = buckets
+    ?.map((item) => typeof item?.startDate === "string" ? item.startDate : null)
+    .filter((value) => value && /^\d{4}-\d{2}-\d{2}$/.test(value))
+    .sort()
+    .at(-1) || null;
+  const tokenUsageAvailable = Boolean(tokenUsageResponse && typeof tokenUsageResponse === "object");
+  const tokenUsageNotice = tokenUsageAvailable && !todayBucket
+    ? `官方接口暂无 ${todayKey} 的 Token 数据${latestUsageDate ? `，最新数据截至 ${latestUsageDate}` : ""}`
+    : null;
   const lifetimeTokens = Number.isFinite(Number(tokenUsageResponse?.summary?.lifetimeTokens))
     ? Math.max(0, Number(tokenUsageResponse.summary.lifetimeTokens))
     : null;
@@ -205,17 +678,75 @@ export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = 
     status: windows.length || todayTokens !== null ? "ready" : "unavailable",
     windows: windows.slice(0, 2).map(({ position, ...item }) => item),
     todayTokens,
+    tokenUsageAvailable,
+    latestUsageDate,
     lifetimeTokens,
     fetchedAt: Date.now(),
-    error: null,
+    error: tokenUsageNotice,
+  };
+}
+
+export function officialModelProvidersFromAccount(accountResponse, configResponse) {
+  const accountType = String(accountResponse?.account?.type || "").trim().toLowerCase();
+  if (!["chatgpt", "personalaccesstoken"].includes(accountType)) return [];
+  const config = configResponse?.config && typeof configResponse.config === "object"
+    ? configResponse.config
+    : configResponse && typeof configResponse === "object" ? configResponse : {};
+  const configuredProviders = config?.model_providers && typeof config.model_providers === "object"
+    ? config.model_providers
+    : config?.modelProviders && typeof config.modelProviders === "object" ? config.modelProviders : {};
+  const providers = new Set([OFFICIAL_MODEL_PROVIDER_ID]);
+  for (const [id, provider] of Object.entries(configuredProviders)) {
+    const requiresOpenaiAuth = provider?.requires_openai_auth ?? provider?.requiresOpenaiAuth;
+    if (requiresOpenaiAuth === true && String(id).trim()) providers.add(String(id).trim().toLowerCase());
+  }
+  return [...providers].sort();
+}
+
+export function mergeOfficialLocalUsage(officialView, localView, now = new Date()) {
+  const todayKey = localDateKey(now);
+  const taskUsage = {
+    currentThreadId: typeof localView?.currentThreadId === "string" ? localView.currentThreadId : null,
+    currentTaskTokens: Number.isSafeInteger(localView?.currentTaskTokens) && localView.currentTaskTokens >= 0 ? localView.currentTaskTokens : null,
+    lastTurnTokens: Number.isSafeInteger(localView?.lastTurnTokens) && localView.lastTurnTokens >= 0 ? localView.lastTurnTokens : null,
+  };
+  const officialToday = Number.isSafeInteger(officialView?.todayTokens) && officialView.todayTokens >= 0
+    ? officialView.todayTokens
+    : null;
+  const localToday = localView?.dailyDate === todayKey
+    && Number.isSafeInteger(localView?.todayTokens)
+    && localView.todayTokens >= 0
+    ? localView.todayTokens
+    : null;
+  if (localToday === null) {
+    return {
+      ...officialView,
+      ...taskUsage,
+      todayTokenScope: officialToday === null ? null : "official",
+    };
+  }
+  const useLocalEquivalent = localToday > 0 || officialToday === null;
+  const todayTokens = useLocalEquivalent ? localToday : officialToday;
+  const todayTokenScope = useLocalEquivalent ? "local-official-equivalent" : "official";
+  const missingNotice = useLocalEquivalent && officialToday === null && officialView?.tokenUsageAvailable
+    ? `${officialView?.error || `官方接口暂无 ${todayKey} 的 Token 数据`}；当前显示本机官方费率折算`
+    : officialView?.error || null;
+  return {
+    ...officialView,
+    ...taskUsage,
+    todayTokens,
+    tokenUsageAvailable: Boolean(officialView?.tokenUsageAvailable || localToday !== null),
+    todayTokenScope,
+    localTodayTokens: localToday,
+    error: missingNotice,
   };
 }
 
 function formatMetricTokens(value) {
   if (!Number.isFinite(Number(value))) return "--";
   const number = Math.max(0, Number(value));
-  if (number >= 1000000) return `${(number / 1000000).toFixed(number >= 10000000 ? 0 : 1).replace(/\.0$/, "")}m`;
-  if (number >= 1000) return `${(number / 1000).toFixed(number >= 100000 ? 0 : 1).replace(/\.0$/, "")}k`;
+  if (number >= 100000000) return `${(number / 100000000).toFixed(2)}亿`;
+  if (number >= 10000) return `${Math.round(number / 10000)}万`;
   return String(Math.round(number));
 }
 
@@ -264,13 +795,19 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
       defaultVisible: false,
     });
   }
-  if (view?.todayTokens !== null && view?.todayTokens !== undefined) {
+  if (view?.tokenUsageAvailable || (view?.todayTokens !== null && view?.todayTokens !== undefined)) {
+    const todayValue = view?.todayTokens === null || view?.todayTokens === undefined
+      ? "--"
+      : formatMetricTokens(view.todayTokens);
+    const todayLabel = view?.todayTokenScope === "local-official-equivalent"
+      ? "今日 Token（官方折算）"
+      : "今日 Token";
     metrics.push({
       id: "todayTokens",
-      label: "今日 token",
-      display: `今日 ${formatMetricTokens(view.todayTokens)}`,
-      detail: `今日 token：${formatExactMetricTokens(view.todayTokens)}`,
-      value: formatExactMetricTokens(view.todayTokens),
+      label: "今日 Token",
+      display: `今日 ${view?.todayTokens === null || view?.todayTokens === undefined ? "--" : formatMetricTokens(view.todayTokens)}`,
+      detail: `${todayLabel}：${todayValue}`,
+      value: todayValue,
       defaultVisible: true,
     });
   }
@@ -279,10 +816,38 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
       id: "lifetimeTokens",
       label: "累计 token",
       display: `累计 ${formatMetricTokens(view.lifetimeTokens)}`,
-      detail: `累计 token：${formatExactMetricTokens(view.lifetimeTokens)}`,
-      value: formatExactMetricTokens(view.lifetimeTokens),
+      detail: `累计 token：${formatMetricTokens(view.lifetimeTokens)}`,
+      value: formatMetricTokens(view.lifetimeTokens),
       defaultVisible: false,
     });
+  }
+  if (view?.currentThreadId
+    || (view?.currentTaskTokens !== null && view?.currentTaskTokens !== undefined)
+    || (view?.lastTurnTokens !== null && view?.lastTurnTokens !== undefined)) {
+    const currentTaskValue = view?.currentTaskTokens === null || view?.currentTaskTokens === undefined
+      ? "--"
+      : formatMetricTokens(view.currentTaskTokens);
+    const lastTurnValue = view?.lastTurnTokens === null || view?.lastTurnTokens === undefined
+      ? "--"
+      : formatMetricTokens(view.lastTurnTokens);
+    metrics.push(
+      {
+        id: "currentTaskTokens",
+        label: "当前任务累计 Token",
+        display: `任务 ${currentTaskValue}`,
+        detail: `当前任务累计 Token：${currentTaskValue}`,
+        value: currentTaskValue,
+        defaultVisible: false,
+      },
+      {
+        id: "lastTurnTokens",
+        label: "上次对话消耗 Token",
+        display: `上次 ${lastTurnValue}`,
+        detail: `上次对话消耗 Token：${lastTurnValue}`,
+        value: lastTurnValue,
+        defaultVisible: false,
+      },
+    );
   }
   return {
     id: "official",
@@ -945,28 +1510,44 @@ export class CombinedUsageClient {
     this.timer = null;
     this.nextRefreshAt = null;
     this.officialView = { status: "loading", windows: [], todayTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
+    this.localOfficialView = { status: "loading", dailyDate: null, todayTokens: null, fetchedAt: null, error: null };
     this.accountView = normalizeApiAccountView(null, [], { refreshMs });
     this.apiView = normalizeApiUsageView(null, null, provider);
-    this.official = new UsageClient({ command, refreshMs, managed: true, onUpdate: (view) => { this.officialView = view; this.emit(); } });
+    this.localOfficial = new LocalCodexTokenTracker({ onUpdate: (view) => { this.localOfficialView = view; this.emit(); } });
+    this.official = new UsageClient({
+      command,
+      refreshMs,
+      managed: true,
+      onUpdate: (view) => {
+        this.officialView = view;
+        this.localOfficial.setOfficialModelProviders(view?.officialModelProviders);
+        this.emit();
+      },
+    });
     this.account = new ApiAccountUsageClient({ refreshMs, managed: true, onUpdate: (view) => { this.accountView = view; this.emit(); } });
     this.api = new ApiUsageClient({ provider, refreshMs, managed: true, onUpdate: (view) => { this.apiView = view; this.emit(); } });
   }
 
   emit() {
+    const officialView = mergeOfficialLocalUsage(this.officialView, this.localOfficialView, new Date());
     this.onUpdate({
-      ...this.officialView,
+      ...officialView,
       schemaVersion: 2,
       nextRefreshAt: this.nextRefreshAt,
       sources: {
-        official: toOfficialUsageSource(this.officialView, Date.now(), this.refreshMs),
+        official: toOfficialUsageSource(officialView, Date.now(), this.refreshMs),
         "api-account": this.accountView,
         [this.apiView.id]: this.apiView,
       },
     });
   }
 
+  setCurrentThreadId(value) {
+    return this.localOfficial.setCurrentThreadId(value);
+  }
+
   async start() {
-    await Promise.all([this.official.start(), this.account.start(), this.api.start()]);
+    await Promise.all([this.official.start(), this.localOfficial.start(), this.account.start(), this.api.start()]);
     this.nextRefreshAt = Date.now() + this.refreshMs;
     this.timer = setInterval(() => {
       this.nextRefreshAt = Date.now() + this.refreshMs;
@@ -980,7 +1561,7 @@ export class CombinedUsageClient {
   async stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    await Promise.all([this.official.stop(), this.account.stop(), this.api.stop()]);
+    await Promise.all([this.official.stop(), this.localOfficial.stop(), this.account.stop(), this.api.stop()]);
   }
 }
 
@@ -1145,7 +1726,17 @@ export class UsageClient {
     this.refreshing = null;
     this.rateLimits = null;
     this.tokenUsage = null;
-    this.view = { status: "loading", windows: [], todayTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
+    this.accountSnapshot = null;
+    this.configSnapshot = null;
+    this.view = {
+      status: "loading",
+      windows: [],
+      todayTokens: null,
+      lifetimeTokens: null,
+      officialModelProviders: [],
+      fetchedAt: null,
+      error: null,
+    };
     this.stopped = true;
   }
 
@@ -1176,7 +1767,10 @@ export class UsageClient {
     const byId = { ...(this.rateLimits?.rateLimitsByLimitId || {}) };
     if (rateLimits?.limitId) byId[rateLimits.limitId] = mergeRateLimitSnapshot(byId[rateLimits.limitId], rateLimits);
     this.rateLimits = { ...(this.rateLimits || {}), rateLimits, rateLimitsByLimitId: Object.keys(byId).length ? byId : null };
-    this.emit(normalizeUsageView(this.rateLimits, this.tokenUsage));
+    this.emit({
+      ...normalizeUsageView(this.rateLimits, this.tokenUsage),
+      officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
+    });
   }
 
   emitFailure(error) {
@@ -1193,14 +1787,21 @@ export class UsageClient {
     this.refreshing = (async () => {
       try {
         const rpc = await this.ensureConnected();
-        const [limitsResult, usageResult] = await Promise.allSettled([
+        const [limitsResult, usageResult, accountResult, configResult] = await Promise.allSettled([
           rpc.request("account/rateLimits/read"),
           rpc.request("account/usage/read"),
+          rpc.request("account/read", { refreshToken: false }),
+          rpc.request("config/read", {}),
         ]);
         if (limitsResult.status === "fulfilled") this.rateLimits = limitsResult.value;
         if (usageResult.status === "fulfilled") this.tokenUsage = usageResult.value;
+        if (accountResult.status === "fulfilled") this.accountSnapshot = accountResult.value;
+        if (configResult.status === "fulfilled") this.configSnapshot = configResult.value;
         if (limitsResult.status === "rejected" && usageResult.status === "rejected") throw limitsResult.reason;
-        this.emit(normalizeUsageView(this.rateLimits, this.tokenUsage));
+        this.emit({
+          ...normalizeUsageView(this.rateLimits, this.tokenUsage),
+          officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
+        });
       } catch (error) {
         if (this.rpc) {
           await this.rpc.stop().catch(() => {});

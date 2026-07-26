@@ -1,18 +1,24 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
   ApiAccountUsageClient,
   ApiUsageClient,
+  LocalCodexTokenTracker,
   accountLogIdentity,
   loadApiProviderConfig,
   mergeRateLimitSnapshot,
+  mergeOfficialLocalUsage,
   normalizeApiUsageView,
   normalizeApiAccountView,
   normalizeCctqUsageView,
   normalizeUsageView,
+  officialEquivalentTokenDelta,
+  officialModelProvidersFromAccount,
   parseAppServerLine,
+  parseLocalTokenContextEvent,
+  parseLocalTokenUsageEvent,
   toOfficialUsageSource,
   validateApiProviderConfig,
 } from "../scripts/usage-client.mjs";
@@ -21,6 +27,19 @@ assert.deepEqual(parseAppServerLine('{"id":1,"result":{}}'), { id: 1, result: {}
 assert.equal(parseAppServerLine("  "), null);
 assert.throws(() => parseAppServerLine("[]"), /JSON object/);
 assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
+
+assert.deepEqual(officialModelProvidersFromAccount(
+  { account: { type: "chatgpt" }, requiresOpenaiAuth: true },
+  { config: { model_provider: "custom", model_providers: { custom: { requires_openai_auth: true } } } },
+), ["custom", "openai"]);
+assert.deepEqual(officialModelProvidersFromAccount(
+  { account: { type: "chatgpt" }, requiresOpenaiAuth: false },
+  { config: { model_provider: "custom", model_providers: { custom: { requires_openai_auth: false } } } },
+), ["openai"]);
+assert.deepEqual(officialModelProvidersFromAccount(
+  { account: { type: "apiKey" }, requiresOpenaiAuth: true },
+  { config: { model_providers: { custom: { requires_openai_auth: true } } } },
+), []);
 
 const rateLimits = {
   rateLimits: {
@@ -55,8 +74,278 @@ assert.equal(view.lifetimeTokens, 1250000);
 const official = toOfficialUsageSource(view, now.getTime(), 45000);
 assert.deepEqual(official.metrics.filter((item) => item.defaultVisible).map((item) => item.id), ["primaryRemaining", "todayTokens"]);
 assert.ok(!official.metrics.some((item) => item.id.startsWith("secondary")));
-assert.equal(official.metrics.find((item) => item.id === "todayTokens").value, "18,400");
+assert.equal(official.metrics.find((item) => item.id === "todayTokens").value, "2万");
+assert.equal(official.metrics.find((item) => item.id === "lifetimeTokens").value, "125万");
 assert.equal(official.nextRefreshAt - official.fetchedAt, 45000);
+const largeOfficial = toOfficialUsageSource({ ...view, todayTokens: 123456789, lifetimeTokens: 100000000 }, now.getTime());
+assert.equal(largeOfficial.metrics.find((item) => item.id === "todayTokens").value, "1.23亿");
+assert.equal(largeOfficial.metrics.find((item) => item.id === "lifetimeTokens").value, "1.00亿");
+
+const missingToday = normalizeUsageView(rateLimits, {
+  summary: { lifetimeTokens: 1250000 },
+  dailyUsageBuckets: [{ startDate: "2026-07-15", tokens: 169875 }],
+}, now);
+assert.equal(missingToday.todayTokens, null);
+assert.equal(missingToday.tokenUsageAvailable, true);
+assert.equal(missingToday.latestUsageDate, "2026-07-15");
+assert.match(missingToday.error, /最新数据截至 2026-07-15/);
+assert.equal(toOfficialUsageSource(missingToday, now.getTime()).metrics.find((item) => item.id === "todayTokens").value, "--");
+const explicitZeroToday = normalizeUsageView(rateLimits, {
+  summary: { lifetimeTokens: 1250000 },
+  dailyUsageBuckets: [{ startDate: "2026-07-22", tokens: 0 }],
+}, now);
+assert.equal(explicitZeroToday.todayTokens, 0);
+assert.equal(toOfficialUsageSource(explicitZeroToday, now.getTime()).metrics.find((item) => item.id === "todayTokens").value, "0");
+
+const tokenEventLine = JSON.stringify({
+  timestamp: "2026-07-22T04:00:00.000Z",
+  type: "event_msg",
+  payload: {
+    type: "token_count",
+    info: {
+      total_token_usage: {
+        total_tokens: 150,
+        input_tokens: 120,
+        cached_input_tokens: 80,
+        output_tokens: 30,
+      },
+      last_token_usage: { total_tokens: 50 },
+    },
+  },
+});
+assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.tokens, 50);
+assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.totalTokens, 150);
+assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.inputTokens, 120);
+assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.cachedInputTokens, 80);
+assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.outputTokens, 30);
+assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-21"), null);
+assert.equal(parseLocalTokenUsageEvent('{"payload":{"type":"user_message","text":"token_count"}}'), null);
+assert.deepEqual(parseLocalTokenContextEvent(JSON.stringify({
+  type: "turn_context",
+  payload: { model: "gpt-5.6-sol" },
+})), { model: "gpt-5.6-sol", serviceTier: null });
+assert.deepEqual(parseLocalTokenContextEvent(JSON.stringify({
+  type: "event_msg",
+  payload: {
+    type: "thread_settings_applied",
+    thread_settings: { model: "gpt-5.6-sol", service_tier: "fast" },
+  },
+})), { model: "gpt-5.6-sol", serviceTier: "fast" });
+const previousOfficialUsage = { totalTokens: 100, inputTokens: 80, cachedInputTokens: 60, outputTokens: 20 };
+const currentOfficialUsage = { totalTokens: 150, inputTokens: 120, cachedInputTokens: 80, outputTokens: 30 };
+assert.equal(officialEquivalentTokenDelta(currentOfficialUsage, previousOfficialUsage, "gpt-5.6-sol"), 82);
+assert.equal(officialEquivalentTokenDelta(currentOfficialUsage, previousOfficialUsage, "gpt-5.6-sol", "fast"), 205);
+assert.equal(officialEquivalentTokenDelta({
+  totalTokens: 500,
+  inputTokens: 400,
+  cachedInputTokens: 350,
+  outputTokens: 100,
+}, null, "gpt-5.6-terra"), 343);
+assert.equal(officialEquivalentTokenDelta({
+  totalTokens: 110,
+  inputTokens: 100,
+  cachedInputTokens: 50,
+  outputTokens: 10,
+}, null, "codex-auto-review"), 47);
+
+const localTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-official-token-test-"));
+try {
+  const sessionRoot = path.join(localTrackerRoot, "sessions");
+  const counterPath = path.join(localTrackerRoot, "official-token-counter.json");
+  const currentThreadId = "019f8e6a-f751-7963-8474-551fcc730496";
+  const customThreadId = "019f9da1-961d-7fe2-ac1d-bc4e68452ce6";
+  mkdirSync(sessionRoot, { recursive: true });
+  const sessionPath = path.join(sessionRoot, `rollout-test-${currentThreadId}.jsonl`);
+  const customSessionPath = path.join(sessionRoot, `rollout-test-${customThreadId}.jsonl`);
+  let trackerNow = Date.now();
+  const dayStart = new Date(trackerNow);
+  dayStart.setHours(0, 0, 0, 0);
+  const beforeToday = new Date(dayStart.getTime() - 1000).toISOString();
+  const firstToday = new Date(dayStart.getTime() + 60_000).toISOString();
+  const localDate = new Date(trackerNow);
+  const trackerDateKey = `${localDate.getFullYear()}-${String(localDate.getMonth() + 1).padStart(2, "0")}-${String(localDate.getDate()).padStart(2, "0")}`;
+  const firstEvent = JSON.stringify({
+    timestamp: firstToday,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          total_tokens: 150,
+          input_tokens: 120,
+          cached_input_tokens: 80,
+          output_tokens: 30,
+        },
+        last_token_usage: { total_tokens: 50 },
+      },
+    },
+  });
+  writeFileSync(sessionPath, [
+    JSON.stringify({
+      timestamp: beforeToday,
+      type: "session_meta",
+      payload: { id: currentThreadId, model_provider: "openai" },
+    }),
+    JSON.stringify({
+      timestamp: beforeToday,
+      type: "turn_context",
+      payload: { model: "gpt-5.6-sol" },
+    }),
+    JSON.stringify({
+      timestamp: beforeToday,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            total_tokens: 100,
+            input_tokens: 80,
+            cached_input_tokens: 60,
+            output_tokens: 20,
+          },
+          last_token_usage: { total_tokens: 100 },
+        },
+      },
+    }),
+    firstEvent,
+    firstEvent,
+    "",
+  ].join("\n"), "utf8");
+  writeFileSync(customSessionPath, [
+    JSON.stringify({
+      timestamp: firstToday,
+      type: "session_meta",
+      payload: { id: customThreadId, model_provider: "custom" },
+    }),
+    JSON.stringify({
+      timestamp: firstToday,
+      type: "turn_context",
+      payload: { model: "gpt-5.6-terra" },
+    }),
+    JSON.stringify({
+      timestamp: firstToday,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            total_tokens: 500,
+            input_tokens: 400,
+            cached_input_tokens: 350,
+            output_tokens: 100,
+          },
+          last_token_usage: { total_tokens: 500 },
+        },
+      },
+    }),
+    "",
+  ].join("\n"), "utf8");
+  writeFileSync(counterPath, `${JSON.stringify({
+    schemaVersion: 1,
+    dailyDate: trackerDateKey,
+    todayTokens: 999999,
+  })}\n`, "utf8");
+  const trackerUpdates = [];
+  const tracker = new LocalCodexTokenTracker({
+    sessionRoot,
+    counterPath,
+    officialModelProviders: ["openai"],
+    now: () => trackerNow,
+    onUpdate: (value) => trackerUpdates.push(value),
+  });
+  tracker.setCurrentThreadId(currentThreadId);
+  await tracker.refresh();
+  assert.equal(trackerUpdates.at(-1).todayTokens, 82);
+  assert.equal(trackerUpdates.at(-1).currentTaskTokens, 150);
+  assert.equal(trackerUpdates.at(-1).lastTurnTokens, 50);
+  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).todayTokens, 82);
+  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).schemaVersion, 5);
+  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).providerKey, "openai");
+  tracker.setCurrentThreadId(customThreadId);
+  await tracker.refresh();
+  assert.equal(trackerUpdates.at(-1).todayTokens, 82);
+  assert.equal(trackerUpdates.at(-1).currentTaskTokens, 500);
+  assert.equal(trackerUpdates.at(-1).lastTurnTokens, 500);
+  tracker.setOfficialModelProviders(["openai", "custom"]);
+  await tracker.refresh();
+  assert.equal(trackerUpdates.at(-1).todayTokens, 425);
+  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).providerKey, "custom,openai");
+  tracker.setOfficialModelProviders(["openai"]);
+  await tracker.refresh();
+  assert.equal(trackerUpdates.at(-1).todayTokens, 82);
+  tracker.setCurrentThreadId(currentThreadId);
+  await tracker.refresh();
+  trackerNow += 120_000;
+  appendFileSync(sessionPath, `${JSON.stringify({
+    timestamp: new Date(trackerNow).toISOString(),
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          total_tokens: 190,
+          input_tokens: 150,
+          cached_input_tokens: 90,
+          output_tokens: 40,
+        },
+        last_token_usage: { total_tokens: 40 },
+      },
+    },
+  })}\n`, "utf8");
+  await tracker.refresh();
+  assert.equal(trackerUpdates.at(-1).todayTokens, 163);
+  assert.equal(trackerUpdates.at(-1).currentTaskTokens, 190);
+  assert.equal(trackerUpdates.at(-1).lastTurnTokens, 40);
+  const restartedUpdates = [];
+  const restartedTracker = new LocalCodexTokenTracker({
+    sessionRoot,
+    counterPath,
+    officialModelProviders: ["openai"],
+    now: () => trackerNow + 1,
+    onUpdate: (value) => restartedUpdates.push(value),
+  });
+  restartedTracker.setCurrentThreadId(currentThreadId);
+  await restartedTracker.refresh();
+  assert.equal(restartedUpdates.at(-1).todayTokens, 163);
+  assert.equal(restartedUpdates.at(-1).currentTaskTokens, 190);
+
+  const mergeDate = new Date(trackerNow);
+  const delayedOfficial = mergeOfficialLocalUsage(missingToday, {
+    status: "ready",
+    dailyDate: trackerDateKey,
+    todayTokens: 90,
+    currentThreadId,
+    currentTaskTokens: 190,
+    lastTurnTokens: 40,
+  }, mergeDate);
+  assert.equal(delayedOfficial.todayTokens, 90);
+  assert.equal(delayedOfficial.todayTokenScope, "local-official-equivalent");
+  assert.match(delayedOfficial.error, /官方费率折算/);
+  const delayedSource = toOfficialUsageSource(delayedOfficial, trackerNow);
+  assert.equal(delayedSource.metrics.find((item) => item.id === "todayTokens").value, "90");
+  assert.equal(delayedSource.metrics.find((item) => item.id === "currentTaskTokens").value, "190");
+  assert.equal(delayedSource.metrics.find((item) => item.id === "lastTurnTokens").value, "40");
+  const officialBehind = mergeOfficialLocalUsage({ ...view, todayTokens: 80 }, {
+    dailyDate: trackerDateKey,
+    todayTokens: 90,
+  }, mergeDate);
+  assert.equal(officialBehind.todayTokens, 90);
+  assert.equal(officialBehind.todayTokenScope, "local-official-equivalent");
+  const officialAhead = mergeOfficialLocalUsage({ ...view, todayTokens: 120 }, {
+    dailyDate: trackerDateKey,
+    todayTokens: 90,
+  }, mergeDate);
+  assert.equal(officialAhead.todayTokens, 90);
+  assert.equal(officialAhead.todayTokenScope, "local-official-equivalent");
+  const officialFallback = mergeOfficialLocalUsage({ ...view, todayTokens: 120 }, {
+    dailyDate: trackerDateKey,
+    todayTokens: 0,
+  }, mergeDate);
+  assert.equal(officialFallback.todayTokens, 120);
+  assert.equal(officialFallback.todayTokenScope, "official");
+} finally {
+  rmSync(localTrackerRoot, { recursive: true, force: true });
+}
 
 const reversed = toOfficialUsageSource({ ...view, windows: [...view.windows].reverse() }, now.getTime());
 assert.equal(reversed.metrics.find((item) => item.id === "primaryRemaining").value, "68%");

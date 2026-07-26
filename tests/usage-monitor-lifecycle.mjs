@@ -53,6 +53,8 @@ const now = Date.now();
 const usage = {
   schemaVersion: 2,
   nextRefreshAt: now + 60000,
+  todayTokens: 128000,
+  lifetimeTokens: 12000000,
   sources: {
     official: {
       id: "official", label: "官方订阅", accountType: "subscription", status: "ready", nextRefreshAt: now + 60000,
@@ -61,6 +63,8 @@ const usage = {
         { id: "primaryReset", label: "周期重置", display: "重置 2天后", value: "2天后", defaultVisible: false },
         { id: "todayTokens", label: "今日 token", display: "今日 128k", value: "128,000", defaultVisible: true },
         { id: "lifetimeTokens", label: "累计 token", display: "累计 12m", value: "12,000,000", defaultVisible: false },
+        { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 3822万", value: "3822万", defaultVisible: false },
+        { id: "lastTurnTokens", label: "上次对话消耗 Token", display: "上次 8万", value: "8万", defaultVisible: false },
       ],
     },
     "api-account": {
@@ -109,6 +113,8 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?background:\s*Canvas;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column\s*\{[\s\S]*?box-sizing:\s*border-box;[\s\S]*?width:\s*100%;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-column \+ \.usage-column\s*\{[^}]*border-left/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-subsection-title\s*\{\s*margin-top:\s*5px;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-subsection\[data-status="ready"\] \.usage-status\s*\{\s*background:\s*#22c55e;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-detail-label\s*\{[\s\S]*?color:\s*inherit;[\s\S]*?font-weight:\s*650;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-detail-select input\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?width:\s*13px;[\s\S]*?height:\s*13px;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-popover-footer/);
@@ -135,7 +141,18 @@ try {
   assert.equal(columns.length, 3);
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-title span:last-child").textContent), ["官方订阅", "API 账户", "API Key"]);
   assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "loading", "error"]);
-  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [5, 8, 4]);
+  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [6, 8, 4]);
+  const taskSection = columns[0].querySelector(".usage-column-subsection");
+  assert.ok(taskSection);
+  assert.equal(taskSection.querySelector(".usage-column-title span:last-child").textContent, "本次任务相关");
+  assert.equal(taskSection.querySelector(".usage-status").getAttribute("aria-label"), "正常");
+  assert.equal(columns[0].querySelector(":scope > .usage-column-rows").querySelectorAll(".usage-detail-row").length, 4);
+  assert.equal(taskSection.querySelectorAll(".usage-detail-row").length, 2);
+  assert.equal(columns[0].querySelector('[data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "13万");
+  assert.equal(columns[0].querySelector('[data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "1200万");
+  assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3822万");
+  assert.equal(columns[0].querySelector('[data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "8万");
+  assert.equal(columns[0].querySelector('[data-metric="requestStatus"]'), null);
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "请求中", "请求失败"]);
   const limitedUsage = structuredClone(usage);
   limitedUsage.sources.acme.status = "rate-limited";
@@ -149,14 +166,16 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{\s*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
+  assert.equal(columns[0].querySelector(".usage-column-meta"), null);
   assert.equal(columns[1].querySelector(".usage-column-meta"), null);
-  assert.equal(columns[0].querySelector(".usage-column-meta span:first-child").textContent, "最多显示 8 项");
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-meta\s*\{[\s\S]*?justify-content:\s*flex-start;/);
+  assert.equal(columns[2].querySelector(".usage-column-meta span:first-child").textContent, "最多显示 8 项");
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-meta\s*\{[\s\S]*?justify-content:\s*flex-end;/);
   assert.match(host.shadowRoot.querySelector(".usage-refresh-countdown").textContent, /^刷新 \d+秒后$/);
   assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化"]);
   assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 2);
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').firstElementChild.className, "usage-mode-switches");
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').lastElementChild.className, "usage-column-meta");
+  assert.equal(columns[2].querySelector(".usage-column-footer").nextElementSibling, columns[2].querySelector(".usage-column-brand"));
   assert.equal(host.shadowRoot.querySelector(".usage-summary").firstElementChild.className, "usage-refresh-ring");
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, true);
 

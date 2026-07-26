@@ -16,6 +16,56 @@ $CodexUsageUtf8 = [Text.UTF8Encoding]::new($false)
 try { [Console]::OutputEncoding = $CodexUsageUtf8 } catch {}
 $global:OutputEncoding = $CodexUsageUtf8
 
+function Invoke-CodexUsageProcessWithTimeout {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [string]$ArgumentLine = '',
+    [ValidateRange(100, 120000)]
+    [int]$TimeoutMs = 10000
+  )
+
+  $startInfo = New-Object Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $FilePath
+  $startInfo.Arguments = $ArgumentLine
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+
+  $process = New-Object Diagnostics.Process
+  $process.StartInfo = $startInfo
+  $stdoutTask = $null
+  $stderrTask = $null
+  try {
+    if (-not $process.Start()) { throw "无法启动进程：$FilePath" }
+    $processId = $process.Id
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $timedOut = -not $process.WaitForExit($TimeoutMs)
+    if ($timedOut) {
+      try {
+        if (-not $process.HasExited) { $process.Kill() }
+      } catch {}
+      if (-not $process.WaitForExit(5000)) { throw "超时进程无法终止：PID $processId" }
+    } else {
+      $process.WaitForExit()
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
+    return [pscustomobject]@{
+      ProcessId = $processId
+      ExitCode = if ($timedOut) { 124 } else { $process.ExitCode }
+      TimedOut = $timedOut
+      StandardOutput = $stdout
+      StandardError = $stderr
+    }
+  } finally {
+    if ($process) { $process.Dispose() }
+  }
+}
+
 function Save-CodexUsagePersistedProvider {
   [CmdletBinding()]
   param(
@@ -573,28 +623,43 @@ function Resolve-CodexUsageAvailablePort {
   throw "从端口 $PreferredPort 开始的 $SearchCount 个本机端口均不可用。"
 }
 
+function Get-CodexUsageCdpCandidates {
+  [CmdletBinding()]
+  param(
+    [ValidateRange(1024, 65535)][int]$PreferredPort = 9335,
+    [int[]]$ProcessPorts = @(),
+    [int]$ActiveFilePort = 0,
+    [int]$StatePort = 0
+  )
+
+  $candidates = [Collections.Generic.List[int]]::new()
+  foreach ($candidate in @($ProcessPorts) + @($ActiveFilePort, $StatePort, $PreferredPort, 9229, 9335)) {
+    if ($candidate -lt 1024 -or $candidate -gt 65535) { continue }
+    if (-not $candidates.Contains($candidate)) { $candidates.Add($candidate) }
+  }
+  return $candidates.ToArray()
+}
+
 function Resolve-CodexUsageCdpPort {
   [CmdletBinding()]
   param([ValidateRange(1024, 65535)][int]$PreferredPort = 9335)
-  $candidates = [Collections.Generic.List[int]]::new()
-  foreach ($candidate in @($PreferredPort, 9229, 9335)) {
-    if (-not $candidates.Contains($candidate)) { $candidates.Add($candidate) }
-  }
+  $processPorts = [Collections.Generic.List[int]]::new()
   try {
     foreach ($process in Get-CimInstance Win32_Process -Filter "Name = 'ChatGPT.exe'" -ErrorAction Stop) {
       foreach ($match in [regex]::Matches([string]$process.CommandLine, '--remote-debugging-port(?:=|\s+)(\d+)')) {
         $candidate = [int]$match.Groups[1].Value
-        if (-not $candidates.Contains($candidate)) { $candidates.Add($candidate) }
+        if (-not $processPorts.Contains($candidate)) { $processPorts.Add($candidate) }
       }
     }
   } catch {}
+  $activeFilePort = 0
   $activePortPath = Join-Path $env:APPDATA 'Codex\DevToolsActivePort'
   if (Test-Path -LiteralPath $activePortPath -PathType Leaf) {
-    $candidate = 0
-    if ([int]::TryParse([string](Get-Content -LiteralPath $activePortPath -TotalCount 1), [ref]$candidate) -and -not $candidates.Contains($candidate)) { $candidates.Add($candidate) }
+    [void][int]::TryParse([string](Get-Content -LiteralPath $activePortPath -TotalCount 1), [ref]$activeFilePort)
   }
   $state = Get-CodexUsageState
-  if ($state -and $state.port -and -not $candidates.Contains([int]$state.port)) { $candidates.Add([int]$state.port) }
+  $statePort = if ($state -and $state.port) { [int]$state.port } else { 0 }
+  $candidates = Get-CodexUsageCdpCandidates -PreferredPort $PreferredPort -ProcessPorts $processPorts.ToArray() -ActiveFilePort $activeFilePort -StatePort $statePort
   foreach ($candidate in $candidates) { if (Test-CodexUsageCdpPort $candidate) { return $candidate } }
   return 0
 }

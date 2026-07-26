@@ -67,6 +67,18 @@ foreach ($relative in @('config\providers\cctq.example.json', 'config\providers\
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'scripts\launch-codex-monitor.ps1') -SelfTest
 if ($LASTEXITCODE -ne 0) { throw 'Launcher decision tests failed.' }
 
+. (Join-Path $root 'scripts\monitor-utils.ps1')
+$timeoutStopwatch = [Diagnostics.Stopwatch]::StartNew()
+$timeoutProbe = Invoke-CodexUsageProcessWithTimeout -FilePath $pwsh -ArgumentLine '-NoLogo -NoProfile -Command "Start-Sleep -Seconds 10"' -TimeoutMs 300
+$timeoutStopwatch.Stop()
+if (-not $timeoutProbe.TimedOut -or $timeoutProbe.ExitCode -ne 124) { throw 'Timed process probe was not terminated.' }
+if ($timeoutStopwatch.Elapsed.TotalSeconds -gt 5) { throw "Timed process probe exceeded its outer deadline: $($timeoutStopwatch.Elapsed)." }
+if (Get-Process -Id $timeoutProbe.ProcessId -ErrorAction SilentlyContinue) { throw 'Timed process probe is still running.' }
+$successProbe = Invoke-CodexUsageProcessWithTimeout -FilePath $node -ArgumentLine '--version' -TimeoutMs 5000
+if ($successProbe.TimedOut -or $successProbe.ExitCode -ne 0 -or $successProbe.StandardOutput -notmatch '^v\d+') {
+  throw 'Successful process probe returned an unexpected result.'
+}
+
 $runtimeFiles = @(
   'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\monitor-utils.ps1',
   'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\launch-codex-monitor-hidden.vbs',
@@ -82,6 +94,8 @@ if ($runtimeSource -notmatch 'IApplicationActivationManager') { throw 'Packaged 
 if ($runtimeSource -notmatch 'CODEX_USAGE_API_KEY') { throw 'API key environment contract is missing.' }
 if ($runtimeSource -notmatch 'CODEX_USAGE_ACCOUNT_TOKEN' -or $runtimeSource -notmatch 'New-Api-User') { throw 'API account environment or authentication contract is missing.' }
 if ($runtimeSource -notmatch 'account-token-counter.json' -or $runtimeSource -notmatch 'InitialTokens') { throw 'Token baseline persistence contract is missing.' }
+if ($runtimeSource -notmatch 'official-token-counter.json' -or $runtimeSource -notmatch 'LocalCodexTokenTracker' -or $runtimeSource -notmatch 'last_token_usage' -or $runtimeSource -notmatch 'cached_input_tokens' -or $runtimeSource -notmatch 'OFFICIAL_MODEL_PROVIDER_ID' -or $runtimeSource -notmatch 'requires_openai_auth' -or $runtimeSource -notmatch 'account/read' -or $runtimeSource -notmatch 'config/read' -or $runtimeSource -notmatch 'officialEquivalentTokenDelta' -or $runtimeSource -notmatch 'OFFICIAL_MODEL_CREDIT_RATES' -or $runtimeSource -notmatch 'thread_settings_applied') { throw 'Official authenticated-provider rate-card Token attribution and persistence contract is missing.' }
+if ($runtimeSource -notmatch 'data-above-composer-conversation-id' -or $runtimeSource -notmatch 'currentTaskTokens' -or $runtimeSource -notmatch 'lastTurnTokens') { throw 'Current-task Token usage contract is missing.' }
 if ($runtimeSource -notmatch 'ProtectedData') { throw 'DPAPI persistence contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageCliPath') { throw 'Codex CLI auto-discovery contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageNonStoreDesktopPath') { throw 'Non-Store Codex Desktop auto-discovery contract is missing.' }
@@ -90,6 +104,8 @@ if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
 if ($runtimeSource -notmatch "Local\\CodexUsageMonitor'") { throw 'Cross-port startup mutex contract is missing.' }
 if ($runtimeSource -notmatch 'TARGET_ABSENCE_EXIT_MS') { throw 'Orphan injector shutdown contract is missing.' }
+if ($runtimeSource -match 'await usageClient\.start\(\)') { throw 'Initial usage refresh must not delay renderer injection.' }
+if ($runtimeSource -notmatch 'usageStartPromise = usageClient\.start\(\)') { throw 'Background initial usage refresh contract is missing.' }
 if ($runtimeSource -notmatch '\$owned = @\(Get-CodexUsageInjectorProcesses\)') { throw 'Cross-port injector cleanup contract is missing.' }
 if ($runtimeSource -notmatch 'rate-limited' -or $runtimeSource -notmatch 'HTTP 429') { throw 'API rate-limit backoff contract is missing.' }
 if ($runtimeSource -notmatch 'minimalMode' -or $runtimeSource -notmatch 'countdownVisualization' -or $runtimeSource -notmatch 'usage-refresh-ring') { throw 'Display mode controls are missing.' }
@@ -112,7 +128,7 @@ foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsA
   if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }
 }
 $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw
-foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '60 秒', '有限页数', '极简模式', '倒计时可视化', '圆形表盘')) {
+foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '60 秒', '有限页数', '极简模式', '倒计时可视化', '圆形表盘', 'official-token-counter.json', '本机实时累计', '当前任务累计 Token', '上次对话消耗 Token')) {
   if ($readme -notmatch [regex]::Escape($requiredReadmeText)) { throw "README installation guidance is missing: $requiredReadmeText" }
 }
 if ($readme -match '(?m)^#{2,}\s+[\d.]*\s*界面预览\s*$') { throw 'README preview should be an unnumbered introduction.' }
@@ -120,7 +136,7 @@ $briefInstallAt = $readme.IndexOf('## 1. 简要安装说明')
 $previewAt = $readme.IndexOf('docs/images/monitor-expanded.png')
 $dataSourceAt = $readme.IndexOf('### 1.3 选择数据源并配置')
 $codexHelpAt = $readme.IndexOf('如果不懂如何运行下面的命令')
-$officialSourceAt = $readme.IndexOf('- 官方订阅：数据来自')
+$officialSourceAt = if ($dataSourceAt -ge 0) { $readme.IndexOf('- 官方订阅：', $dataSourceAt) } else { -1 }
 $expandedViewAt = $readme.IndexOf('### 1.4 展开监视栏查看和勾选')
 if ($previewAt -lt 0 -or $briefInstallAt -lt 0 -or $previewAt -ge $briefInstallAt) { throw 'README preview must appear before the brief installation section.' }
 if ($dataSourceAt -lt 0 -or $codexHelpAt -le $dataSourceAt -or $officialSourceAt -le $codexHelpAt -or $expandedViewAt -le $officialSourceAt) { throw 'README Codex help note must follow the data-source heading and precede its commands.' }

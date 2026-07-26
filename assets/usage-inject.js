@@ -11,6 +11,7 @@
   const REFRESH_INTERVAL_MS = 60000;
   const MAX_SELECTED_METRICS = 8;
   const MAX_MINIMAL_SELECTED_METRICS = 14;
+  const TASK_METRIC_IDS = new Set(["currentTaskTokens", "lastTurnTokens"]);
 
   const previousUsage = window[STATE_KEY]?.usage || window[USAGE_KEY] || window[LEGACY_STATE_KEY]?.usage || window[LEGACY_THEME_STATE_KEY]?.usage || window[LEGACY_USAGE_KEY] || null;
   try { window[STATE_KEY]?.cleanup?.(); } catch {}
@@ -34,9 +35,6 @@
     if (node && node.textContent !== text) node.textContent = text;
   };
   const finiteNumber = (value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
-  const formatExactInteger = (value) => finiteNumber(value)
-    ? String(Math.round(Math.max(0, Number(value)))).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
-    : "--";
   const validStatus = (value) => ["loading", "ready", "stale", "unavailable", "error", "rate-limited"].includes(value) ? value : "unavailable";
   const normalizeMetric = (item) => {
     if (!item || typeof item !== "object" || typeof item.id !== "string") return null;
@@ -92,8 +90,8 @@
     if (!sources.official) sources.official = legacyOfficialSource(source);
     if (sources.official && (finiteNumber(source.todayTokens) || finiteNumber(source.lifetimeTokens))) {
       sources.official.metrics = sources.official.metrics.map((metric) => {
-        if (metric.id === "todayTokens" && finiteNumber(source.todayTokens)) return { ...metric, value: formatExactInteger(source.todayTokens) };
-        if (metric.id === "lifetimeTokens" && finiteNumber(source.lifetimeTokens)) return { ...metric, value: formatExactInteger(source.lifetimeTokens) };
+        if (metric.id === "todayTokens" && finiteNumber(source.todayTokens)) return { ...metric, value: formatChineseTokenUnit(source.todayTokens) };
+        if (metric.id === "lifetimeTokens" && finiteNumber(source.lifetimeTokens)) return { ...metric, value: formatChineseTokenUnit(source.lifetimeTokens) };
         return metric;
       });
     }
@@ -121,15 +119,16 @@
   const formatPercent = (value) => value === null ? "--" : `${Math.round(value)}%`;
   const formatTokens = (value) => {
     if (value === null) return "--";
-    if (value >= 1000000) return `${(value / 1000000).toFixed(value >= 10000000 ? 0 : 1).replace(/\.0$/, "")}m`;
-    if (value >= 1000) return `${(value / 1000).toFixed(value >= 100000 ? 0 : 1).replace(/\.0$/, "")}k`;
+    if (value >= 100000000) return `${(value / 100000000).toFixed(2)}亿`;
+    if (value >= 10000) return `${Math.round(value / 10000)}万`;
     return String(Math.round(value));
   };
   const formatChineseTokenUnit = (value) => {
     if (!finiteNumber(value)) return "--";
     const number = Math.max(0, Number(value));
     if (number >= 100000000) return `${(number / 100000000).toFixed(2)}亿`;
-    return `${Math.round(number / 10000)}万`;
+    if (number >= 10000) return `${Math.round(number / 10000)}万`;
+    return String(Math.round(number));
   };
   const formatReset = (timestamp) => {
     if (!timestamp) return "重置时间未知";
@@ -241,19 +240,18 @@
     for (const [id, label, compactLabel] of [
       ["todayTokens", "今日 Token", "今日"],
       ["lifetimeTokens", "累计 Token", "累计"],
+      ["currentTaskTokens", "当前任务累计 Token", "任务"],
+      ["lastTurnTokens", "上次对话消耗 Token", "上次"],
     ]) {
       const metric = metricById.get(id);
       if (!metric) continue;
       const value = metric.value || metricValue(metric, new RegExp(`^${compactLabel}\\s*`));
       const numericValue = Number(String(value).replace(/,/g, ""));
-      const displayValue = Number.isFinite(numericValue) ? formatChineseTokenUnit(numericValue) : metricValue(metric, new RegExp(`^${compactLabel}\\s*`));
+      const displayValue = id.endsWith("Tokens") && Number.isFinite(numericValue)
+        ? formatChineseTokenUnit(numericValue)
+        : value;
       rows.push({ id, label, display: `${compactLabel} ${displayValue}`, value: displayValue, defaultVisible: false });
     }
-    const requestValue = source.status === "ready" ? "正常"
-      : source.status === "loading" ? "请求中"
-      : source.status === "stale" ? "数据过期"
-      : source.status === "error" ? "请求失败" : "不可用";
-    rows.push({ id: "requestStatus", label: "请求状态", display: `状态 ${requestValue}`, value: requestValue, defaultVisible: false });
     return rows;
   };
   const selectableSource = (source) => ({
@@ -444,6 +442,10 @@
     .usage-column[data-status="ready"] .usage-status { background: #22c55e; }
     .usage-column[data-status="loading"] .usage-status { background: #facc15; }
     .usage-column[data-status="stale"] .usage-status { background: #fb3f4f; }
+    .usage-column-subsection { display: flex; flex-direction: column; }
+    .usage-column-subsection-title { margin-top: 5px; }
+    .usage-column-subsection[data-status="ready"] .usage-status { background: #22c55e; }
+    .usage-column-subsection[data-status="unavailable"] .usage-status { background: #a1a1aa; }
     .usage-column-rows { display: grid; }
     .usage-detail-row {
       display: grid;
@@ -494,7 +496,7 @@
       width: fit-content;
       max-width: 100%;
       min-height: 36px;
-      margin-top: auto;
+      margin-top: 0;
       padding: 4px 0 2px;
       font-weight: 450;
       line-height: 1.35;
@@ -506,6 +508,9 @@
     .usage-column-footer {
       display: grid;
       gap: 2px;
+      align-self: flex-end;
+      width: fit-content;
+      max-width: 100%;
       min-width: 0;
       margin-top: auto;
       padding-top: 4px;
@@ -513,6 +518,7 @@
     .usage-mode-switches {
       display: flex;
       align-items: center;
+      justify-content: flex-end;
       gap: 10px;
       min-height: 22px;
       white-space: nowrap;
@@ -561,7 +567,7 @@
     .usage-mode-toggle input:focus-visible + .usage-toggle-track { outline: 2px solid color-mix(in srgb, #86efac 60%, transparent); outline-offset: 1px; }
     .usage-column-meta {
       display: flex;
-      justify-content: flex-start;
+      justify-content: flex-end;
       align-items: center;
       gap: 5px;
       min-height: 27px;
@@ -668,7 +674,10 @@
         if (source) {
           item.dataset.source = source.id;
           item.dataset.metric = metric.id;
-          item.title = `${source.label} · ${metric.label}：${metric.value || "--"}`;
+          const groupLabel = source.id === "official" && TASK_METRIC_IDS.has(metric.id)
+            ? "本次任务相关"
+            : source.label;
+          item.title = `${groupLabel} · ${metric.label}：${metric.value || "--"}`;
         }
         return item;
       }));
@@ -691,45 +700,60 @@
         const heading = document.createElement("span");
         heading.textContent = source.label;
         title.append(status, heading);
-        const rows = document.createElement("div");
-        rows.className = "usage-column-rows";
-        rows.replaceChildren(...source.metrics.map((metric) => {
-          const key = `${source.id}:${metric.id}`;
-          const checked = selectedKeys.has(key);
-          const row = document.createElement("div");
-          row.className = "usage-detail-row";
-          const select = document.createElement("label");
-          select.className = "usage-detail-select";
-          const input = document.createElement("input");
-          input.type = "checkbox";
-          input.dataset.source = source.id;
-          input.dataset.metric = metric.id;
-          input.checked = checked;
-          input.disabled = !checked && selected.length >= selectedLimit;
-          const label = document.createElement("span");
-          label.className = "usage-detail-label";
-          label.textContent = metric.label;
-          select.append(input, label);
-          const metricValueNode = document.createElement("span");
-          metricValueNode.className = "usage-detail-value";
-          metricValueNode.textContent = metric.value || "--";
-          metricValueNode.title = metric.value || "--";
-          row.append(select, metricValueNode);
-          return row;
-        }));
-        column.append(title, rows);
+        const createRows = (metrics) => {
+          const rows = document.createElement("div");
+          rows.className = "usage-column-rows";
+          rows.replaceChildren(...metrics.map((metric) => {
+            const key = `${source.id}:${metric.id}`;
+            const checked = selectedKeys.has(key);
+            const row = document.createElement("div");
+            row.className = "usage-detail-row";
+            const select = document.createElement("label");
+            select.className = "usage-detail-select";
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.dataset.source = source.id;
+            input.dataset.metric = metric.id;
+            input.checked = checked;
+            input.disabled = !checked && selected.length >= selectedLimit;
+            const label = document.createElement("span");
+            label.className = "usage-detail-label";
+            label.textContent = metric.label;
+            select.append(input, label);
+            const metricValueNode = document.createElement("span");
+            metricValueNode.className = "usage-detail-value";
+            metricValueNode.textContent = metric.value || "--";
+            metricValueNode.title = metric.value || "--";
+            row.append(select, metricValueNode);
+            return row;
+          }));
+          return rows;
+        };
+        const taskMetrics = source.id === "official"
+          ? source.metrics.filter((metric) => TASK_METRIC_IDS.has(metric.id))
+          : [];
+        const primaryMetrics = taskMetrics.length
+          ? source.metrics.filter((metric) => !TASK_METRIC_IDS.has(metric.id))
+          : source.metrics;
+        column.append(title, createRows(primaryMetrics));
+        if (taskMetrics.length) {
+          const taskSection = document.createElement("section");
+          taskSection.className = "usage-column-subsection";
+          const taskReady = taskMetrics.some((metric) => metric.value && metric.value !== "--");
+          taskSection.dataset.status = taskReady ? "ready" : "unavailable";
+          const taskTitle = document.createElement("div");
+          taskTitle.className = "usage-column-title usage-column-subsection-title";
+          const taskStatus = document.createElement("span");
+          taskStatus.className = "usage-status";
+          taskStatus.title = taskReady ? "当前任务数据正常" : "暂无当前任务数据";
+          taskStatus.setAttribute("aria-label", taskReady ? "正常" : "暂无数据");
+          const taskHeading = document.createElement("span");
+          taskHeading.textContent = "本次任务相关";
+          taskTitle.append(taskStatus, taskHeading);
+          taskSection.append(taskTitle, createRows(taskMetrics));
+          column.append(taskSection);
+        }
         if (source.accountType === "api-key") {
-          const brand = document.createElement("div");
-          brand.className = "usage-column-brand";
-          const product = document.createElement("span");
-          product.className = "usage-brand-product";
-          product.textContent = "Codex Usage Monitor for Windows";
-          const credit = document.createElement("span");
-          credit.className = "usage-brand-credit";
-          credit.textContent = "—— Designed by +羊 and Codex";
-          brand.append(product, credit);
-          column.append(brand);
-        } else if (source.accountType === "subscription") {
           const footer = document.createElement("div");
           footer.className = "usage-column-footer";
           const switches = document.createElement("div");
@@ -765,6 +789,17 @@
           meta.append(maximum, separator, countdown);
           footer.append(switches, meta);
           column.append(footer);
+
+          const brand = document.createElement("div");
+          brand.className = "usage-column-brand";
+          const product = document.createElement("span");
+          product.className = "usage-brand-product";
+          product.textContent = "Codex Usage Monitor for Windows";
+          const credit = document.createElement("span");
+          credit.className = "usage-brand-credit";
+          credit.textContent = "—— Designed by +羊 and Codex";
+          brand.append(product, credit);
+          column.append(brand);
         }
         return column;
       }));

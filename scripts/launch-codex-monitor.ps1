@@ -36,12 +36,15 @@ if ($SelfTest) {
     $testListener.Start()
     $occupiedPort = ([Net.IPEndPoint]$testListener.LocalEndpoint).Port
     if (Test-CodexUsageTcpPortAvailable $occupiedPort) { throw '已占用端口不应被识别为可用。' }
-    $availablePort = Resolve-CodexUsageAvailablePort -PreferredPort $occupiedPort -SearchCount 2
-    if ($availablePort -ne ($occupiedPort + 1)) { throw '端口冲突时应选择后续可用端口。' }
+    $searchCount = [Math]::Min(32, 65536 - $occupiedPort)
+    $availablePort = Resolve-CodexUsageAvailablePort -PreferredPort $occupiedPort -SearchCount $searchCount
+    if ($availablePort -le $occupiedPort -or -not (Test-CodexUsageTcpPortAvailable $availablePort)) { throw '端口冲突时应选择后续可用端口。' }
   } finally {
     $testListener.Stop()
   }
   if (-not (Test-CodexUsageTcpPortAvailable $occupiedPort)) { throw '监听器关闭后端口应恢复可用。' }
+  $orderedPorts = @(Get-CodexUsageCdpCandidates -PreferredPort 9335 -ProcessPorts @(9338, 9338) -ActiveFilePort 9337 -StatePort 9336)
+  if (($orderedPorts -join ',') -ne '9338,9337,9336,9335,9229') { throw 'CDP 端口候选顺序测试失败。' }
   Write-Host 'PASS: Codex monitor launcher decisions.'
   return
 }
@@ -62,9 +65,9 @@ function Write-CodexMonitorLaunchError([string]$Message) {
 }
 
 try {
-  $activePort = Resolve-CodexUsageCdpPort $Port
-  $debugReady = [bool]$activePort
   $codexRunning = @(Get-Process ChatGPT -ErrorAction SilentlyContinue).Count -gt 0
+  $activePort = if ($codexRunning) { Resolve-CodexUsageCdpPort $Port } else { 0 }
+  $debugReady = [bool]$activePort
   $plan = Get-CodexMonitorLaunchPlan $debugReady $codexRunning
   if ($plan -eq 'blocked-running-without-cdp') {
     Show-CodexMonitorMessage 'Codex 已通过原生入口运行，无法在不中断会话的情况下补加监视端口。请先正常退出 Codex，再点击“Codex Usage Monitor”。' 'Warning'
