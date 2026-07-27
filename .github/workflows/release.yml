@@ -40,5 +40,5 @@ jobs:
           if ($releaseTags -contains $tag) {
             gh release upload $tag $archive.FullName --repo $env:GITHUB_REPOSITORY --clobber
           } else {
-            gh release create $tag $archive.FullName --repo $env:GITHUB_REPOSITORY --title $tag --generate-notes --verify-tag
+            gh release create $tag $archive.FullName --repo $env:GITHUB_REPOSITORY --title "Codex Desktop Usage Monitor for Windows $tag" --generate-notes --verify-tag
           }

@@ -1,9 +1,20 @@
 # Codex Usage Monitor for Windows
 
-[![Windows CI](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/actions/workflows/ci.yml)
-[![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest)
+> In-app usage monitor and status bar for OpenAI Codex Desktop on Windows
 
-这是一个 Windows 版 Codex Desktop 用量监视器。它在 Codex 输入栏附近显示官方订阅、API 账户和 API Key 的用量，不修改 Codex 安装文件、登录文件或模型配置。
+[![Windows CI](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/latest)
+
+Track official subscription quota and reset time, task token usage, API account usage, and API key limits directly beside the Codex composer through local Chrome DevTools Protocol (CDP) runtime injection. It is not a floating overlay and does not patch `app.asar` or modify WindowsApps.
+
+这是一个直接显示在 Windows 版 OpenAI Codex Desktop 输入区域内的用量监视栏。它通过仅绑定本机的 CDP 运行时注入，在 Codex 输入栏旁显示官方订阅周期余量与重置时间、任务 Token、API 账户和 API Key 用量。它不是桌面悬浮窗，也不修改 WindowsApps、`app.asar`、Codex 登录文件或模型配置。
+
+- 直接注入 Codex Desktop 渲染页面，不是独立悬浮窗。
+- 同一面板支持官方订阅、API 账户和 API Key 三种数据源。
+- 自动寻找 Microsoft Store 和常见非 Store Codex 安装路径。
+- 使用本机 CDP 运行时注入，不修改 Codex 安装文件；凭据使用 Windows DPAPI 持久化保护。
+- 安装器会创建独立的 `Codex Usage Monitor` 桌面快捷方式，一次启动 Codex 与监视器。
+- 官方订阅模式无需额外填写凭据。
 
 监视栏位于“替我审批”右侧。普通模式最多显示 8 项数据，极简模式最多显示 14 项。
 
@@ -36,7 +47,7 @@
 把下面的文字发给 Windows 版 Codex：
 
 ```text
-请安装这个项目：https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows
+请安装这个项目：https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows
 先阅读仓库根目录的 AGENTS.md 和 README.md。运行 install.ps1，自动寻找 Microsoft Store 和常见非 Store Codex 路径；找不到时才询问我选择真实的 ChatGPT.exe 或 codex.exe。不要猜路径，不要修改 WindowsApps、app.asar、Codex 登录文件或模型配置，不要终止或重启我当前的 Codex。安装后验证桌面上的“Codex Usage Monitor”快捷方式。
 然后询问我需要启用官方订阅、API 账户、API Key 中的哪些数据源。询问每项配置时，同时告诉我一般在哪里找到：Base URL 通常在服务商的 API 或开发者文档；数字用户 ID 通常在用户资料、账户信息或个人中心；API 账户访问令牌通常在用户资料、安全设置、Access Token 或用户令牌页面；API Key 通常在开发者控制台、API Keys、密钥管理或令牌管理页面；累计 Token 通常在用量统计、账单、消费记录或 Token 统计页面。名称因服务商而异，账户访问令牌不一定等于 API Key；找不到时询问服务商名称并让我提供公开文档或脱敏截图，不要猜。API 账户和 API Key 的密钥只能让我复制到 Windows 剪贴板后由脚本读取，不能让我粘贴到聊天、源码、JSON 或日志。询问 API 账户的累计 Token 初始值；这是当前真实的完整整数，如果我不知道就使用 0 并说明之后会按可见日志累加。若我的接口返回字段和示例不同，请先检查脱敏后的响应结构，自动调整本地字段映射或归一化代码，增加测试并运行完整测试，不要把我的密钥或私有响应写入仓库。
 ```
@@ -178,7 +189,7 @@ API Key 接口返回 `HTTP 429` 时，该栏会显示“请求受限”并保留
 
 ### 2.3 Windows 运行包
 
-从 [Releases](https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip`，解压后在目录中运行：
+从 [Releases](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip`，解压后在目录中运行：
 
 ```powershell
 pwsh -NoProfile -File .\install.ps1
@@ -189,8 +200,8 @@ pwsh -NoProfile -File .\install.ps1
 ### 2.4 完整源码安装
 
 ```powershell
-git clone https://github.com/JiaYang-BUAA/Codex-Usage-Monitor-Windows.git
-cd Codex-Usage-Monitor-Windows
+git clone https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows.git
+cd Codex-Desktop-Usage-Monitor-Windows
 pwsh -NoProfile -File .\install.ps1
 ```
 
@@ -260,3 +271,29 @@ tests/                         协议、UI 生命周期与发布检查
 ```
 
 本项目由 Codex 协助开发，源码完整公开。现有指标不能满足需求时，可在 Codex 中打开仓库，说明目标接口、数据字段和展示方式，让 Codex 基于现有 Provider、用量客户端和 UI 修改源码并运行测试。项目从 [Fei-Away/Codex-Dream-Skin](https://github.com/Fei-Away/Codex-Dream-Skin) 的运行时注入思路演化而来，当前发布版只保留用量监视功能。代码采用 MIT License，详见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。
+
+## 3. 常见问题 / FAQ
+
+### 3.1 监视器显示在 Codex 内部还是独立悬浮窗？
+
+监视器直接插入 Codex Desktop 的输入区域，会随 Codex 页面一起显示和隐藏，不是独立桌面悬浮窗。
+
+### 3.2 是否修改 WindowsApps 或 `app.asar`？
+
+不会。项目只在 Codex 运行期间通过 CDP 注入界面，不修改 WindowsApps、`app.asar`、登录文件或模型配置，退出后不会在 Codex 安装目录中留下补丁。
+
+### 3.3 为什么必须使用 `Codex Usage Monitor` 快捷方式？
+
+监视器需要 Codex 启动时开放仅绑定 `127.0.0.1` 的 CDP 端口。安装器创建的快捷方式会同时启动 Codex 和监视器；原生 Codex 图标不会开放该端口，因此单独使用原生图标时不会注入。
+
+### 3.4 是否支持 Microsoft Store 和非 Store 版本？
+
+支持。安装器会自动寻找 Microsoft Store 和常见非 Store 安装路径；找不到时才询问真实的 `ChatGPT.exe` 或 `codex.exe` 路径，不会修改 WindowsApps。
+
+### 3.5 官方订阅、API 账户和 API Key 有什么区别？
+
+官方订阅读取 Codex Desktop 本机账户与任务事件，无需额外凭据；API 账户使用服务商的 Base URL、用户 ID 和账户访问令牌；API Key 使用服务商密钥及对应的用量接口。后两者的字段和接口可能因服务商而异。
+
+### 3.6 CDP 运行时注入是怎样工作的？
+
+启动器为 Codex 开放本机 CDP 端口，注入器连接对应的 Electron 渲染页面并插入监视栏。CDP 始终绑定 `127.0.0.1`，不会对局域网或互联网开放调试端口。
