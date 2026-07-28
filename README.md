@@ -272,6 +272,11 @@ tests/                         协议、UI 生命周期与发布检查
 
 本项目由 Codex 协助开发，源码完整公开。现有指标不能满足需求时，可在 Codex 中打开仓库，说明目标接口、数据字段和展示方式，让 Codex 基于现有 Provider、用量客户端和 UI 修改源码并运行测试。项目从 [Fei-Away/Codex-Dream-Skin](https://github.com/Fei-Away/Codex-Dream-Skin) 的运行时注入思路演化而来，当前发布版只保留用量监视功能。代码采用 MIT License，详见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。
 
+### 2.9 贡献者
+
+- [+羊（@JiaYang-BUAA）](https://github.com/JiaYang-BUAA)：项目发起、产品设计与维护。
+- [Codex（@codex）](https://github.com/codex)：协作完成界面设计、功能实现、问题诊断、测试与文档。
+
 ## 3. 常见问题 / FAQ
 
 ### 3.1 监视器显示在 Codex 内部还是独立悬浮窗？
