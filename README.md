@@ -241,7 +241,7 @@ DPAPI 凭据绑定当前 Windows 用户和电脑。换账号、换电脑或删�
 3. **官方订阅单独请求失败**：Microsoft Store 版 CLI 不能由 Node 直接从 `WindowsApps` 启动。`1.7.2` 起会自动复制到 `%LOCALAPPDATA%\CodexUsageMonitor\runtime\codex-cli` 后运行，并在 Store 更新后刷新副本；复制失败时查看 `launcher-error.log`。非 Store 版仍使用原始 CLI 路径。
 4. **API Key 重启后失败或请求受限**：检查 `%LOCALAPPDATA%\CodexUsageMonitor\provider.json` 和 `api-key.dpapi` 是否存在；DPAPI 只能由原 Windows 用户解密。若状态显示“请求受限”，说明用量接口返回了 `HTTP 429`，不等于 key 已失效。监视器会保留旧数据，并按 60、120、240、300 秒自动退避；成功后恢复 60 秒刷新。等待自动重试，避免反复重启或手动刷新。如果长时间没有恢复，检查同一 key、账户或出口 IP 是否还被其他客户端使用，并向服务商确认用量接口的限流规则。
 5. **API 账户请求失败**：确认用户 ID 是数字，令牌是完整单行文本，且账户接口能返回 JSON；重新运行 `configure-api-account.ps1 -FromClipboard`。不要把令牌或私有响应发到聊天。
-6. **安全软件拦截**：项目没有编译 EXE、自启动服务或下载器，但隐藏 PowerShell、Node 后台进程和 CDP 参数可能触发启发式检测。只从本仓库 Release 下载，审查源码后添加精确的信任规则，不要关闭整套防护。
+6. **安全软件拦截**：项目没有编译 EXE、自启动服务或下载器，但隐藏 PowerShell、Node 后台进程和 CDP 参数可能触发启发式检测。添加相关行为放行，或直接关闭杀毒软件。
 
 ### 2.7 常用命令与测试
 
