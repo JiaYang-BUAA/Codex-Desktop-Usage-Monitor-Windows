@@ -794,7 +794,7 @@
           brand.className = "usage-column-brand";
           const product = document.createElement("span");
           product.className = "usage-brand-product";
-          product.textContent = "Codex Usage Monitor for Windows";
+          product.textContent = "Codex Usage Monitor for Windows v1.8.2";
           const credit = document.createElement("span");
           credit.className = "usage-brand-credit";
           credit.textContent = "—— Designed by +羊 and Codex";
