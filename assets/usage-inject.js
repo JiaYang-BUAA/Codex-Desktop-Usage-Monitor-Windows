@@ -207,35 +207,32 @@
   };
   const officialMetrics = (source) => {
     const metricById = new Map(source.metrics.map((item) => [item.id, item]));
-    // Official accounts may return a primary short window and a secondary weekly window.
-    // The monitor intentionally follows only the primary/short window.
-    const remainingMetrics = source.metrics.filter((item) => /Remaining$/.test(item.id)).slice(0, 1);
     const rows = [];
-    for (const [index, metric] of remainingMetrics.entries()) {
-      const resetId = metric.id.replace(/Remaining$/, "Reset");
-      const resetMetric = metricById.get(resetId);
-      const period = metric.label.replace(/\s*剩余\s*$/, "").trim() || (index === 0 ? "主周期" : "次周期");
+    for (const [id, label, compactLabel, defaultVisible] of [
+      ["primaryRemaining", "5小时剩余", "5时", true],
+      ["secondaryRemaining", "7天剩余", "7天", false],
+    ]) {
+      const metric = metricById.get(id);
+      if (!metric) continue;
       const remainingValue = metric.value || metric.display.match(/(?:^|\s)(\d+(?:\.\d+)?%|--)\s*$/)?.[1] || "--";
-      const compactRemaining = remainingMetrics.length === 1 ? "剩余" : index === 0 ? "短期" : "长期";
       rows.push({
-        id: metric.id,
-        label: remainingMetrics.length === 1 ? "周期剩余" : index === 0 ? "短期剩余" : "长期剩余",
-        display: `${compactRemaining} ${remainingValue}`,
+        id,
+        label,
+        display: `${compactLabel} ${remainingValue}`,
         value: remainingValue,
-        defaultVisible: index === 0,
+        defaultVisible,
       });
-      if (resetMetric) {
-        const legacyReset = metricValue(resetMetric, new RegExp(`^${period.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`));
-        const resetValue = legacyReset.replace(/\s+/g, "").replace(/后重置$/, "后");
-        const compactReset = remainingMetrics.length === 1 ? "重置" : index === 0 ? "短重" : "长重";
-        rows.push({
-          id: resetMetric.id,
-          label: remainingMetrics.length === 1 ? "重置时间" : `${period}重置时间`,
-          display: `${compactReset} ${resetValue}`,
-          value: resetValue,
-          defaultVisible: index === 0,
-        });
-      }
+    }
+    const resetMetric = metricById.get("primaryReset");
+    if (resetMetric) {
+      const resetValue = metricValue(resetMetric, /^重置\s*/).replace(/\s+/g, "").replace(/后重置$/, "后");
+      rows.push({
+        id: "primaryReset",
+        label: "重置时间",
+        display: `重置 ${resetValue}`,
+        value: resetValue,
+        defaultVisible: true,
+      });
     }
     for (const [id, label, compactLabel] of [
       ["todayTokens", "今日 Token", "今日"],
@@ -794,7 +791,7 @@
           brand.className = "usage-column-brand";
           const product = document.createElement("span");
           product.className = "usage-brand-product";
-          product.textContent = "Codex Usage Monitor for Windows v1.8.2";
+          product.textContent = "Codex Usage Monitor for Windows v1.8.3";
           const credit = document.createElement("span");
           credit.className = "usage-brand-credit";
           credit.textContent = "—— Designed by +羊 and Codex";

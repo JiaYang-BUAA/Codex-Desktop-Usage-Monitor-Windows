@@ -59,8 +59,9 @@ const usage = {
     official: {
       id: "official", label: "官方订阅", accountType: "subscription", status: "ready", nextRefreshAt: now + 60000,
       metrics: [
-        { id: "primaryRemaining", label: "周期剩余", display: "剩余 75%", value: "75%", defaultVisible: true },
-        { id: "primaryReset", label: "周期重置", display: "重置 2天后", value: "2天后", defaultVisible: false },
+        { id: "primaryRemaining", label: "5小时剩余", display: "5小时 75%", value: "75%", defaultVisible: true },
+        { id: "secondaryRemaining", label: "7天剩余", display: "7天 44%", value: "44%", defaultVisible: false },
+        { id: "primaryReset", label: "5小时重置", display: "重置 2天后", value: "2天后", defaultVisible: false },
         { id: "todayTokens", label: "今日 token", display: "今日 128k", value: "128,000", defaultVisible: true },
         { id: "lifetimeTokens", label: "累计 token", display: "累计 12m", value: "12,000,000", defaultVisible: false },
         { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 3822万", value: "3822万", defaultVisible: false },
@@ -133,7 +134,7 @@ try {
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
   assert.notEqual(host.dataset.density, "normal");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["剩余75%", "重置2天", "余额¥20", "已用¥5", "限额不限"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["5时75%", "重置2天", "余额¥20", "已用¥5", "限额不限"]);
 
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
@@ -141,13 +142,15 @@ try {
   assert.equal(columns.length, 3);
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-title span:last-child").textContent), ["官方订阅", "API 账户", "API Key"]);
   assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "loading", "error"]);
-  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [6, 8, 4]);
+  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [7, 8, 4]);
   const taskSection = columns[0].querySelector(".usage-column-subsection");
   assert.ok(taskSection);
   assert.equal(taskSection.querySelector(".usage-column-title span:last-child").textContent, "本次任务相关");
   assert.equal(taskSection.querySelector(".usage-status").getAttribute("aria-label"), "正常");
-  assert.equal(columns[0].querySelector(":scope > .usage-column-rows").querySelectorAll(".usage-detail-row").length, 4);
+  assert.equal(columns[0].querySelector(":scope > .usage-column-rows").querySelectorAll(".usage-detail-row").length, 5);
   assert.equal(taskSection.querySelectorAll(".usage-detail-row").length, 2);
+  assert.equal(columns[0].querySelector('[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5小时剩余");
+  assert.equal(columns[0].querySelector('[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "7天剩余");
   assert.equal(columns[0].querySelector('[data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "13万");
   assert.equal(columns[0].querySelector('[data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "1200万");
   assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3822万");
@@ -162,7 +165,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v1.8.2", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v1.8.3", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{\s*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);

@@ -164,11 +164,11 @@ function clampPercent(value) {
 
 function labelWindow(minutes) {
   if (!Number.isFinite(minutes) || minutes <= 0) return "主";
-  if (minutes >= 6 * 24 * 60 && minutes <= 8 * 24 * 60) return "周";
-  if (minutes % 60 === 0 && minutes < 24 * 60) return `${minutes / 60}H`;
+  if (minutes >= 6 * 24 * 60 && minutes <= 8 * 24 * 60) return "7天";
+  if (minutes % 60 === 0 && minutes < 24 * 60) return `${minutes / 60}小时`;
   if (minutes < 60) return `${minutes}m`;
   if (minutes % (24 * 60) === 0) return `${minutes / (24 * 60)}天`;
-  return `${Math.round(minutes / 60)}H`;
+  return `${Math.round(minutes / 60)}小时`;
 }
 
 function normalizeWindow(window, snapshot, position) {
@@ -890,35 +890,49 @@ function formatMetricReset(timestamp, now = Date.now()) {
 
 export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAULT_REFRESH_MS) {
   const availableWindows = Array.isArray(view?.windows) ? view.windows : [];
-  const windows = availableWindows.length > 1
-    ? [availableWindows.reduce((shortest, item) => {
-        const shortestDuration = Number(shortest?.windowDurationMins);
-        const itemDuration = Number(item?.windowDurationMins);
-        if (!Number.isFinite(itemDuration)) return shortest;
-        if (!Number.isFinite(shortestDuration) || itemDuration < shortestDuration) return item;
-        return shortest;
-      })]
-    : availableWindows;
   const metrics = [];
-  for (const [index, item] of windows.entries()) {
-    const id = index === 0 ? "primaryRemaining" : "secondaryRemaining";
+  const officialWindows = [
+    {
+      id: "primaryRemaining",
+      label: "5小时",
+      item: availableWindows.find((item) => Number(item?.windowDurationMins) === 5 * 60) || null,
+      defaultVisible: true,
+    },
+    {
+      id: "secondaryRemaining",
+      label: "7天",
+      item: availableWindows.find((item) => {
+        const duration = Number(item?.windowDurationMins);
+        return duration >= 6 * 24 * 60 && duration <= 8 * 24 * 60;
+      }) || null,
+      defaultVisible: false,
+    },
+  ];
+  for (const { id, label, item, defaultVisible } of officialWindows) {
+    const remainingValue = item?.remainingPercent === null || item?.remainingPercent === undefined
+      ? "--"
+      : `${Math.round(item.remainingPercent)}%`;
     metrics.push({
       id,
-      label: `${item.label} 剩余`,
-      display: `${item.label} ${item.remainingPercent === null ? "--" : `${Math.round(item.remainingPercent)}%`}`,
-      detail: `${item.label} 剩余 ${item.remainingPercent === null ? "--" : `${Math.round(item.remainingPercent)}%`}`,
-      value: item.remainingPercent === null ? "--" : `${Math.round(item.remainingPercent)}%`,
-      defaultVisible: index === 0,
-    });
-    metrics.push({
-      id: index === 0 ? "primaryReset" : "secondaryReset",
-      label: `${item.label} 重置`,
-      display: `${item.label} ${formatMetricReset(item.resetsAt, now)}`,
-      detail: `${item.label}：${formatMetricReset(item.resetsAt, now)}`,
-      value: formatMetricReset(item.resetsAt, now),
-      defaultVisible: false,
+      label: `${label}剩余`,
+      display: `${label} ${remainingValue}`,
+      detail: `${label}剩余：${remainingValue}`,
+      value: remainingValue,
+      defaultVisible,
     });
   }
+  const resetWindow = officialWindows.find(({ item }) => item)?.item || null;
+  const resetValue = resetWindow && Number.isFinite(Number(resetWindow.resetsAt)) && Number(resetWindow.resetsAt) > 0
+    ? formatMetricReset(resetWindow.resetsAt, now)
+    : "--";
+  metrics.push({
+    id: "primaryReset",
+    label: "重置时间",
+    display: `重置 ${resetValue}`,
+    detail: `当前可用周期重置：${resetValue}`,
+    value: resetValue,
+    defaultVisible: false,
+  });
   if (view?.tokenUsageAvailable || (view?.todayTokens !== null && view?.todayTokens !== undefined)) {
     const todayValue = view?.todayTokens === null || view?.todayTokens === undefined
       ? "--"

@@ -68,14 +68,18 @@ const now = new Date(2026, 6, 22, 12, 0, 0);
 const view = normalizeUsageView(rateLimits, tokenUsage, now);
 assert.equal(view.status, "ready");
 assert.deepEqual(view.windows, [
-  { label: "5H", remainingPercent: 68, windowDurationMins: 300, resetsAt: 1784700000, limitId: "codex" },
-  { label: "周", remainingPercent: 42, windowDurationMins: 10080, resetsAt: 1785200000, limitId: "codex" },
+  { label: "5小时", remainingPercent: 68, windowDurationMins: 300, resetsAt: 1784700000, limitId: "codex" },
+  { label: "7天", remainingPercent: 42, windowDurationMins: 10080, resetsAt: 1785200000, limitId: "codex" },
 ]);
 assert.equal(view.todayTokens, 18400);
 assert.equal(view.lifetimeTokens, 1250000);
 const official = toOfficialUsageSource(view, now.getTime(), 45000);
 assert.deepEqual(official.metrics.filter((item) => item.defaultVisible).map((item) => item.id), ["primaryRemaining", "todayTokens"]);
-assert.ok(!official.metrics.some((item) => item.id.startsWith("secondary")));
+assert.equal(official.metrics.find((item) => item.id === "primaryRemaining").label, "5小时剩余");
+assert.equal(official.metrics.find((item) => item.id === "primaryRemaining").value, "68%");
+assert.equal(official.metrics.find((item) => item.id === "secondaryRemaining").label, "7天剩余");
+assert.equal(official.metrics.find((item) => item.id === "secondaryRemaining").value, "42%");
+assert.ok(!official.metrics.some((item) => item.id === "secondaryReset"));
 assert.equal(official.metrics.find((item) => item.id === "todayTokens").value, "2万");
 assert.equal(official.metrics.find((item) => item.id === "lifetimeTokens").value, "125万");
 assert.equal(official.nextRefreshAt - official.fetchedAt, 45000);
@@ -477,6 +481,17 @@ assert.equal(localZeroOverridesOfficialBucket.todayTokenScope, "local-official-c
 
 const reversed = toOfficialUsageSource({ ...view, windows: [...view.windows].reverse() }, now.getTime());
 assert.equal(reversed.metrics.find((item) => item.id === "primaryRemaining").value, "68%");
+assert.equal(reversed.metrics.find((item) => item.id === "secondaryRemaining").value, "42%");
+const fiveHourOnly = toOfficialUsageSource({ ...view, windows: [view.windows[0]] }, now.getTime());
+assert.equal(fiveHourOnly.metrics.find((item) => item.id === "primaryRemaining").value, "68%");
+assert.equal(fiveHourOnly.metrics.find((item) => item.id === "secondaryRemaining").value, "--");
+assert.notEqual(fiveHourOnly.metrics.find((item) => item.id === "primaryReset").value, "--");
+const sevenDayOnly = toOfficialUsageSource({ ...view, windows: [view.windows[1]] }, now.getTime());
+assert.equal(sevenDayOnly.metrics.find((item) => item.id === "primaryRemaining").value, "--");
+assert.equal(sevenDayOnly.metrics.find((item) => item.id === "secondaryRemaining").value, "42%");
+assert.notEqual(sevenDayOnly.metrics.find((item) => item.id === "primaryReset").value, "--");
+const noOfficialWindows = toOfficialUsageSource({ ...view, windows: [] }, now.getTime());
+assert.equal(noOfficialWindows.metrics.find((item) => item.id === "primaryReset").value, "--");
 
 const cctq = normalizeCctqUsageView({
   data: { total_granted: 7500000, total_used: 2500000, unlimited_quota: false, expires_at: 0 },
