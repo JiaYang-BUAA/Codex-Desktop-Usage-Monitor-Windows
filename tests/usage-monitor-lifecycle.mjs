@@ -61,7 +61,7 @@ const usage = {
       metrics: [
         { id: "primaryRemaining", label: "5小时剩余", display: "5小时 75%", value: "75%", defaultVisible: true },
         { id: "secondaryRemaining", label: "7天剩余", display: "7天 44%", value: "44%", defaultVisible: false },
-        { id: "primaryReset", label: "5小时重置", display: "重置 2天后", value: "2天后", defaultVisible: false },
+        { id: "primaryReset", label: "5小时重置", display: "重置 07-24 12:00", value: "07-24 12:00", defaultVisible: false },
         { id: "todayTokens", label: "今日 token", display: "今日 128k", value: "128,000", defaultVisible: true },
         { id: "lifetimeTokens", label: "累计 token", display: "累计 12m", value: "12,000,000", defaultVisible: false },
         { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 3822万", value: "3822万", defaultVisible: false },
@@ -134,7 +134,7 @@ try {
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
   assert.notEqual(host.dataset.density, "normal");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["5时75%", "重置2天", "余额¥20", "已用¥5", "限额不限"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["5时75%", "重置07-2412:00", "余额¥20", "已用¥5", "限额不限"]);
 
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
@@ -186,7 +186,7 @@ try {
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).minimalMode, true);
   assert.equal(host.dataset.density, "normal");
   assert.equal(host.shadowRoot.querySelector(".usage-column-meta span:first-child").textContent, "极简最多 14 项");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "2天", "¥20", "¥5", "不限"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "07-2412:00", "¥20", "¥5", "不限"]);
   const minimalExtraSelectors = [
     'input[data-source="official"][data-metric="todayTokens"]',
     'input[data-source="official"][data-metric="lifetimeTokens"]',

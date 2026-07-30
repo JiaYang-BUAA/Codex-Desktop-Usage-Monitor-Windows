@@ -879,13 +879,12 @@ function formatExactMetricTokens(value) {
   return String(Math.round(Math.max(0, Number(value)))).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-function formatMetricReset(timestamp, now = Date.now()) {
+function formatMetricReset(timestamp) {
   if (!Number.isFinite(Number(timestamp)) || Number(timestamp) <= 0) return "重置时间未知";
-  const minutes = Math.round(Math.max(0, Number(timestamp) * 1000 - now) / 60000);
-  if (minutes < 60) return `${Math.max(1, minutes)}分钟后`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}小时后`;
-  return `${Math.floor(hours / 24)}天后`;
+  const date = new Date(Number(timestamp) * 1000);
+  if (!Number.isFinite(date.getTime())) return "重置时间未知";
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAULT_REFRESH_MS) {
@@ -923,7 +922,7 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
   }
   const resetWindow = officialWindows.find(({ item }) => item)?.item || null;
   const resetValue = resetWindow && Number.isFinite(Number(resetWindow.resetsAt)) && Number(resetWindow.resetsAt) > 0
-    ? formatMetricReset(resetWindow.resetsAt, now)
+    ? formatMetricReset(resetWindow.resetsAt)
     : "--";
   metrics.push({
     id: "primaryReset",

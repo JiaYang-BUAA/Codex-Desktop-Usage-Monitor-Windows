@@ -71,8 +71,9 @@
     for (const [index, item] of windows.entries()) {
       const label = typeof item?.label === "string" ? item.label.slice(0, 8) : "主";
       const remaining = finiteNumber(item?.remainingPercent) ? Math.max(0, Math.min(100, Number(item.remainingPercent))) : null;
+      const reset = formatReset(item?.resetsAt);
       metrics.push({ id: index ? "secondaryRemaining" : "primaryRemaining", label: `${label} 剩余`, display: `${label} ${formatPercent(remaining)}`, detail: `${label} 剩余 ${formatPercent(remaining)}`, defaultVisible: index === 0 });
-      metrics.push({ id: index ? "secondaryReset" : "primaryReset", label: `${label} 重置`, display: `${label} ${formatReset(item?.resetsAt)}`, detail: `${label}：${formatReset(item?.resetsAt)}`, defaultVisible: false });
+      metrics.push({ id: index ? "secondaryReset" : "primaryReset", label: `${label} 重置`, display: `${label} ${reset}`, detail: `${label}：${reset}`, value: reset, defaultVisible: false });
     }
     if (finiteNumber(source.todayTokens)) metrics.push({ id: "todayTokens", label: "今日 token", display: `今日 ${formatTokens(Number(source.todayTokens))}`, detail: `今日 token：${formatTokens(Number(source.todayTokens))}`, defaultVisible: true });
     if (finiteNumber(source.lifetimeTokens)) metrics.push({ id: "lifetimeTokens", label: "累计 token", display: `累计 ${formatTokens(Number(source.lifetimeTokens))}`, detail: `累计 token：${formatTokens(Number(source.lifetimeTokens))}`, defaultVisible: false });
@@ -132,11 +133,10 @@
   };
   const formatReset = (timestamp) => {
     if (!timestamp) return "重置时间未知";
-    const minutes = Math.round(Math.max(0, timestamp * 1000 - Date.now()) / 60000);
-    if (minutes < 60) return `${Math.max(1, minutes)} 分钟后重置`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours} 小时后重置`;
-    return `${Math.floor(hours / 24)} 天后重置`;
+    const date = new Date(Number(timestamp) * 1000);
+    if (!Number.isFinite(date.getTime())) return "重置时间未知";
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   };
   const loadSettings = () => {
     try {
@@ -225,7 +225,7 @@
     }
     const resetMetric = metricById.get("primaryReset");
     if (resetMetric) {
-      const resetValue = metricValue(resetMetric, /^重置\s*/).replace(/\s+/g, "").replace(/后重置$/, "后");
+      const resetValue = metricValue(resetMetric, /^重置\s*/).replace(/后重置$/, "后").trim();
       rows.push({
         id: "primaryReset",
         label: "重置时间",

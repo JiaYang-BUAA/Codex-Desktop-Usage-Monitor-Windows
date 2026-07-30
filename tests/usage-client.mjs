@@ -74,12 +74,17 @@ assert.deepEqual(view.windows, [
 assert.equal(view.todayTokens, 18400);
 assert.equal(view.lifetimeTokens, 1250000);
 const official = toOfficialUsageSource(view, now.getTime(), 45000);
+const primaryResetDate = new Date(view.windows[0].resetsAt * 1000);
+const padResetPart = (value) => String(value).padStart(2, "0");
+const expectedPrimaryReset = `${padResetPart(primaryResetDate.getMonth() + 1)}-${padResetPart(primaryResetDate.getDate())} ${padResetPart(primaryResetDate.getHours())}:${padResetPart(primaryResetDate.getMinutes())}`;
 assert.deepEqual(official.metrics.filter((item) => item.defaultVisible).map((item) => item.id), ["primaryRemaining", "todayTokens"]);
 assert.equal(official.metrics.find((item) => item.id === "primaryRemaining").label, "5小时剩余");
 assert.equal(official.metrics.find((item) => item.id === "primaryRemaining").value, "68%");
 assert.equal(official.metrics.find((item) => item.id === "secondaryRemaining").label, "7天剩余");
 assert.equal(official.metrics.find((item) => item.id === "secondaryRemaining").value, "42%");
 assert.ok(!official.metrics.some((item) => item.id === "secondaryReset"));
+assert.equal(official.metrics.find((item) => item.id === "primaryReset").value, expectedPrimaryReset);
+assert.match(official.metrics.find((item) => item.id === "primaryReset").value, /^\d{2}-\d{2} \d{2}:\d{2}$/);
 assert.equal(official.metrics.find((item) => item.id === "todayTokens").value, "2万");
 assert.equal(official.metrics.find((item) => item.id === "lifetimeTokens").value, "125万");
 assert.equal(official.nextRefreshAt - official.fetchedAt, 45000);
