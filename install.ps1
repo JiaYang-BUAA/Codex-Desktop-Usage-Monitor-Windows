@@ -20,7 +20,9 @@ if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Package
 
 $InstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 $installDirectory = Join-Path $InstallRoot $version
-$files = @(Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json)
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$files = @()
+foreach ($item in $manifest) { $files += [string]$item }
 if (-not $files.Count) { throw 'Package manifest is empty.' }
 if (@($files | Sort-Object -Unique).Count -ne $files.Count) { throw 'Package manifest contains duplicate paths.' }
 

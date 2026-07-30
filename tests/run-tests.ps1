@@ -85,7 +85,7 @@ $runtimeFiles = @(
   'scripts\install-monitor-launcher.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1',
   'scripts\configure-api-account.ps1', 'scripts\clear-api-account.ps1', 'scripts\configure-token-baseline.ps1', 'scripts\clear-token-baseline.ps1'
 )
-$runtimeSource = ($runtimeFiles | ForEach-Object { Get-Content -LiteralPath (Join-Path $root $_) -Raw }) -join "`n"
+$runtimeSource = ($runtimeFiles | ForEach-Object { Get-Content -LiteralPath (Join-Path $root $_) -Raw -Encoding UTF8 }) -join "`n"
 foreach ($forbidden in @('.codex\auth.json', '.codex/config.toml', 'Stop-Process ChatGPT', 'Invoke-Expression', 'DownloadString')) {
   if ($runtimeSource.IndexOf($forbidden, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "Forbidden runtime behavior found: $forbidden" }
 }
@@ -118,16 +118,16 @@ if ($runtimeSource -notmatch '-ExecutionPolicy Bypass') { throw 'Hidden launcher
 if ($runtimeSource -notmatch 'exitCode = shell\.Run\(command, 0, True\)') { throw 'Hidden launcher exit-code capture is missing.' }
 if ($runtimeSource -notmatch 'launcher-error\.log') { throw 'Hidden launcher bootstrap log contract is missing.' }
 
-$releaseWorkflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\release.yml') -Raw
+$releaseWorkflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\release.yml') -Raw -Encoding UTF8
 foreach ($requiredReleaseText in @('gh release list', 'gh release upload', '--clobber', 'gh release create')) {
   if ($releaseWorkflow -notmatch [regex]::Escape($requiredReleaseText)) { throw "Idempotent release workflow contract is missing: $requiredReleaseText" }
 }
 
-$agentGuide = Get-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Raw
+$agentGuide = Get-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Raw -Encoding UTF8
 foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsApps', 'run-tests\.ps1', 'Codex-Assisted Configuration', 'InitialTokens', 'sanitized.*response')) {
   if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }
 }
-$readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw
+$readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw -Encoding UTF8
 foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '60 秒', '有限页数', '极简模式', '倒计时可视化', '圆形表盘', 'official-token-counter.json', '本机实时累计', '当前任务累计 Token', '上次对话消耗 Token')) {
   if ($readme -notmatch [regex]::Escape($requiredReadmeText)) { throw "README installation guidance is missing: $requiredReadmeText" }
 }
@@ -217,8 +217,10 @@ if (-not $SkipPackageTest) {
     $actual = @(Get-ChildItem -LiteralPath $packageRoot.FullName -File -Recurse | ForEach-Object {
       $_.FullName.Substring($packageRoot.FullName.Length + 1).Replace('/', '\')
     } | Sort-Object)
-    $manifest = Get-Content -LiteralPath (Join-Path $root 'config\package-files.json') -Raw | ConvertFrom-Json
-    $expected = @($manifest | ForEach-Object { ([string]$_).Replace('/', '\') }) | Sort-Object
+    $manifest = Get-Content -LiteralPath (Join-Path $root 'config\package-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $expectedItems = @()
+    foreach ($item in $manifest) { $expectedItems += ([string]$item).Replace('/', '\') }
+    $expected = @($expectedItems | Sort-Object)
     if (Compare-Object $expected $actual) { throw 'Release archive content differs from the allowlist.' }
     $text = ($actual | Where-Object { $_ -match '\.(?:js|mjs|json|md|ps1|txt)$' } | ForEach-Object {
       Get-Content -LiteralPath (Join-Path $packageRoot.FullName $_) -Raw

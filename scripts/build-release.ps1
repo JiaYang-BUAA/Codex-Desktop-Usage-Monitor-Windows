@@ -21,7 +21,9 @@ $archivePath = Join-Path $OutputDirectory "$releaseName.zip"
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) "codex-usage-monitor-build-$PID"
 $packageRoot = Join-Path $temporaryRoot $releaseName
 $manifestPath = Join-Path $root 'config\package-files.json'
-$files = @(Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
+$manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$files = @()
+foreach ($item in $manifest) { $files += [string]$item }
 if (-not $files.Count) { throw 'Package manifest is empty.' }
 try {
   New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
