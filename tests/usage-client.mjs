@@ -178,6 +178,12 @@ function localDateString(value) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+function localNoonTimestamp() {
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  return date.getTime();
+}
+
 function uuidAt(timestamp, suffix = 1) {
   const prefix = Math.trunc(timestamp).toString(16).padStart(12, "0").slice(-12);
   const tail = `${Math.trunc(suffix).toString(16).padStart(20, "0")}`.slice(-20);
@@ -231,7 +237,7 @@ try {
   const sessionRoot = path.join(providerTrackerRoot, "sessions");
   const counterPath = path.join(providerTrackerRoot, "official-token-counter.json");
   mkdirSync(sessionRoot, { recursive: true });
-  const trackerNow = Date.now();
+  const trackerNow = localNoonTimestamp();
   const trackerDateKey = localDateString(trackerNow);
   const threadId = uuidAt(trackerNow - 60_000, 1);
   const sessionPath = path.join(sessionRoot, `rollout-provider-${threadId}.jsonl`);
@@ -309,7 +315,7 @@ try {
   const sessionRoot = path.join(lifetimeTrackerRoot, "sessions");
   const counterPath = path.join(lifetimeTrackerRoot, "official-token-counter.json");
   mkdirSync(sessionRoot, { recursive: true });
-  let trackerNow = Date.now();
+  let trackerNow = localNoonTimestamp();
   const threadId = uuidAt(trackerNow - 10_000, 18);
   const sessionPath = path.join(sessionRoot, `rollout-lifetime-${threadId}.jsonl`);
   writeFileSync(sessionPath, [
@@ -374,7 +380,7 @@ try {
   const sessionRoot = path.join(forkTrackerRoot, "sessions");
   const counterPath = path.join(forkTrackerRoot, "official-token-counter.json");
   mkdirSync(sessionRoot, { recursive: true });
-  const trackerNow = Date.now();
+  const trackerNow = localNoonTimestamp();
   const parentId = uuidAt(trackerNow - 90_000, 21);
   const childCreatedAt = trackerNow - 40_000;
   const childId = uuidAt(childCreatedAt, 22);
