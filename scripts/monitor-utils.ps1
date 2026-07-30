@@ -414,9 +414,9 @@ function Resolve-CodexUsageCliPath {
   $candidates = [Collections.Generic.List[string]]::new()
   foreach ($candidate in @(
     $env:CODEX_USAGE_CODEX_PATH,
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex CLI\codex.exe' }),
     $(if ($command) { $command.Source } else { $null }),
-    $(if ($package) { Join-Path $package.InstallLocation 'app\resources\codex.exe' } else { $null }),
-    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex CLI\codex.exe' })
+    $(if ($package) { Join-Path $package.InstallLocation 'app\resources\codex.exe' } else { $null })
   ) | Where-Object { $_ }) {
     try { [void]$candidates.Add([IO.Path]::GetFullPath([string]$candidate)) } catch {}
   }

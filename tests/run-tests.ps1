@@ -68,6 +68,32 @@ foreach ($relative in @('config\providers\cctq.example.json', 'config\providers\
 if ($LASTEXITCODE -ne 0) { throw 'Launcher decision tests failed.' }
 
 . (Join-Path $root 'scripts\monitor-utils.ps1')
+$originalLocalAppData = $env:LOCALAPPDATA
+$originalPath = $env:PATH
+$originalCliOverride = $env:CODEX_USAGE_CODEX_PATH
+try {
+  $resolutionRoot = Join-Path ([IO.Path]::GetTempPath()) "codex-usage-cli-resolution-$PID"
+  $fakeLocalAppData = Join-Path $resolutionRoot 'local'
+  $dedicatedCli = Join-Path $fakeLocalAppData 'Programs\OpenAI Codex CLI\codex.exe'
+  $commandDirectory = Join-Path $resolutionRoot 'path'
+  $pathCli = Join-Path $commandDirectory 'codex.exe'
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dedicatedCli), $commandDirectory | Out-Null
+  Set-Content -LiteralPath $dedicatedCli -Value 'dedicated-cli' -Encoding ascii
+  Set-Content -LiteralPath $pathCli -Value 'path-cli' -Encoding ascii
+  $env:LOCALAPPDATA = $fakeLocalAppData
+  $env:PATH = "$commandDirectory;$originalPath"
+  $env:CODEX_USAGE_CODEX_PATH = $null
+  if ((Resolve-CodexUsageCliPath) -ne $dedicatedCli) {
+    throw 'Dedicated Codex CLI should be preferred over a desktop-bundled CLI discovered on PATH.'
+  }
+} finally {
+  $env:LOCALAPPDATA = $originalLocalAppData
+  $env:PATH = $originalPath
+  $env:CODEX_USAGE_CODEX_PATH = $originalCliOverride
+  if ($resolutionRoot -and (Test-Path -LiteralPath $resolutionRoot)) {
+    Remove-Item -LiteralPath $resolutionRoot -Recurse -Force
+  }
+}
 $timeoutStopwatch = [Diagnostics.Stopwatch]::StartNew()
 $timeoutProbe = Invoke-CodexUsageProcessWithTimeout -FilePath $pwsh -ArgumentLine '-NoLogo -NoProfile -Command "Start-Sleep -Seconds 10"' -TimeoutMs 300
 $timeoutStopwatch.Stop()
