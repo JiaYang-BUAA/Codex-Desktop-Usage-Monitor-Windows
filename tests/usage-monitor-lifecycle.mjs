@@ -147,7 +147,7 @@ try {
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
   assert.notEqual(host.dataset.density, "normal");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["5时75%", "重置07-2412:00", "余额¥20", "已用¥5", "限额不限"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["5时75%", "重置07-24 12:00", "余额¥20", "已用¥5", "限额不限"]);
 
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
@@ -199,7 +199,7 @@ try {
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).minimalMode, true);
   assert.equal(host.dataset.density, "normal");
   assert.equal(host.shadowRoot.querySelector(".usage-column-meta span:first-child").textContent, "极简最多 14 项");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "07-2412:00", "¥20", "¥5", "不限"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "07-24 12:00", "¥20", "¥5", "不限"]);
   const minimalExtraSelectors = [
     'input[data-source="official"][data-metric="todayTokens"]',
     'input[data-source="official"][data-metric="lifetimeTokens"]',

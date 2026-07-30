@@ -596,12 +596,16 @@
 
   const compactSummaryDisplay = (metric) => {
     let display = String(metric?.display ?? "").replace(/\s+/g, "");
-    if (/(?:Reset|nextRefreshAt)$/.test(String(metric?.id ?? ""))) display = display.replace(/后$/, "");
+    if (/(?:Reset|nextRefreshAt)$/.test(String(metric?.id ?? ""))) {
+      display = display.replace(/(\d{2}-\d{2})(\d{2}:\d{2})/, "$1 $2").replace(/后$/, "");
+    }
     return display;
   };
   const minimalSummaryDisplay = (metric) => {
     let value = String(metric?.value ?? "--").replace(/\s+/g, "");
-    if (/(?:Reset|nextRefreshAt)$/.test(String(metric?.id ?? ""))) value = value.replace(/后$/, "");
+    if (/(?:Reset|nextRefreshAt)$/.test(String(metric?.id ?? ""))) {
+      value = value.replace(/(\d{2}-\d{2})(\d{2}:\d{2})/, "$1 $2").replace(/后$/, "");
+    }
     return value;
   };
   const selectedMetricLimit = (settings) => settings?.minimalMode
