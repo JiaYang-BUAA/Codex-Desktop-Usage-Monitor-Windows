@@ -40,7 +40,7 @@ window.Element.prototype.getBoundingClientRect = function getBoundingClientRect(
     if (this.matches('[contenteditable="true"]')) return { x: 112, y: 112, width: 676, height: 44 };
     const text = `${this.getAttribute?.("aria-label") || ""} ${this.textContent || ""}`;
     if (/添加/.test(text)) return { x: 108, y: 164, width: 28, height: 28 };
-    if (/替我审批/.test(text)) return { x: 141, y: 164, width: 85, height: 28 };
+    if (/(?:替我审批|请求批准|完全访问(?:权限)?|自定义(?:\s*\(config\.toml\))?)/.test(text)) return { x: 141, y: 164, width: 85, height: 28 };
     if (/5\.6/.test(text)) return { x: 622, y: 164, width: 105, height: 28 };
     if (/听写/.test(text)) return { x: 728, y: 164, width: 28, height: 28 };
     if (/发送/.test(text)) return { x: 764, y: 164, width: 28, height: 28 };
@@ -103,6 +103,19 @@ try {
   assert.equal(host.dataset.anchor, "approval");
   assert.equal(host.style.getPropertyValue("--usage-color"), "rgb(70, 80, 90)");
   assert.equal(host.style.getPropertyValue("--usage-font-size"), "14px");
+  const approvalButton = [...window.document.querySelectorAll("button")]
+    .find((button) => button.textContent.includes("替我审批"));
+  assert.ok(approvalButton);
+  const initialMonitorLeft = host.style.getPropertyValue("--usage-left");
+  for (const label of ["请求批准", "替我审批", "完全访问权限", "完全访问", "自定义 (config.toml)", "自定义"]) {
+    approvalButton.textContent = label;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    host = window.document.getElementById("codex-usage-monitor");
+    assert.ok(host?.shadowRoot);
+    assert.equal(host.hidden, false);
+    assert.equal(host.dataset.anchor, "approval");
+    assert.equal(host.style.getPropertyValue("--usage-left"), initialMonitorLeft);
+  }
   assert.equal(host.shadowRoot.querySelector(".usage-dot"), null);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /\.usage-source-switch/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /ready[^}]+#22c55e/);

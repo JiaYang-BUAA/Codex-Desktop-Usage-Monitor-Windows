@@ -267,6 +267,7 @@
     return Boolean(rect && rect.width > 0 && rect.height > 0);
   };
   const controlText = (node) => `${node.getAttribute("aria-label") || ""} ${node.getAttribute("title") || ""} ${node.textContent || ""}`.trim();
+  const isApprovalControl = (node) => /(?:替我审批|请求批准|完全访问(?:权限)?|自定义(?:\s*\(config\.toml\))?|approve|approval|full access|custom\s*\(config\.toml\))/i.test(controlText(node));
 
   const findPlacement = () => {
     const composerSelector = '.composer-surface-chrome, [data-testid="composer"], [data-testid*="composer-"]';
@@ -810,7 +811,7 @@
     const parentBox = box(host.parentElement) || composerBox;
     const controls = [...composer.querySelectorAll('button, [role="button"]')]
       .filter((node) => isVisible(node) && !node.closest(`#${HOST_ID}`));
-    const approval = controls.find((node) => /(?:替我审批|approve|approval)/i.test(controlText(node))) || null;
+    const approval = controls.find(isApprovalControl) || null;
     const controlBoxes = controls.map((node) => ({ node, rect: box(node) }));
     const bottomCenter = controlBoxes.reduce((maximum, item) => Math.max(maximum, item.rect.y + item.rect.height / 2), -Infinity);
     const bottomRow = controlBoxes
