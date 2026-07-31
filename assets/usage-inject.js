@@ -433,7 +433,6 @@
       gap: 7px;
       min-height: 27px;
       padding-bottom: 5px;
-      border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
       font-weight: 650;
     }
     .usage-status { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #a1a1aa; }
@@ -451,9 +450,7 @@
       align-items: center;
       gap: 8px;
       min-height: 27px;
-      border-bottom: 1px solid color-mix(in srgb, currentColor 9%, transparent);
     }
-    .usage-detail-row:last-child { border-bottom: 0; }
     .usage-detail-select { display: flex; align-items: center; min-width: 0; gap: 6px; cursor: pointer; }
     .usage-detail-select input {
       appearance: none;
