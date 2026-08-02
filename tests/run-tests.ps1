@@ -151,9 +151,14 @@ if ($runtimeSource -notmatch '-ExecutionPolicy Bypass') { throw 'Hidden launcher
 if ($runtimeSource -notmatch 'exitCode = shell\.Run\(command, 0, True\)') { throw 'Hidden launcher exit-code capture is missing.' }
 if ($runtimeSource -notmatch 'launcher-error\.log') { throw 'Hidden launcher bootstrap log contract is missing.' }
 
-$releaseWorkflow = Get-Content -LiteralPath (Join-Path $root '.github\workflows\release.yml') -Raw -Encoding UTF8
-foreach ($requiredReleaseText in @('gh release list', 'gh release upload', '--clobber', 'gh release create')) {
-  if ($releaseWorkflow -notmatch [regex]::Escape($requiredReleaseText)) { throw "Idempotent release workflow contract is missing: $requiredReleaseText" }
+$githubDirectory = Join-Path $root '.github'
+if (Test-Path -LiteralPath $githubDirectory -PathType Container) {
+  $releaseWorkflowPath = Join-Path $githubDirectory 'workflows\release.yml'
+  if (-not (Test-Path -LiteralPath $releaseWorkflowPath -PathType Leaf)) { throw 'Release workflow is missing from the source checkout.' }
+  $releaseWorkflow = Get-Content -LiteralPath $releaseWorkflowPath -Raw -Encoding UTF8
+  foreach ($requiredReleaseText in @('gh release list', 'gh release upload', '--clobber', 'gh release create')) {
+    if ($releaseWorkflow -notmatch [regex]::Escape($requiredReleaseText)) { throw "Idempotent release workflow contract is missing: $requiredReleaseText" }
+  }
 }
 
 $agentGuide = Get-Content -LiteralPath (Join-Path $root 'AGENTS.md') -Raw -Encoding UTF8
@@ -275,6 +280,17 @@ if (-not $SkipPackageTest) {
     if ($actual -match 'themes|renderer-inject|\.exe$|theme-manager|build-exe') { throw 'Theme or executable content leaked into the release.' }
     foreach ($imagePath in @('docs\images\monitor-collapsed.png', 'docs\images\monitor-expanded.png')) {
       if ($actual -notcontains $imagePath) { throw "README screenshot is missing from the release: $imagePath" }
+    }
+
+    $sourceNodeModules = Join-Path $root 'node_modules'
+    if (-not (Test-Path -LiteralPath $sourceNodeModules -PathType Container)) { throw 'Source test dependencies are missing.' }
+    $packageNodeModules = Join-Path $packageRoot.FullName 'node_modules'
+    try {
+      New-Item -ItemType Junction -Path $packageNodeModules -Target $sourceNodeModules | Out-Null
+      & (Join-Path $packageRoot.FullName 'tests\run-tests.ps1') -SkipPackageTest
+      if ($LASTEXITCODE -ne 0) { throw 'Release package self-test failed.' }
+    } finally {
+      if (Test-Path -LiteralPath $packageNodeModules) { [IO.Directory]::Delete($packageNodeModules) }
     }
 
     $installRoot = Join-Path $testRoot 'install'
