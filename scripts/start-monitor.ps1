@@ -37,7 +37,12 @@ try {
 function Test-MonitorInjection([int]$CandidatePort, [int]$TimeoutMs = 4000) {
   $probeTimeoutMs = [Math]::Min(120000, [Math]::Max(1000, $TimeoutMs + 2000))
   $argumentLine = "`"$injector`" --verify --port $CandidatePort --monitor-only --timeout-ms $TimeoutMs"
-  $result = Invoke-CodexUsageProcessWithTimeout -FilePath $node -ArgumentLine $argumentLine -TimeoutMs $probeTimeoutMs
+  try {
+    $result = Invoke-CodexUsageProcessWithTimeout -FilePath $node -ArgumentLine $argumentLine -TimeoutMs $probeTimeoutMs
+  } catch {
+    Write-Warning "注入验证探针失败，将继续重试：$($_.Exception.Message)"
+    return $false
+  }
   if ($result.TimedOut) {
     Write-Warning "注入验证进程超过 $probeTimeoutMs 毫秒，已自动终止。"
     return $false
@@ -90,7 +95,7 @@ $arguments = @("`"$injector`"", '--watch', '--port', "$Port", '--monitor-only')
 $daemon = Start-Process -FilePath $node -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
 $verified = $false
-$deadline = (Get-Date).AddSeconds(30)
+$deadline = (Get-Date).AddSeconds(45)
 do {
   Start-Sleep -Milliseconds 600
   $daemon.Refresh()
@@ -100,7 +105,8 @@ do {
 
 if (-not $verified) {
   if (-not $daemon.HasExited) { Stop-Process -Id $daemon.Id -Force -ErrorAction SilentlyContinue }
-  $detail = if (Test-Path -LiteralPath $stderrPath) { (Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue).Trim() } else { '' }
+  $detailText = if (Test-Path -LiteralPath $stderrPath) { [string](Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue) } else { '' }
+  $detail = $detailText.Trim()
   throw "监视器注入验证失败。$detail"
 }
 

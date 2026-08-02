@@ -1,6 +1,7 @@
 ﻿[CmdletBinding()]
 param(
   [string]$OutputDirectory,
+  [string]$ManifestPath,
   [switch]$SkipTests
 )
 
@@ -20,11 +21,23 @@ $releaseName = "codex-usage-monitor-windows-$version"
 $archivePath = Join-Path $OutputDirectory "$releaseName.zip"
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) "codex-usage-monitor-build-$PID"
 $packageRoot = Join-Path $temporaryRoot $releaseName
-$manifestPath = Join-Path $root 'config\package-files.json'
+$manifestPath = if ($ManifestPath) { [IO.Path]::GetFullPath($ManifestPath) } else { Join-Path $root 'config\package-files.json' }
 $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $files = @()
 foreach ($item in $manifest) { $files += [string]$item }
 if (-not $files.Count) { throw 'Package manifest is empty.' }
+$rootPrefix = [IO.Path]::GetFullPath($root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+$seenFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($relative in $files) {
+  if ([string]::IsNullOrWhiteSpace($relative) -or [IO.Path]::IsPathRooted($relative) -or $relative -match '(^|[\\/])\.\.([\\/]|$)') {
+    throw "Unsafe package manifest path: $relative"
+  }
+  if (-not $seenFiles.Add($relative)) { throw "Duplicate package manifest path: $relative" }
+  $sourcePath = [IO.Path]::GetFullPath((Join-Path $root $relative))
+  if (-not $sourcePath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Package manifest path escapes the repository: $relative"
+  }
+}
 try {
   New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
   foreach ($relative in $files) {

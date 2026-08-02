@@ -25,6 +25,7 @@ const THREAD_SETTINGS_MARKER = Buffer.from('"thread_settings_applied"', "utf8");
 const SESSION_META_MARKER = Buffer.from('"session_meta"', "utf8");
 const OFFICIAL_MODEL_PROVIDER_ID = "openai";
 const REQUEST_TIMEOUT_MS = 12000;
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const RATE_LIMIT_BASE_BACKOFF_MS = 60000;
 const RATE_LIMIT_MAX_BACKOFF_MS = 300000;
 const CCTQ_DEFAULT_BASE_URL = "https://www.cctq.ai";
@@ -94,6 +95,65 @@ function readPath(value, selector) {
   return String(selector).split(".").filter(Boolean).reduce((current, key) => current?.[key], value);
 }
 
+function isLoopbackHostname(hostname) {
+  return ["localhost", "127.0.0.1", "[::1]"].includes(String(hostname).toLowerCase());
+}
+
+export function normalizeCredentialBaseUrl(value, label = "BaseUrl") {
+  if (typeof value !== "string" || value.length > 2048) throw new Error(`${label} 无效。`);
+  let parsed;
+  try { parsed = new URL(value); } catch { throw new Error(`${label} 无效。`); }
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error(`${label} 只支持 HTTP 或 HTTPS。`);
+  if (parsed.username || parsed.password) throw new Error(`${label} 不能包含凭据。`);
+  if (parsed.search || parsed.hash) throw new Error(`${label} 不能包含查询参数或片段。`);
+  if (parsed.protocol !== "https:" && !isLoopbackHostname(parsed.hostname)) {
+    throw new Error(`${label} 必须使用 HTTPS；只有本机回环地址允许 HTTP。`);
+  }
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function validateRequestCredential(value, label) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" || value.length > 16384 || !/^[\x21-\x7E]+$/.test(value)) {
+    throw new Error(`${label} 必须是单行 ASCII 文本。`);
+  }
+  return value;
+}
+
+async function readLimitedResponseText(response, label) {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) throw new Error(`${label} 响应过大`);
+  if (!response.body?.getReader) {
+    const body = new Uint8Array(await response.arrayBuffer());
+    if (body.byteLength > MAX_RESPONSE_BYTES) throw new Error(`${label} 响应过大`);
+    return new TextDecoder().decode(body);
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error(`${label} 响应过大`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+}
+
 export function validateApiProviderConfig(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("API Provider 配置必须是 JSON 对象。");
   const provider = structuredClone(value);
@@ -101,10 +161,7 @@ export function validateApiProviderConfig(value) {
   if (provider.schemaVersion !== 1) throw new Error("API Provider schemaVersion 必须为 1。");
   if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(provider.id || "")) throw new Error("API Provider id 无效。");
   if (typeof provider.label !== "string" || !provider.label.trim() || provider.label.length > 24) throw new Error("API Provider label 无效。");
-  let baseUrl;
-  try { baseUrl = new URL(provider.baseUrl); } catch { throw new Error("API Provider baseUrl 无效。"); }
-  if (!/^https?:$/.test(baseUrl.protocol)) throw new Error("API Provider baseUrl 只支持 HTTP 或 HTTPS。");
-  if (baseUrl.username || baseUrl.password) throw new Error("baseUrl 不能包含凭据。");
+  const baseUrl = normalizeCredentialBaseUrl(provider.baseUrl, "API Provider baseUrl");
   if (!provider.requests || typeof provider.requests !== "object" || Array.isArray(provider.requests)) throw new Error("requests 配置不能为空。");
   assertAllowedKeys(provider.requests, REQUEST_KEYS, "requests");
   provider.requests.usagePath = validateRequestPath(provider.requests.usagePath, "usagePath", { required: true });
@@ -126,7 +183,7 @@ export function validateApiProviderConfig(value) {
   if (response.defaultCurrency != null && (typeof response.defaultCurrency !== "string" || response.defaultCurrency.length > 12)) {
     throw new Error("response.defaultCurrency 无效。");
   }
-  provider.baseUrl = baseUrl.toString().replace(/\/$/, "");
+  provider.baseUrl = baseUrl;
   provider.auth = {
     header: typeof provider.auth?.header === "string" && provider.auth.header.trim() ? provider.auth.header.trim() : "Authorization",
     scheme: typeof provider.auth?.scheme === "string" ? provider.auth.scheme.trim() : "Bearer",
@@ -955,34 +1012,30 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
       defaultVisible: false,
     });
   }
-  if (view?.currentThreadId
-    || (view?.currentTaskTokens !== null && view?.currentTaskTokens !== undefined)
-    || (view?.lastTurnTokens !== null && view?.lastTurnTokens !== undefined)) {
-    const currentTaskValue = view?.currentTaskTokens === null || view?.currentTaskTokens === undefined
-      ? "--"
-      : formatMetricTokens(view.currentTaskTokens);
-    const lastTurnValue = view?.lastTurnTokens === null || view?.lastTurnTokens === undefined
-      ? "--"
-      : formatMetricTokens(view.lastTurnTokens);
-    metrics.push(
-      {
-        id: "currentTaskTokens",
-        label: "当前任务累计 Token",
-        display: `任务 ${currentTaskValue}`,
-        detail: `当前任务累计 Token：${currentTaskValue}`,
-        value: currentTaskValue,
-        defaultVisible: false,
-      },
-      {
-        id: "lastTurnTokens",
-        label: "上次对话消耗 Token",
-        display: `上次 ${lastTurnValue}`,
-        detail: `上次对话消耗 Token：${lastTurnValue}`,
-        value: lastTurnValue,
-        defaultVisible: false,
-      },
-    );
-  }
+  const currentTaskValue = view?.currentTaskTokens === null || view?.currentTaskTokens === undefined
+    ? "--"
+    : formatMetricTokens(view.currentTaskTokens);
+  const lastTurnValue = view?.lastTurnTokens === null || view?.lastTurnTokens === undefined
+    ? "--"
+    : formatMetricTokens(view.lastTurnTokens);
+  metrics.push(
+    {
+      id: "currentTaskTokens",
+      label: "当前任务累计 Token",
+      display: `任务 ${currentTaskValue}`,
+      detail: `当前任务累计 Token：${currentTaskValue}`,
+      value: currentTaskValue,
+      defaultVisible: false,
+    },
+    {
+      id: "lastTurnTokens",
+      label: "上次对话消耗 Token",
+      display: `上次 ${lastTurnValue}`,
+      detail: `上次对话消耗 Token：${lastTurnValue}`,
+      value: lastTurnValue,
+      defaultVisible: false,
+    },
+  );
   return {
     id: "official",
     label: "官方订阅",
@@ -1273,7 +1326,7 @@ export class ApiUsageClient {
   constructor({ provider = loadApiProviderConfig(), apiKey = resolveApiKey(), refreshMs = DEFAULT_REFRESH_MS, managed = false, now = () => Date.now(), onUpdate = () => {} } = {}) {
     this.provider = validateApiProviderConfig(provider);
     this.baseUrl = this.provider.baseUrl;
-    this.apiKey = apiKey;
+    this.apiKey = validateRequestCredential(apiKey, `${this.provider.label} API key`);
     this.refreshMs = refreshMs;
     this.managed = managed;
     this.now = now;
@@ -1301,6 +1354,7 @@ export class ApiUsageClient {
           Accept: "application/json",
           [this.provider.auth.header]: `${this.provider.auth.scheme ? `${this.provider.auth.scheme} ` : ""}${this.apiKey}`,
         },
+        redirect: "error",
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -1315,10 +1369,7 @@ export class ApiUsageClient {
         }
         throw error;
       }
-      const declaredLength = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > 2 * 1024 * 1024) throw new Error(`${this.provider.label} 响应过大`);
-      const body = await response.text();
-      if (body.length > 2 * 1024 * 1024) throw new Error(`${this.provider.label} 响应过大`);
+      const body = await readLimitedResponseText(response, this.provider.label);
       return JSON.parse(body);
     } finally {
       clearTimeout(timer);
@@ -1407,11 +1458,10 @@ export class ApiAccountUsageClient {
     now = () => Date.now(),
     onUpdate = () => {},
   } = {}) {
-    const parsedBaseUrl = new URL(baseUrl);
-    if (!/^https?:$/.test(parsedBaseUrl.protocol) || parsedBaseUrl.username || parsedBaseUrl.password) throw new Error("API 账户 BaseUrl 无效");
-    this.baseUrl = parsedBaseUrl.toString().replace(/\/$/, "");
-    this.token = token;
+    this.baseUrl = normalizeCredentialBaseUrl(baseUrl, "API 账户 BaseUrl");
+    this.token = validateRequestCredential(token, "API 账户令牌");
     this.userId = userId;
+    if (this.userId != null && !/^[1-9][0-9]{0,19}$/.test(this.userId)) throw new Error("API 账户用户 ID 无效。");
     this.counterPath = resolveAccountCounterPath(counterPath);
     this.counter = loadAccountCounter(this.counterPath);
     this.refreshMs = refreshMs;
@@ -1524,13 +1574,11 @@ export class ApiAccountUsageClient {
           Authorization: `Bearer ${this.token}`,
           "New-Api-User": this.userId,
         },
+        redirect: "error",
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`API 账户接口返回 HTTP ${response.status}`);
-      const declaredLength = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > 2 * 1024 * 1024) throw new Error("API 账户响应过大");
-      const body = await response.text();
-      if (body.length > 2 * 1024 * 1024) throw new Error("API 账户响应过大");
+      const body = await readLimitedResponseText(response, "API 账户");
       return JSON.parse(body);
     } finally {
       clearTimeout(timer);
@@ -1563,18 +1611,16 @@ export class ApiAccountUsageClient {
     let reachedCheckpoint = reachesCheckpoint(items);
     let historyFailed = false;
     if (!reachedCheckpoint && availablePages > 1) {
-      const pendingPages = Array.from({ length: availablePages - 1 }, (_, index) => index + 2);
-      const historyResults = await Promise.allSettled(pendingPages.map((page) =>
-        this.requestJson("/api/log/self", { p: page, size: CCTQ_ACCOUNT_PAGE_SIZE })));
-      for (const result of historyResults) {
-        if (result.status === "rejected") {
+      for (let page = 2; page <= availablePages && !reachedCheckpoint; page += 1) {
+        try {
+          const result = await this.requestJson("/api/log/self", { p: page, size: CCTQ_ACCOUNT_PAGE_SIZE });
+          const historyData = result?.data && typeof result.data === "object" ? result.data : result;
+          const historyItems = Array.isArray(historyData?.items) ? historyData.items : [];
+          items.push(...historyItems);
+          if (reachesCheckpoint(historyItems)) reachedCheckpoint = true;
+        } catch {
           historyFailed = true;
-          continue;
         }
-        const historyData = result.value?.data && typeof result.value.data === "object" ? result.value.data : result.value;
-        const historyItems = Array.isArray(historyData?.items) ? historyData.items : [];
-        items.push(...historyItems);
-        if (reachesCheckpoint(historyItems)) reachedCheckpoint = true;
       }
     }
     const complete = !historyFailed && (requiredCheckpoint === 0
@@ -1811,15 +1857,25 @@ class AppServerRpc {
       }, this.requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       const message = params === undefined ? { id, method } : { id, method, params };
-      this.child.stdin.write(`${JSON.stringify(message)}\n`);
+      try {
+        this.child.stdin.write(`${JSON.stringify(message)}\n`);
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
   notify(method, params) {
     if (!this.child?.stdin?.writable) return false;
     const message = params === undefined ? { method } : { method, params };
-    this.child.stdin.write(`${JSON.stringify(message)}\n`);
-    return true;
+    try {
+      this.child.stdin.write(`${JSON.stringify(message)}\n`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   failAll(error) {

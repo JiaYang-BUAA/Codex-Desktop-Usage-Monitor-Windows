@@ -12,6 +12,10 @@
   const MAX_SELECTED_METRICS = 8;
   const MAX_MINIMAL_SELECTED_METRICS = 14;
   const TASK_METRIC_IDS = new Set(["currentTaskTokens", "lastTurnTokens"]);
+  const TASK_METRIC_FALLBACKS = [
+    { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 --", value: "--", defaultVisible: false },
+    { id: "lastTurnTokens", label: "上次对话消耗 Token", display: "上次 --", value: "--", defaultVisible: false },
+  ];
 
   const previousUsage = window[STATE_KEY]?.usage || window[USAGE_KEY] || window[LEGACY_STATE_KEY]?.usage || window[LEGACY_THEME_STATE_KEY]?.usage || window[LEGACY_USAGE_KEY] || null;
   try { window[STATE_KEY]?.cleanup?.(); } catch {}
@@ -729,9 +733,9 @@
           return rows;
         };
         const taskMetrics = source.id === "official"
-          ? source.metrics.filter((metric) => TASK_METRIC_IDS.has(metric.id))
+          ? TASK_METRIC_FALLBACKS.map((fallback) => source.metrics.find((metric) => metric.id === fallback.id) || fallback)
           : [];
-        const primaryMetrics = taskMetrics.length
+        const primaryMetrics = source.id === "official"
           ? source.metrics.filter((metric) => !TASK_METRIC_IDS.has(metric.id))
           : source.metrics;
         column.append(title, createRows(primaryMetrics));
@@ -793,7 +797,7 @@
           brand.className = "usage-column-brand";
           const product = document.createElement("span");
           product.className = "usage-brand-product";
-          product.textContent = "Codex Usage Monitor for Windows v1.8.4";
+          product.textContent = "Codex Usage Monitor for Windows v1.8.5";
           const credit = document.createElement("span");
           credit.className = "usage-brand-credit";
           credit.textContent = "—— Designed by +羊 and Codex";

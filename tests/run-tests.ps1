@@ -29,6 +29,11 @@ if ($package.name -ne 'codex-usage-monitor-windows') { throw 'Unexpected package
 if ($package.version -ne $version -or $lockVersion -ne $version) { throw 'VERSION, package.json, and package-lock.json must match.' }
 $dependencyNames = @($package.devDependencies.PSObject.Properties.Name)
 if ($dependencyNames.Count -ne 1 -or $dependencyNames[0] -ne 'jsdom') { throw 'Only jsdom should remain as a development dependency.' }
+$lockText = Get-Content -LiteralPath $lockPath -Raw
+foreach ($match in [regex]::Matches($lockText, '"resolved"\s*:\s*"(https://[^"]+)"')) {
+  $resolvedUri = [Uri]$match.Groups[1].Value
+  if ($resolvedUri.Host -ne 'registry.npmjs.org') { throw "Unexpected package-lock registry host: $($resolvedUri.Host)" }
+}
 
 $powerShellFiles = Get-ChildItem -LiteralPath (Join-Path $root 'scripts') -Filter '*.ps1' -File
 $powerShellFiles += Get-ChildItem -LiteralPath (Join-Path $root 'tests') -Filter '*.ps1' -File
@@ -121,7 +126,7 @@ if ($runtimeSource -notmatch 'CODEX_USAGE_API_KEY') { throw 'API key environment
 if ($runtimeSource -notmatch 'CODEX_USAGE_ACCOUNT_TOKEN' -or $runtimeSource -notmatch 'New-Api-User') { throw 'API account environment or authentication contract is missing.' }
 if ($runtimeSource -notmatch 'account-token-counter.json' -or $runtimeSource -notmatch 'InitialTokens') { throw 'Token baseline persistence contract is missing.' }
 if ($runtimeSource -notmatch 'official-token-counter.json' -or $runtimeSource -notmatch 'LocalCodexTokenTracker' -or $runtimeSource -notmatch 'last_token_usage' -or $runtimeSource -notmatch 'LOCAL_TOKEN_COUNTER_SCHEMA_VERSION\s*=\s*7' -or $runtimeSource -notmatch 'officialLifetimePendingTokens' -or $runtimeSource -notmatch 'setOfficialLifetimeTokens' -or $runtimeSource -notmatch 'OFFICIAL_MODEL_PROVIDER_ID' -or $runtimeSource -notmatch 'requires_openai_auth' -or $runtimeSource -notmatch 'account/read' -or $runtimeSource -notmatch 'config/read' -or $runtimeSource -notmatch 'conversationTokenDelta' -or $runtimeSource -notmatch 'official-conversation-raw' -or $runtimeSource -notmatch 'seenEvents' -or $runtimeSource -notmatch 'thread_settings_applied' -or $runtimeSource -notmatch 'session_meta' -or $runtimeSource -notmatch 'turn_id' -or $runtimeSource -notmatch 'chatgptauthtokens' -or $runtimeSource -notmatch 'personalaccesstoken') { throw 'Official authenticated-provider raw conversation Token attribution and persistence contract is missing.' }
-if ($runtimeSource -notmatch 'data-above-composer-conversation-id' -or $runtimeSource -notmatch 'currentTaskTokens' -or $runtimeSource -notmatch 'lastTurnTokens') { throw 'Current-task Token usage contract is missing.' }
+if ($runtimeSource -notmatch 'data-above-composer-conversation-id' -or $runtimeSource -notmatch 'data-conversation-id' -or $runtimeSource -notmatch 'data-thread-id' -or $runtimeSource -notmatch 'currentTaskTokens' -or $runtimeSource -notmatch 'lastTurnTokens') { throw 'Current-task Token usage contract is missing.' }
 if ($runtimeSource -notmatch 'ProtectedData') { throw 'DPAPI persistence contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageCliPath') { throw 'Codex CLI auto-discovery contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageNonStoreDesktopPath') { throw 'Non-Store Codex Desktop auto-discovery contract is missing.' }
@@ -129,9 +134,11 @@ if ($runtimeSource -notmatch 'Resolve-CodexUsageAvailablePort') { throw 'Automat
 if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop executable contract is missing.' }
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
 if ($runtimeSource -notmatch "Local\\CodexUsageMonitor'") { throw 'Cross-port startup mutex contract is missing.' }
-if ($runtimeSource -notmatch 'TARGET_ABSENCE_EXIT_MS') { throw 'Orphan injector shutdown contract is missing.' }
+if ($runtimeSource -notmatch 'TARGET_ABSENCE_EXIT_MS\s*=\s*60000') { throw 'Orphan injector shutdown grace-period contract is missing.' }
+if ($runtimeSource -notmatch 'redirect:\s*"error"' -or $runtimeSource -notmatch '只有本机回环地址允许 HTTP') { throw 'Credential transport hardening contract is missing.' }
 if ($runtimeSource -match 'await usageClient\.start\(\)') { throw 'Initial usage refresh must not delay renderer injection.' }
 if ($runtimeSource -notmatch 'usageStartPromise = usageClient\.start\(\)') { throw 'Background initial usage refresh contract is missing.' }
+if ($runtimeSource -notmatch '注入验证探针失败，将继续重试' -or $runtimeSource -notmatch '\$detailText\s*=.*\[string\]\(Get-Content') { throw 'Monitor startup retry and empty-log safety contract is missing.' }
 if ($runtimeSource -notmatch '\$owned = @\(Get-CodexUsageInjectorProcesses\)') { throw 'Cross-port injector cleanup contract is missing.' }
 if ($runtimeSource -notmatch 'rate-limited' -or $runtimeSource -notmatch 'HTTP 429') { throw 'API rate-limit backoff contract is missing.' }
 if ($runtimeSource -notmatch 'minimalMode' -or $runtimeSource -notmatch 'countdownVisualization' -or $runtimeSource -notmatch 'usage-refresh-ring') { throw 'Display mode controls are missing.' }
@@ -232,6 +239,17 @@ if (-not $SkipPackageTest) {
       if ($installerSource -notmatch $pattern) { throw "Installer discovery contract is missing: $pattern" }
     }
 
+    $unsafeManifest = Join-Path $testRoot 'unsafe-package-files.json'
+    [IO.File]::WriteAllText($unsafeManifest, '["..\\outside.txt"]', [Text.UTF8Encoding]::new($false))
+    $unsafeManifestRejected = $false
+    try {
+      & (Join-Path $root 'scripts\build-release.ps1') -SkipTests -OutputDirectory $testRoot -ManifestPath $unsafeManifest
+    } catch {
+      if ($_.Exception.Message -notmatch 'Unsafe package manifest path') { throw }
+      $unsafeManifestRejected = $true
+    }
+    if (-not $unsafeManifestRejected) { throw 'Unsafe release manifest path was not rejected.' }
+
     & (Join-Path $root 'scripts\build-release.ps1') -SkipTests -OutputDirectory $testRoot
     if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
     $archive = Get-ChildItem -LiteralPath $testRoot -Filter '*.zip' -File | Select-Object -First 1
@@ -270,7 +288,22 @@ if (-not $SkipPackageTest) {
     $shortcutDirectory = Join-Path $testRoot 'desktop'
     New-Item -ItemType Directory -Force -Path $shortcutDirectory | Out-Null
     Set-Content -LiteralPath (Join-Path $shortcutDirectory 'Codex 监视器版.lnk') -Value 'legacy' -Encoding ascii
-    & (Join-Path $root 'scripts\install-monitor-launcher.ps1') -DestinationDirectory $shortcutDirectory
+    $shortcutIconSource = Join-Path $testRoot 'shortcut-icon-source.png'
+    Add-Type -AssemblyName System.Drawing
+    $testIconBitmap = [Drawing.Bitmap]::new(256, 256, [Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $testIconGraphics = [Drawing.Graphics]::FromImage($testIconBitmap)
+    $testIconBrush = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(255, 16, 185, 129))
+    try {
+      $testIconGraphics.Clear([Drawing.Color]::Transparent)
+      $testIconGraphics.FillEllipse($testIconBrush, 16, 16, 224, 224)
+      $testIconBitmap.Save($shortcutIconSource, [Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+      $testIconBrush.Dispose()
+      $testIconGraphics.Dispose()
+      $testIconBitmap.Dispose()
+    }
+    $shortcutIcon = Join-Path $testRoot 'shortcut-icon\codex-usage-monitor-v2.ico'
+    & (Join-Path $root 'scripts\install-monitor-launcher.ps1') -DestinationDirectory $shortcutDirectory -IconCachePath $shortcutIcon -IconSourcePath $shortcutIconSource
     $shortcutPath = Join-Path $shortcutDirectory 'Codex Usage Monitor.lnk'
 
     $installedVbs = Join-Path $installedDirectory 'scripts\launch-codex-monitor-hidden.vbs'
@@ -308,6 +341,14 @@ if (-not $SkipPackageTest) {
     if ([IO.Path]::GetFileName($shortcut.TargetPath) -ine 'wscript.exe') { throw 'Shortcut target must be wscript.exe.' }
     if ($shortcut.Arguments -notmatch 'launch-codex-monitor-hidden\.vbs') { throw 'Shortcut does not reference the hidden launcher.' }
     if ($shortcut.Arguments -notmatch '\s9335$') { throw 'Shortcut does not preserve the CDP port.' }
+    if (-not (Test-Path -LiteralPath $shortcutIcon -PathType Leaf) -or (Get-Item -LiteralPath $shortcutIcon).Length -lt 100) { throw 'Stable shortcut icon cache was not created.' }
+    $shortcutIconObject = [Drawing.Icon]::new($shortcutIcon)
+    try {
+      if ($shortcutIconObject.Width -ne 256 -or $shortcutIconObject.Height -ne 256) { throw 'Stable shortcut icon dimensions are invalid.' }
+    } finally { $shortcutIconObject.Dispose() }
+    $shortcutIconLocation = ($shortcut.IconLocation -replace ',\s*-?\d+$', '').Trim('"')
+    if ([IO.Path]::GetFullPath($shortcutIconLocation) -ne [IO.Path]::GetFullPath($shortcutIcon)) { throw 'Shortcut does not use the stable cached icon.' }
+    if ($shortcut.IconLocation -match '(?i)[\\/]WindowsApps[\\/]') { throw 'Shortcut icon must not reference a versioned WindowsApps path.' }
     if (Test-Path -LiteralPath (Join-Path $shortcutDirectory 'Codex 监视器版.lnk')) { throw 'Legacy shortcut was not removed.' }
   } finally {
     if (Test-Path -LiteralPath $testRoot) { Remove-Item -LiteralPath $testRoot -Recurse -Force }

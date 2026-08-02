@@ -26,7 +26,7 @@ $Token = $Token.Trim()
 if ([string]::IsNullOrWhiteSpace($Token)) { throw 'API 账户访问令牌不能为空。' }
 if ($Token -notmatch '^[\x21-\x7E]+$') { throw 'API 账户访问令牌必须是单行 ASCII 文本；请重新复制令牌后再试。' }
 
-$normalizedBaseUrl = $BaseUrl.TrimEnd('/')
+$normalizedBaseUrl = Resolve-CodexUsageCredentialBaseUrl -BaseUrl $BaseUrl -Label 'API 账户 BaseUrl'
 $headers = @{ Authorization = "Bearer $Token"; 'New-Api-User' = $UserId; Accept = 'application/json' }
 try {
   $response = Invoke-RestMethod -Uri "$normalizedBaseUrl/api/user/self" -Headers $headers -Method Get -TimeoutSec 15

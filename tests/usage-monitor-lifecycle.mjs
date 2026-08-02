@@ -169,6 +169,15 @@ try {
   assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3822万");
   assert.equal(columns[0].querySelector('[data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "8万");
   assert.equal(columns[0].querySelector('[data-metric="requestStatus"]'), null);
+  const usageWithoutTaskMetrics = structuredClone(usage);
+  usageWithoutTaskMetrics.sources.official.metrics = usageWithoutTaskMetrics.sources.official.metrics
+    .filter((metric) => !["currentTaskTokens", "lastTurnTokens"].includes(metric.id));
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usageWithoutTaskMetrics), true);
+  const unavailableTaskSection = host.shadowRoot.querySelector('.usage-column-subsection[data-status="unavailable"]');
+  assert.ok(unavailableTaskSection);
+  assert.equal(unavailableTaskSection.querySelector(".usage-status").getAttribute("aria-label"), "暂无数据");
+  assert.deepEqual([...unavailableTaskSection.querySelectorAll(".usage-detail-value")].map((item) => item.textContent), ["--", "--"]);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "请求中", "请求失败"]);
   const limitedUsage = structuredClone(usage);
   limitedUsage.sources.acme.status = "rate-limited";
@@ -178,7 +187,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v1.8.4", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v1.8.5", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{\s*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);

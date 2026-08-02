@@ -10,7 +10,7 @@ const HOST_ID = "codex-usage-monitor";
 const STATE_KEY = "__CODEX_USAGE_MONITOR_STATE__";
 const LEGACY_HOST_ID = "codex-dream-skin-usage";
 const LEGACY_STATE_KEY = "__CODEX_DREAM_SKIN_USAGE_STATE__";
-const TARGET_ABSENCE_EXIT_MS = 15000;
+const TARGET_ABSENCE_EXIT_MS = 60000;
 
 function parseArgs(argv) {
   const options = {
@@ -98,7 +98,13 @@ class CdpSession {
         reject(new Error(`${method} timed out after ${this.commandTimeoutMs} ms`));
       }, this.commandTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      try {
+        this.ws.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -141,13 +147,29 @@ class CdpSession {
   }
 }
 
+function isValidDebuggerSocket(value, port) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "ws:"
+      && ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname.toLowerCase())
+      && Number(url.port) === port
+      && !url.username
+      && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 async function getTargets(port) {
   for (const host of ["127.0.0.1", "[::1]", "localhost"]) {
     try {
-      const response = await fetch(`http://${host}:${port}/json/list`, { signal: AbortSignal.timeout(1000) });
+      const response = await fetch(`http://${host}:${port}/json/list`, { redirect: "error", signal: AbortSignal.timeout(1000) });
       if (!response.ok) continue;
       const targets = await response.json();
-      return targets.filter((item) => item.type === "page" && String(item.url).startsWith("app://"));
+      if (!Array.isArray(targets)) continue;
+      return targets.filter((item) => item?.type === "page"
+        && String(item.url).startsWith("app://")
+        && isValidDebuggerSocket(item.webSocketDebuggerUrl, port));
     } catch {}
   }
   return [];
@@ -206,13 +228,18 @@ async function verifySession(session) {
 
 async function syncCurrentThread(session, usageClient) {
   const threadId = await session.evaluate(`(() => {
-    const nodes = [...document.querySelectorAll("[data-above-composer-conversation-id]")];
-    const active = nodes.filter((node) => {
-      const rect = node.getBoundingClientRect();
-      return rect.width > 0 && rect.height > 0;
-    }).at(-1) || nodes.at(-1) || null;
-    const value = active?.getAttribute("data-above-composer-conversation-id") || "";
-    return value.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0] || null;
+    const attributes = ["data-above-composer-conversation-id", "data-conversation-id", "data-thread-id"];
+    for (const attribute of attributes) {
+      const nodes = [...document.querySelectorAll(\`[\${attribute}]\`)];
+      const active = nodes.filter((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }).at(-1) || nodes.at(-1) || null;
+      const value = active?.getAttribute(attribute) || "";
+      const match = value.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0];
+      if (match) return match;
+    }
+    return null;
   })()`);
   usageClient.setCurrentThreadId(threadId);
 }

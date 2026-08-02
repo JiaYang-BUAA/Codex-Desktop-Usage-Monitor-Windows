@@ -27,6 +27,25 @@ try {
   $CodexUsagePersistedAccountConfigPath = Join-Path $testRoot 'account.json'
   $CodexUsagePersistedAccountTokenPath = Join-Path $testRoot 'account-token.dpapi'
   $CodexUsageAccountCounterPath = Join-Path $testRoot 'account-token-counter.json'
+  if ((Resolve-CodexUsageCredentialBaseUrl -BaseUrl 'http://127.0.0.1:8080/' -Label '测试地址') -ne 'http://127.0.0.1:8080') {
+    throw 'Loopback HTTP BaseUrl normalization failed.'
+  }
+  $remoteHttpRejected = $false
+  try {
+    Resolve-CodexUsageCredentialBaseUrl -BaseUrl 'http://api.example.test' -Label '测试地址' | Out-Null
+  } catch {
+    if ($_.Exception.Message -notmatch 'HTTPS') { throw }
+    $remoteHttpRejected = $true
+  }
+  if (-not $remoteHttpRejected) { throw 'Remote HTTP credential BaseUrl was not rejected.' }
+  $queryRejected = $false
+  try {
+    Resolve-CodexUsageCredentialBaseUrl -BaseUrl 'https://api.example.test?tenant=1' -Label '测试地址' | Out-Null
+  } catch {
+    if ($_.Exception.Message -notmatch '查询参数') { throw }
+    $queryRejected = $true
+  }
+  if (-not $queryRejected) { throw 'Credential BaseUrl query parameters were not rejected.' }
   Save-CodexUsagePersistedProvider -ConfigPath $providerPath -ApiKey $testKey
   if (-not (Test-CodexUsagePersistedProvider)) { throw 'Persisted provider files were not created.' }
   $cipher = [IO.File]::ReadAllBytes($CodexUsagePersistedProviderKeyPath)

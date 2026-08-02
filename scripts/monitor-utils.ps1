@@ -76,6 +76,7 @@ function Save-CodexUsagePersistedProvider {
   )
 
   if ([string]::IsNullOrWhiteSpace($ApiKey)) { throw 'API key 不能为空。' }
+  if ($ApiKey.Length -gt 16384 -or $ApiKey -notmatch '^[\x21-\x7E]+$') { throw 'API key 必须是单行 ASCII 文本。' }
   $resolvedConfig = (Resolve-Path -LiteralPath $ConfigPath -ErrorAction Stop).Path
   New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
   $temporaryConfig = "$CodexUsagePersistedProviderConfigPath.$PID.tmp"
@@ -148,6 +149,30 @@ function Test-CodexUsagePersistedProvider {
     (Test-Path -LiteralPath $CodexUsagePersistedProviderKeyPath -PathType Leaf)
 }
 
+function Resolve-CodexUsageCredentialBaseUrl {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$BaseUrl,
+    [string]$Label = 'BaseUrl'
+  )
+
+  if ($BaseUrl.Length -gt 2048) { throw "$Label 无效。" }
+  $baseUri = $null
+  if (-not [Uri]::TryCreate($BaseUrl, [UriKind]::Absolute, [ref]$baseUri) -or $baseUri.Scheme -notin @('http', 'https')) {
+    throw "$Label 必须是有效的 HTTP 或 HTTPS 地址。"
+  }
+  if (-not [string]::IsNullOrEmpty($baseUri.UserInfo)) { throw "$Label 不能包含凭据。" }
+  if (-not [string]::IsNullOrEmpty($baseUri.Query) -or -not [string]::IsNullOrEmpty($baseUri.Fragment)) {
+    throw "$Label 不能包含查询参数或片段。"
+  }
+  $hostName = $baseUri.DnsSafeHost.Trim('[', ']').ToLowerInvariant()
+  if ($baseUri.Scheme -ne 'https' -and $hostName -notin @('localhost', '127.0.0.1', '::1')) {
+    throw "$Label 必须使用 HTTPS；只有本机回环地址允许 HTTP。"
+  }
+  return $baseUri.AbsoluteUri.TrimEnd('/')
+}
+
 function Save-CodexUsagePersistedAccount {
   [CmdletBinding()]
   param(
@@ -160,12 +185,8 @@ function Save-CodexUsagePersistedAccount {
   )
 
   if ([string]::IsNullOrWhiteSpace($Token)) { throw 'API 账户令牌不能为空。' }
-  $baseUri = $null
-  if (-not [Uri]::TryCreate($BaseUrl, [UriKind]::Absolute, [ref]$baseUri) -or $baseUri.Scheme -notin @('http', 'https')) {
-    throw 'API 账户 BaseUrl 必须是有效的 HTTP 或 HTTPS 地址。'
-  }
-  if (-not [string]::IsNullOrEmpty($baseUri.UserInfo)) { throw 'API 账户 BaseUrl 不能包含凭据。' }
-  $normalizedBaseUrl = $baseUri.AbsoluteUri.TrimEnd('/')
+  if ($Token.Length -gt 16384 -or $Token -notmatch '^[\x21-\x7E]+$') { throw 'API 账户令牌必须是单行 ASCII 文本。' }
+  $normalizedBaseUrl = Resolve-CodexUsageCredentialBaseUrl -BaseUrl $BaseUrl -Label 'API 账户 BaseUrl'
   New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
   $temporaryConfig = "$CodexUsagePersistedAccountConfigPath.$PID.tmp"
   $temporaryToken = "$CodexUsagePersistedAccountTokenPath.$PID.tmp"
@@ -203,6 +224,7 @@ function Get-CodexUsagePersistedAccount {
     if ($config.schemaVersion -ne 1 -or [string]::IsNullOrWhiteSpace([string]$config.baseUrl) -or [string]$config.userId -notmatch '^[1-9][0-9]{0,19}$') {
       throw 'API 账户配置格式无效。'
     }
+    $normalizedBaseUrl = Resolve-CodexUsageCredentialBaseUrl -BaseUrl ([string]$config.baseUrl) -Label 'API 账户 BaseUrl'
     $protectedBytes = [IO.File]::ReadAllBytes($CodexUsagePersistedAccountTokenPath)
     $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect(
       $protectedBytes,
@@ -211,7 +233,7 @@ function Get-CodexUsagePersistedAccount {
     )
     $token = [Text.Encoding]::UTF8.GetString($plainBytes)
     if ([string]::IsNullOrWhiteSpace($token)) { throw '持久化 API 账户令牌为空。' }
-    return [pscustomobject]@{ Token = $token; UserId = [string]$config.userId; BaseUrl = [string]$config.baseUrl }
+    return [pscustomobject]@{ Token = $token; UserId = [string]$config.userId; BaseUrl = $normalizedBaseUrl }
   } catch {
     throw "无法读取持久化 API 账户凭据，请重新运行配置命令。$($_.Exception.Message)"
   } finally {

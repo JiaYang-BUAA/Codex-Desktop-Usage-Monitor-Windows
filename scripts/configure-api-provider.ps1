@@ -27,6 +27,7 @@ try {
     $plainKey = [Net.NetworkCredential]::new('', $secureKey).Password
   }
   if (-not $plainKey) { throw 'API key 不能为空。' }
+  if ($plainKey -notmatch '^[\x21-\x7E]+$') { throw 'API key 必须是单行 ASCII 文本；请重新复制后再试。' }
   if (-not $SessionOnly) {
     Save-CodexUsagePersistedProvider -ConfigPath $resolvedConfig -ApiKey $plainKey
   }

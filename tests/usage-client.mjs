@@ -13,6 +13,7 @@ import {
   normalizeApiUsageView,
   normalizeApiAccountView,
   normalizeCctqUsageView,
+  normalizeCredentialBaseUrl,
   normalizeUsageView,
   conversationTokenDelta,
   officialModelProvidersFromAccount,
@@ -503,6 +504,9 @@ assert.equal(sevenDayOnly.metrics.find((item) => item.id === "secondaryRemaining
 assert.notEqual(sevenDayOnly.metrics.find((item) => item.id === "primaryReset").value, "--");
 const noOfficialWindows = toOfficialUsageSource({ ...view, windows: [] }, now.getTime());
 assert.equal(noOfficialWindows.metrics.find((item) => item.id === "primaryReset").value, "--");
+const noTaskUsage = toOfficialUsageSource({ ...view, currentThreadId: null, currentTaskTokens: null, lastTurnTokens: null }, now.getTime());
+assert.equal(noTaskUsage.metrics.find((item) => item.id === "currentTaskTokens").value, "--");
+assert.equal(noTaskUsage.metrics.find((item) => item.id === "lastTurnTokens").value, "--");
 
 const cctq = normalizeCctqUsageView({
   data: { total_granted: 7500000, total_used: 2500000, unlimited_quota: false, expires_at: 0 },
@@ -575,12 +579,50 @@ const baseProvider = {
 };
 assert.throws(() => validateApiProviderConfig({ ...baseProvider, baseUrl: "https://user:pass@example.com" }), /不能包含凭据/);
 assert.throws(() => validateApiProviderConfig({ ...baseProvider, baseUrl: "file:///tmp/data" }), /HTTP/);
+assert.throws(() => validateApiProviderConfig({ ...baseProvider, baseUrl: "http://api.example.com" }), /HTTPS/);
+assert.throws(() => validateApiProviderConfig({ ...baseProvider, baseUrl: "https://api.example.com?tenant=1" }), /查询参数/);
+assert.equal(normalizeCredentialBaseUrl("http://localhost:8080/"), "http://localhost:8080");
+assert.equal(normalizeCredentialBaseUrl("http://[::1]:8080/"), "http://[::1]:8080");
 assert.throws(() => validateApiProviderConfig({ ...baseProvider, requests: { usagePath: "//evil.example/usage" } }), /站内路径/);
 assert.throws(() => validateApiProviderConfig({ ...baseProvider, auth: { header: "X-Key\r\nHost", scheme: "" } }), /请求头/);
 assert.throws(() => validateApiProviderConfig({ ...baseProvider, auth: { header: "Cookie", scheme: "" } }), /受保护/);
 assert.throws(() => validateApiProviderConfig({ ...baseProvider, credentials: { apiKey: "not-allowed" } }), /不支持的字段/);
 assert.throws(() => validateApiProviderConfig({ ...baseProvider, response: { used: "used", secret: "value" } }), /不支持的字段/);
 assert.equal(loadApiProviderConfig().id, "cctq");
+assert.throws(() => new ApiUsageClient({ provider: baseProvider, apiKey: "line\nbreak" }), /单行 ASCII/);
+assert.throws(() => new ApiAccountUsageClient({ token: "line\nbreak", userId: "10530" }), /单行 ASCII/);
+assert.throws(() => new ApiAccountUsageClient({ token: "token", userId: "0" }), /用户 ID/);
+
+const directRequestRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-direct-request-test-"));
+const originalFetch = globalThis.fetch;
+try {
+  let apiFetchOptions;
+  globalThis.fetch = async (_url, options) => {
+    apiFetchOptions = options;
+    return new Response('{"used":1}', { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const directApiClient = new ApiUsageClient({ provider: baseProvider, apiKey: "test-key" });
+  assert.deepEqual(await directApiClient.requestJson("https://api.example.com/usage"), { used: 1 });
+  assert.equal(apiFetchOptions.redirect, "error");
+  assert.equal(apiFetchOptions.headers.Authorization, "Bearer test-key");
+
+  let accountFetchOptions;
+  globalThis.fetch = async (_url, options) => {
+    accountFetchOptions = options;
+    return new Response('{"data":{}}', { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const directAccountClient = new ApiAccountUsageClient({ baseUrl: "http://127.0.0.1:8080", token: "account-token", userId: "10530", counterPath: path.join(directRequestRoot, "counter.json") });
+  assert.deepEqual(await directAccountClient.requestJson("/api/user/self"), { data: {} });
+  assert.equal(accountFetchOptions.redirect, "error");
+  assert.equal(accountFetchOptions.headers.Authorization, "Bearer account-token");
+  assert.throws(() => new ApiAccountUsageClient({ baseUrl: "http://api.example.com", token: "x", userId: "1", counterPath: null }), /HTTPS/);
+
+  globalThis.fetch = async () => new Response(new Uint8Array((2 * 1024 * 1024) + 1), { status: 200 });
+  await assert.rejects(() => directApiClient.requestJson("https://api.example.com/usage"), /响应过大/);
+} finally {
+  globalThis.fetch = originalFetch;
+  rmSync(directRequestRoot, { recursive: true, force: true });
+}
 
 const resilientProvider = validateApiProviderConfig({
   ...baseProvider,
