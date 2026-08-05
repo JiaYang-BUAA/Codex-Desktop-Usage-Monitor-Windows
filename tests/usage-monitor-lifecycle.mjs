@@ -23,7 +23,9 @@ const dom = new JSDOM(`<!doctype html>
   <head><style id="codex-dream-skin-style">html { color: pink; }</style></head>
   <body>
     <div id="codex-dream-skin-chrome"></div>
-    <div id="composer-wrapper" style="position: relative">${composerMarkup()}</div>
+    <div id="composer-overflow-root" style="overflow: auto; width: 700px">
+      <div id="composer-wrapper" style="position: relative">${composerMarkup()}</div>
+    </div>
   </body>
 </html>`, {
   pretendToBeVisual: true,
@@ -99,10 +101,13 @@ try {
   assert.equal(result.installed, true);
   let host = window.document.getElementById("codex-usage-monitor");
   assert.ok(host?.shadowRoot);
-  assert.equal(host.parentElement.id, "composer-wrapper");
+  assert.equal(host.parentElement, window.document.body);
+  assert.equal(window.document.getElementById("composer-overflow-root").contains(host), false);
   assert.equal(host.dataset.anchor, "approval");
   assert.equal(host.style.getPropertyValue("--usage-color"), "rgb(70, 80, 90)");
   assert.equal(host.style.getPropertyValue("--usage-font-size"), "14px");
+  assert.equal(host.style.getPropertyValue("--usage-left"), "234px");
+  assert.equal(host.style.getPropertyValue("--usage-top"), "164px");
   const approvalButton = [...window.document.querySelectorAll("button")]
     .find((button) => button.textContent.includes("替我审批"));
   assert.ok(approvalButton);
@@ -125,6 +130,7 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-summary-item \+ \.usage-summary-item::before\s*\{[\s\S]*?top:\s*calc\(50% \+ 1px\);[\s\S]*?background:\s*currentColor;[\s\S]*?translateY\(-50%\)/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /height:\s*14px;[\s\S]*?opacity:\s*\.40;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?background:\s*Canvas;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /:host\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--usage-top/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column\s*\{[\s\S]*?box-sizing:\s*border-box;[\s\S]*?width:\s*100%;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-column \+ \.usage-column\s*\{[^}]*border-left/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-subsection-title\s*\{\s*margin-top:\s*5px;/);

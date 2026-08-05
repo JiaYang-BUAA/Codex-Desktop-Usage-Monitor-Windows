@@ -290,12 +290,7 @@
     };
     let composer = editables.map(nearestComposer).find(Boolean) || composers.at(-1) || null;
     if (!composer) return null;
-    const composerBox = box(composer);
-    const wrapper = composer.parentElement;
-    const wrapperBox = box(wrapper);
-    const wrapperWorks = wrapper && wrapperBox && getComputedStyle(wrapper).position !== "static" &&
-      Math.abs(wrapperBox.width - composerBox.width) < 8 && Math.abs(wrapperBox.height - composerBox.height) < 8;
-    return { composer, parent: wrapperWorks ? wrapper : composer };
+    return { composer };
   };
 
   const markup = `
@@ -308,10 +303,10 @@
     </div>`;
   const css = `
     :host {
-      position: absolute;
+      position: fixed;
       left: var(--usage-left, 0px);
-      bottom: 8px;
-      z-index: 30;
+      top: var(--usage-top, 0px);
+      z-index: 2147483000;
       display: inline-flex;
       max-width: var(--usage-max-width, 280px);
       color: var(--usage-color, currentColor);
@@ -813,7 +808,6 @@
 
   const configurePosition = (host, composer) => {
     const composerBox = box(composer);
-    const parentBox = box(host.parentElement) || composerBox;
     const controls = [...composer.querySelectorAll('button, [role="button"]')]
       .filter((node) => isVisible(node) && !node.closest(`#${HOST_ID}`));
     const approval = controls.find(isApprovalControl) || null;
@@ -841,7 +835,10 @@
       const surface = getComputedStyle(composer).backgroundColor;
       host.style.setProperty("--usage-surface", surface && surface !== "rgba(0, 0, 0, 0)" ? surface : "rgba(255, 255, 255, .96)");
     }
-    host.style.setProperty("--usage-left", `${Math.round(placementX - parentBox.x)}px`);
+    const hostHeight = box(host)?.height || 28;
+    const placementY = Math.max(8, Math.min(window.innerHeight - hostHeight - 8, rowCenter - hostHeight / 2));
+    host.style.setProperty("--usage-left", `${Math.round(placementX)}px`);
+    host.style.setProperty("--usage-top", `${Math.round(placementY)}px`);
     host.style.setProperty("--usage-max-width", `${available}px`);
     const popoverWidth = Math.max(280, Math.min(720, window.innerWidth - 24));
     const popoverShift = Math.min(0, window.innerWidth - 12 - placementX - popoverWidth);
@@ -912,8 +909,9 @@
         render(host, usage);
       });
     }
-    const moved = host.parentElement !== placement.parent;
-    if (moved) placement.parent.appendChild(host);
+    const portal = document.body || placement.composer.parentElement;
+    const moved = host.parentElement !== portal;
+    if (moved) portal.appendChild(host);
     configurePosition(host, placement.composer);
     if (state) state.host = host;
     if (created || moved || host.dataset.rendered !== "true") render(host, state?.usage || window[USAGE_KEY]);
