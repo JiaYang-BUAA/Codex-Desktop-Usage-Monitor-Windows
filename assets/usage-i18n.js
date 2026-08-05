@@ -21,7 +21,7 @@
       minimalMode: "极简模式",
       countdownVisualization: "倒计时可视化",
       englishUi: "English UI",
-      updateNotifications: "版本提醒",
+      updateNotifications: "版本更新提醒",
       maximum: "最多显示 {count} 项",
       minimalMaximum: "极简最多 {count} 项",
       refreshIn: "刷新 {seconds}",

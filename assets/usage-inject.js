@@ -66,8 +66,8 @@
       metrics.push({ id: index ? "secondaryRemaining" : "primaryRemaining", label: `${label} 剩余`, display: `${label} ${formatPercent(remaining)}`, detail: `${label} 剩余 ${formatPercent(remaining)}`, defaultVisible: index === 0 });
       metrics.push({ id: index ? "secondaryReset" : "primaryReset", label: `${label} 重置`, display: `${label} ${reset}`, detail: `${label}：${reset}`, value: reset, defaultVisible: false });
     }
-    if (finiteNumber(source.todayTokens)) metrics.push({ id: "todayTokens", label: "今日 token", display: `今日 ${formatTokens(Number(source.todayTokens))}`, detail: `今日 token：${formatTokens(Number(source.todayTokens))}`, defaultVisible: true });
-    if (finiteNumber(source.lifetimeTokens)) metrics.push({ id: "lifetimeTokens", label: "累计 token", display: `累计 ${formatTokens(Number(source.lifetimeTokens))}`, detail: `累计 token：${formatTokens(Number(source.lifetimeTokens))}`, defaultVisible: false });
+    if (finiteNumber(source.todayTokens)) metrics.push({ id: "todayTokens", label: "今日 token", display: `今日 ${formatTokens(Number(source.todayTokens))}`, detail: `今日 token：${formatTokens(Number(source.todayTokens))}`, value: String(Math.max(0, Math.round(Number(source.todayTokens)))), defaultVisible: true });
+    if (finiteNumber(source.lifetimeTokens)) metrics.push({ id: "lifetimeTokens", label: "累计 token", display: `累计 ${formatTokens(Number(source.lifetimeTokens))}`, detail: `累计 token：${formatTokens(Number(source.lifetimeTokens))}`, value: String(Math.max(0, Math.round(Number(source.lifetimeTokens)))), defaultVisible: false });
     return normalizeSource({ id: "official", label: "官方订阅", accountType: "subscription", status: source.status, error: source.error, fetchedAt: source.fetchedAt, metrics }, "official");
   };
   const normalizeUsage = (value) => {
@@ -82,8 +82,8 @@
     if (!sources.official) sources.official = legacyOfficialSource(source);
     if (sources.official && (finiteNumber(source.todayTokens) || finiteNumber(source.lifetimeTokens))) {
       sources.official.metrics = sources.official.metrics.map((metric) => {
-        if (metric.id === "todayTokens" && finiteNumber(source.todayTokens)) return { ...metric, value: formatChineseTokenUnit(source.todayTokens) };
-        if (metric.id === "lifetimeTokens" && finiteNumber(source.lifetimeTokens)) return { ...metric, value: formatChineseTokenUnit(source.lifetimeTokens) };
+        if (metric.id === "todayTokens" && finiteNumber(source.todayTokens)) return { ...metric, value: String(Math.max(0, Math.round(Number(source.todayTokens)))) };
+        if (metric.id === "lifetimeTokens" && finiteNumber(source.lifetimeTokens)) return { ...metric, value: String(Math.max(0, Math.round(Number(source.lifetimeTokens)))) };
         return metric;
       });
     }
@@ -122,6 +122,29 @@
     if (number >= 10000) return `${Math.round(number / 10000)}万`;
     return String(Math.round(number));
   };
+  const parseTokenUnit = (value) => {
+    const match = String(value ?? "").trim().replace(/,/g, "").match(/^(\d+(?:\.\d+)?)(万|亿|[KMB])?$/i);
+    if (!match) return null;
+    const multiplier = match[2] === "万" ? 10000
+      : match[2] === "亿" ? 100000000
+        : match[2]?.toUpperCase() === "K" ? 1000
+          : match[2]?.toUpperCase() === "M" ? 1000000
+            : match[2]?.toUpperCase() === "B" ? 1000000000 : 1;
+    const number = Number(match[1]) * multiplier;
+    return Number.isFinite(number) ? Math.max(0, number) : null;
+  };
+  const formatEnglishTokenUnit = (value) => {
+    const number = parseTokenUnit(value);
+    if (number === null) return String(value ?? "--");
+    const compact = (divisor, suffix) => `${Number((number / divisor).toFixed(2))}${suffix}`;
+    if (number >= 1000000000) return compact(1000000000, "B");
+    if (number >= 1000000) return compact(1000000, "M");
+    if (number >= 1000) return compact(1000, "K");
+    return String(Math.round(number));
+  };
+  const formatLocalizedTokenUnit = (value, language) => language === "en"
+    ? formatEnglishTokenUnit(value)
+    : formatChineseTokenUnit(parseTokenUnit(value));
   const formatReset = (timestamp) => {
     if (!timestamp) return "重置时间未知";
     const date = new Date(Number(timestamp) * 1000);
@@ -241,7 +264,7 @@
       const value = metric.value || metricValue(metric, new RegExp(`^${compactLabel}\\s*`));
       const numericValue = Number(String(value).replace(/,/g, ""));
       const displayValue = id.endsWith("Tokens") && Number.isFinite(numericValue)
-        ? formatChineseTokenUnit(numericValue)
+        ? String(Math.max(0, Math.round(numericValue)))
         : value;
       rows.push({ id, label, display: `${compactLabel} ${displayValue}`, value: displayValue, defaultVisible: false });
     }
@@ -464,7 +487,7 @@
       display: grid;
       gap: 2px;
       align-self: flex-end;
-      width: fit-content;
+      width: 100%;
       max-width: 100%;
       min-width: 0;
       margin-top: auto;
@@ -472,15 +495,17 @@
     }
     .usage-mode-switches {
       display: grid;
-      grid-template-columns: repeat(2, max-content);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       align-items: center;
       justify-content: flex-end;
       gap: 6px 10px;
+      width: 100%;
       min-height: 22px;
       white-space: nowrap;
     }
     .usage-mode-toggle {
-      display: inline-flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 24px;
       align-items: center;
       gap: 5px;
       min-width: 0;
@@ -488,6 +513,11 @@
       line-height: 1;
       opacity: .72;
       cursor: pointer;
+    }
+    .usage-mode-toggle > span:first-child {
+      overflow: hidden;
+      text-align: right;
+      text-overflow: ellipsis;
     }
     .usage-mode-toggle input {
       position: absolute;
@@ -541,7 +571,7 @@
       .usage-brand-product { font-size: 10px; }
       .usage-brand-credit { font-size: 8px; }
       .usage-mode-switches { gap: 6px; }
-      .usage-mode-toggle { gap: 3px; font-size: 8px; }
+      .usage-mode-toggle { grid-template-columns: minmax(0, 1fr) 22px; gap: 3px; font-size: 8px; }
       .usage-toggle-track { width: 22px; flex-basis: 22px; }
       .usage-mode-toggle input:checked + .usage-toggle-track::after { transform: translateX(8px); }
       .usage-column-meta { font-size: 9px; }
@@ -623,7 +653,9 @@
           : source.accountType === "api-account" ? t("apiAccount")
             : source.accountType === "api-key" ? t("apiKey") : source.label,
         metrics: source.metrics.map((metric) => {
-          const value = metric.id === "requestStatus" ? localizedStatus : metric.value;
+          const value = metric.id === "requestStatus" ? localizedStatus
+            : metric.id.endsWith("Tokens") ? formatLocalizedTokenUnit(metric.value, t.language)
+              : metric.value;
           return {
             ...metric,
             value,
