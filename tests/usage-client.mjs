@@ -23,6 +23,11 @@ import {
   toOfficialUsageSource,
   validateApiProviderConfig,
 } from "../scripts/usage-client.mjs";
+import { localTokenNextScanDelay } from "../scripts/usage/scheduling.mjs";
+
+assert.equal(localTokenNextScanDelay({ now: 20000, lastActivityAt: 10000, activeScanMs: 2000, idleScanMs: 12000, activeWindowMs: 15000 }), 2000);
+assert.equal(localTokenNextScanDelay({ now: 30001, lastActivityAt: 10000, activeScanMs: 2000, idleScanMs: 12000, activeWindowMs: 15000 }), 12000);
+assert.equal(localTokenNextScanDelay({ now: 30001, lastActivityAt: null, activeScanMs: 2000, idleScanMs: 12000, activeWindowMs: 15000 }), 12000);
 
 assert.deepEqual(parseAppServerLine('{"id":1,"result":{}}'), { id: 1, result: {} });
 assert.equal(parseAppServerLine("  "), null);

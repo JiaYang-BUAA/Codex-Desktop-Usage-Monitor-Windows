@@ -1,38 +1,25 @@
 (() => {
-  const STATE_KEY = "__CODEX_USAGE_MONITOR_STATE__";
-  const USAGE_KEY = "__CODEX_USAGE_MONITOR__";
-  const HOST_ID = "codex-usage-monitor";
-  const SETTINGS_KEY = "codex-usage-monitor-settings-v1";
-  const LEGACY_STATE_KEY = "__CODEX_DREAM_SKIN_USAGE_STATE__";
-  const LEGACY_THEME_STATE_KEY = "__CODEX_DREAM_SKIN_STATE__";
-  const LEGACY_USAGE_KEY = "__CODEX_DREAM_SKIN_USAGE__";
-  const LEGACY_HOST_ID = "codex-dream-skin-usage";
-  const LEGACY_SETTINGS_KEY = "codex-dream-skin-usage-settings-v1";
-  const REFRESH_INTERVAL_MS = 60000;
-  const MAX_SELECTED_METRICS = 8;
-  const MAX_MINIMAL_SELECTED_METRICS = 14;
+  const modules = window.__CODEX_USAGE_MONITOR_MODULES__;
+  if (!modules?.constants || !modules?.i18n || !modules?.placement || !modules?.update) {
+    throw new Error("Codex Usage Monitor modules are incomplete.");
+  }
+  const {
+    VERSION, STATE_KEY, USAGE_KEY, HOST_ID, SETTINGS_KEY, PREVIOUS_SETTINGS_KEY,
+    REFRESH_INTERVAL_MS, LAYOUT_FALLBACK_INTERVAL_MS, COUNTDOWN_INTERVAL_MS,
+    PLACEMENT_DEBOUNCE_MS, UPDATE_CHECK_INTERVAL_MS, MAX_SELECTED_METRICS,
+    MAX_MINIMAL_SELECTED_METRICS,
+  } = modules.constants;
+  const { createTranslator } = modules.i18n;
+  const { findPlacement, configurePosition } = modules.placement;
+  const { checkForUpdate } = modules.update;
   const TASK_METRIC_IDS = new Set(["currentTaskTokens", "lastTurnTokens"]);
   const TASK_METRIC_FALLBACKS = [
     { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 --", value: "--", defaultVisible: false },
     { id: "lastTurnTokens", label: "上次对话消耗 Token", display: "上次 --", value: "--", defaultVisible: false },
   ];
 
-  const previousUsage = window[STATE_KEY]?.usage || window[USAGE_KEY] || window[LEGACY_STATE_KEY]?.usage || window[LEGACY_THEME_STATE_KEY]?.usage || window[LEGACY_USAGE_KEY] || null;
+  const previousUsage = window[STATE_KEY]?.usage || window[USAGE_KEY] || null;
   try { window[STATE_KEY]?.cleanup?.(); } catch {}
-  try { window[LEGACY_STATE_KEY]?.cleanup?.(); } catch {}
-  try { window[LEGACY_THEME_STATE_KEY]?.cleanup?.(); } catch {}
-  document.getElementById(LEGACY_HOST_ID)?.remove();
-
-  const root = document.documentElement;
-  root?.classList.remove("codex-dream-skin");
-  root?.removeAttribute("data-dream-shell");
-  root?.removeAttribute("data-dream-theme");
-  root?.removeAttribute("data-dream-mode");
-  root?.removeAttribute("data-dream-copy");
-  document.querySelectorAll(".dream-home, .dream-skin-home, .dream-home-shell, .dream-skin-home-shell")
-    .forEach((node) => node.classList.remove("dream-home", "dream-skin-home", "dream-home-shell", "dream-skin-home-shell"));
-  document.getElementById("codex-dream-skin-style")?.remove();
-  document.getElementById("codex-dream-skin-chrome")?.remove();
 
   const setText = (node, value) => {
     const text = String(value ?? "");
@@ -144,7 +131,7 @@
   };
   const loadSettings = () => {
     try {
-      const value = JSON.parse(localStorage.getItem(SETTINGS_KEY) || localStorage.getItem(LEGACY_SETTINGS_KEY) || "null");
+      const value = JSON.parse(localStorage.getItem(SETTINGS_KEY) || localStorage.getItem(PREVIOUS_SETTINGS_KEY) || "null");
       const metrics = value?.metrics && typeof value.metrics === "object" ? value.metrics : {};
       return {
         metrics: Object.fromEntries(Object.entries(metrics).map(([id, ids]) => [id, Array.isArray(ids) ? ids.map((item) => item === "dayTokens" ? "todayTokens" : item).filter((item) => typeof item === "string").slice(0, 12) : []])),
@@ -153,15 +140,20 @@
         unifiedMetricsVersion: Number(value?.unifiedMetricsVersion) || 0,
         minimalMode: Boolean(value?.minimalMode),
         countdownVisualization: Boolean(value?.countdownVisualization),
+        englishUi: Boolean(value?.englishUi),
+        updateNotifications: Boolean(value?.updateNotifications),
       };
     } catch {
-      return { metrics: {}, apiKeyMetricsVersion: 0, officialMetricsVersion: 0, unifiedMetricsVersion: 0, minimalMode: false, countdownVisualization: false };
+      return {
+        metrics: {}, apiKeyMetricsVersion: 0, officialMetricsVersion: 0, unifiedMetricsVersion: 0,
+        minimalMode: false, countdownVisualization: false, englishUi: false, updateNotifications: false,
+      };
     }
   };
   const saveSettings = (value) => {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(value));
-      localStorage.removeItem(LEGACY_SETTINGS_KEY);
+      localStorage.removeItem(PREVIOUS_SETTINGS_KEY);
     } catch {}
   };
   const selectedMetrics = (source, settings) => {
@@ -261,44 +253,12 @@
       ? apiKeyMetrics(source)
       : source.accountType === "api-account" ? apiAccountMetrics(source) : officialMetrics(source),
   });
-  const box = (node) => {
-    if (!node) return null;
-    const rect = node.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right, bottom: rect.bottom };
-  };
-  const isVisible = (node) => {
-    const rect = node?.getBoundingClientRect();
-    return Boolean(rect && rect.width > 0 && rect.height > 0);
-  };
-  const controlText = (node) => `${node.getAttribute("aria-label") || ""} ${node.getAttribute("title") || ""} ${node.textContent || ""}`.trim();
-  const isApprovalControl = (node) => /(?:替我审批|请求批准|完全访问(?:权限)?|自定义(?:\s*\(config\.toml\))?|approve|approval|full access|custom\s*\(config\.toml\))/i.test(controlText(node));
-
-  const findPlacement = () => {
-    const composerSelector = '.composer-surface-chrome, [data-testid="composer"], [data-testid*="composer-"]';
-    const composers = [...document.querySelectorAll(composerSelector)].filter(isVisible);
-    const editables = [...document.querySelectorAll('textarea, [contenteditable="true"]')]
-      .filter((node) => isVisible(node) && !node.closest(`#${HOST_ID}`));
-    const nearestComposer = (editable) => {
-      const explicit = editable.closest(composerSelector);
-      if (explicit && isVisible(explicit)) return explicit;
-      let current = editable.parentElement;
-      for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
-        const rect = box(current);
-        if (rect && rect.height >= 56 && rect.height <= 260 && current.querySelectorAll('button, [role="button"]').length >= 2) return current;
-      }
-      return null;
-    };
-    let composer = editables.map(nearestComposer).find(Boolean) || composers.at(-1) || null;
-    if (!composer) return null;
-    return { composer };
-  };
-
   const markup = `
-    <button class="usage-summary" type="button" aria-label="Codex 用量详情" aria-expanded="false">
+    <button class="usage-summary" type="button" aria-label="Codex usage details" aria-expanded="false">
       <span class="usage-refresh-ring" aria-hidden="true" hidden></span>
-      <span class="usage-summary-items"><span class="usage-summary-item">用量 --</span></span>
+      <span class="usage-summary-items"><span class="usage-summary-item">Usage --</span></span>
     </button>
-    <div class="usage-popover" role="dialog" aria-label="用量显示设置" hidden>
+    <div class="usage-popover" role="dialog" aria-label="Usage display settings" hidden>
       <div class="usage-columns"></div>
     </div>`;
   const css = `
@@ -497,7 +457,8 @@
       opacity: .55;
       white-space: nowrap;
     }
-    .usage-brand-product { font-size: 12px; }
+    .usage-brand-product { color: inherit; font-size: 12px; text-decoration: none; }
+    .usage-brand-product[href] { text-decoration: underline; text-underline-offset: 2px; }
     .usage-brand-credit { font-size: 9px; font-weight: 450; text-align: right; }
     .usage-column-footer {
       display: grid;
@@ -510,10 +471,11 @@
       padding-top: 4px;
     }
     .usage-mode-switches {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(2, max-content);
       align-items: center;
       justify-content: flex-end;
-      gap: 10px;
+      gap: 6px 10px;
       min-height: 22px;
       white-space: nowrap;
     }
@@ -608,15 +570,31 @@
     ? MAX_MINIMAL_SELECTED_METRICS
     : MAX_SELECTED_METRICS;
 
+  const refreshUpdateBadge = async (host, settings = loadSettings(), force = false) => {
+    if (!host?.shadowRoot || !settings.updateNotifications) return;
+    const result = await checkForUpdate({ currentVersion: VERSION, intervalMs: UPDATE_CHECK_INTERVAL_MS, force });
+    if (!result?.available || !host?.shadowRoot) return;
+    const t = createTranslator(settings.englishUi ? "en" : "zh");
+    const product = host.shadowRoot.querySelector(".usage-brand-product");
+    if (!product) return;
+    product.textContent = t("updateAvailable", { version: result.latestVersion });
+    product.title = t("updateTitle", { version: result.latestVersion });
+    product.href = result.url;
+  };
+
   const updateCountdowns = (host, value) => {
     if (!host?.shadowRoot) return;
     const usage = normalizeUsage(value);
+    const settings = loadSettings();
+    const t = createTranslator(settings.englishUi ? "en" : "zh");
     const now = Date.now();
     const remainingMs = finiteNumber(usage.nextRefreshAt)
       ? Math.max(0, Number(usage.nextRefreshAt) - now)
       : null;
     const seconds = remainingMs === null ? null : Math.ceil(remainingMs / 1000);
-    setText(host.shadowRoot.querySelector(".usage-refresh-countdown"), `刷新 ${seconds === null ? "--" : `${seconds}秒后`}`);
+    setText(host.shadowRoot.querySelector(".usage-refresh-countdown"), t("refreshIn", {
+      seconds: seconds === null ? "--" : t.language === "en" ? `${seconds}s` : `${seconds}秒后`,
+    }));
     const ring = host.shadowRoot.querySelector(".usage-refresh-ring");
     if (ring) {
       const progress = remainingMs === null ? 0 : Math.max(0, Math.min(1, 1 - remainingMs / REFRESH_INTERVAL_MS));
@@ -628,13 +606,33 @@
     if (!host?.shadowRoot) return;
     const usage = normalizeUsage(value);
     const settings = loadSettings();
+    const t = createTranslator(settings.englishUi ? "en" : "zh");
     const apiKeySource = Object.values(usage.sources).find((item) => item.accountType === "api-key")
       || normalizeSource({ id: "api-key", label: "API Key", accountType: "api-key", status: "unavailable", error: "未配置 API key" }, "api-key");
     const sources = [
       usage.sources.official || normalizeSource({ id: "official", label: "官方订阅", accountType: "subscription", status: "unavailable" }, "official"),
       usage.sources["api-account"] || normalizeSource({ id: "api-account", label: "API 账户", accountType: "api-account", status: "unavailable", error: "未配置 API 账户令牌" }, "api-account"),
       { ...apiKeySource, label: "API Key" },
-    ].map(selectableSource);
+    ].map(selectableSource).map((source) => {
+      const localizedStatus = source.status === "loading" ? t("loading") : source.status === "ready" ? t("ready")
+        : source.status === "stale" ? t("stale") : source.status === "rate-limited" ? t("rateLimited")
+          : source.status === "error" ? t("error") : t("unavailable");
+      return {
+        ...source,
+        label: source.id === "official" ? t("official")
+          : source.accountType === "api-account" ? t("apiAccount")
+            : source.accountType === "api-key" ? t("apiKey") : source.label,
+        metrics: source.metrics.map((metric) => {
+          const value = metric.id === "requestStatus" ? localizedStatus : metric.value;
+          return {
+            ...metric,
+            value,
+            label: t.metric(metric.id, metric.label),
+            display: `${t.compact(metric.id, metric.label)} ${value || "--"}`,
+          };
+        }),
+      };
+    });
     let selected = sources.flatMap((source) => selectedMetrics(source, settings).map((metric) => ({ source, metric })));
     const selectedLimit = selectedMetricLimit(settings);
     let settingsChanged = false;
@@ -664,7 +662,7 @@
     if (refreshRing) refreshRing.hidden = !settings.countdownVisualization;
     const summaryRoot = shadow.querySelector(".usage-summary-items");
     if (summaryRoot) {
-      const items = selected.length ? selected : [{ source: null, metric: { display: "用量 --" } }];
+      const items = selected.length ? selected : [{ source: null, metric: { display: t("usageUnavailable") } }];
       summaryRoot.replaceChildren(...items.map(({ source, metric }) => {
         const item = document.createElement("span");
         item.className = "usage-summary-item";
@@ -673,14 +671,15 @@
           item.dataset.source = source.id;
           item.dataset.metric = metric.id;
           const groupLabel = source.id === "official" && TASK_METRIC_IDS.has(metric.id)
-            ? "本次任务相关"
+            ? t("taskSection")
             : source.label;
           item.title = `${groupLabel} · ${metric.label}：${metric.value || "--"}`;
         }
         return item;
       }));
     }
-    shadow.querySelector(".usage-summary")?.setAttribute("aria-label", `Codex 用量，已显示 ${selected.length} 项`);
+    shadow.querySelector(".usage-summary")?.setAttribute("aria-label", t("displayedItems", { count: selected.length }));
+    shadow.querySelector(".usage-popover")?.setAttribute("aria-label", t("displaySettings"));
     const columns = shadow.querySelector(".usage-columns");
     if (columns) {
       const selectedKeys = new Set(selected.map((item) => `${item.source.id}:${item.metric.id}`));
@@ -692,7 +691,9 @@
         title.className = "usage-column-title";
         const status = document.createElement("span");
         status.className = "usage-status";
-        const statusText = source.status === "loading" ? "请求中" : source.status === "ready" ? "正常" : source.status === "stale" ? "数据过期" : source.status === "rate-limited" ? "请求受限" : source.status === "error" ? "请求失败" : "暂无数据";
+        const statusText = source.status === "loading" ? t("loading") : source.status === "ready" ? t("ready")
+          : source.status === "stale" ? t("stale") : source.status === "rate-limited" ? t("rateLimited")
+            : source.status === "error" ? t("error") : t("unavailable");
         status.title = source.error || statusText;
         status.setAttribute("aria-label", statusText);
         const heading = document.createElement("span");
@@ -743,10 +744,10 @@
           taskTitle.className = "usage-column-title usage-column-subsection-title";
           const taskStatus = document.createElement("span");
           taskStatus.className = "usage-status";
-          taskStatus.title = taskReady ? "当前任务数据正常" : "暂无当前任务数据";
-          taskStatus.setAttribute("aria-label", taskReady ? "正常" : "暂无数据");
+          taskStatus.title = taskReady ? t("taskReady") : t("taskUnavailable");
+          taskStatus.setAttribute("aria-label", taskReady ? t("ready") : t("unavailable"));
           const taskHeading = document.createElement("span");
-          taskHeading.textContent = "本次任务相关";
+          taskHeading.textContent = t("taskSection");
           taskTitle.append(taskStatus, taskHeading);
           taskSection.append(taskTitle, createRows(taskMetrics));
           column.append(taskSection);
@@ -756,7 +757,12 @@
           footer.className = "usage-column-footer";
           const switches = document.createElement("div");
           switches.className = "usage-mode-switches";
-          for (const [setting, labelText] of [["minimalMode", "极简模式"], ["countdownVisualization", "倒计时可视化"]]) {
+          for (const [setting, labelText] of [
+            ["minimalMode", t("minimalMode")],
+            ["countdownVisualization", t("countdownVisualization")],
+            ["englishUi", t("englishUi")],
+            ["updateNotifications", t("updateNotifications")],
+          ]) {
             const toggle = document.createElement("label");
             toggle.className = "usage-mode-toggle";
             const toggleLabel = document.createElement("span");
@@ -776,23 +782,25 @@
           meta.className = "usage-column-meta";
           const maximum = document.createElement("span");
           maximum.textContent = settings.minimalMode
-            ? `极简最多 ${MAX_MINIMAL_SELECTED_METRICS} 项`
-            : `最多显示 ${MAX_SELECTED_METRICS} 项`;
+            ? t("minimalMaximum", { count: MAX_MINIMAL_SELECTED_METRICS })
+            : t("maximum", { count: MAX_SELECTED_METRICS });
           const separator = document.createElement("span");
           separator.setAttribute("aria-hidden", "true");
           separator.textContent = "·";
           const countdown = document.createElement("span");
           countdown.className = "usage-refresh-countdown";
-          countdown.textContent = "刷新 --";
+          countdown.textContent = t("refreshIn", { seconds: "--" });
           meta.append(maximum, separator, countdown);
           footer.append(switches, meta);
           column.append(footer);
 
           const brand = document.createElement("div");
           brand.className = "usage-column-brand";
-          const product = document.createElement("span");
+          const product = document.createElement("a");
           product.className = "usage-brand-product";
-          product.textContent = "Codex Usage Monitor for Windows v1.8.7";
+          product.textContent = `Codex Usage Monitor for Windows v${VERSION}`;
+          product.rel = "noreferrer";
+          product.target = "_blank";
           const credit = document.createElement("span");
           credit.className = "usage-brand-credit";
           credit.textContent = "—— Designed by +羊 and Codex";
@@ -803,58 +811,19 @@
       }));
     }
     updateCountdowns(host, usage);
+    refreshUpdateBadge(host, settings);
     host.dataset.rendered = "true";
   };
 
-  const configurePosition = (host, composer) => {
-    const composerBox = box(composer);
-    const controls = [...composer.querySelectorAll('button, [role="button"]')]
-      .filter((node) => isVisible(node) && !node.closest(`#${HOST_ID}`));
-    const approval = controls.find(isApprovalControl) || null;
-    const controlBoxes = controls.map((node) => ({ node, rect: box(node) }));
-    const bottomCenter = controlBoxes.reduce((maximum, item) => Math.max(maximum, item.rect.y + item.rect.height / 2), -Infinity);
-    const bottomRow = controlBoxes
-      .filter((item) => Math.abs(item.rect.y + item.rect.height / 2 - bottomCenter) <= 14)
-      .sort((left, right) => left.rect.x - right.rect.x);
-    const anchor = approval || bottomRow[0]?.node || null;
-    const anchorBox = box(anchor);
-    const rowCenter = anchorBox ? anchorBox.y + anchorBox.height / 2 : composerBox.bottom - 22;
-    const controlsToRight = controls
-      .map((node) => ({ node, rect: box(node) }))
-      .filter(({ node, rect }) => node !== anchor && rect.x >= (anchorBox?.right ?? composerBox.x) &&
-        Math.abs(rect.y + rect.height / 2 - rowCenter) <= 14);
-    const anchorRight = anchorBox?.right ?? composerBox.x + 12;
-    const placementX = anchorRight + 8;
-    const rightBoundary = controlsToRight.reduce((minimum, value) => Math.min(minimum, value.rect.x), composerBox.right);
-    const available = Math.max(0, Math.floor(rightBoundary - placementX - 8));
-    const reference = anchor || controls.find((node) => /(?:\b5\.\d|model|极高|high)/i.test(controlText(node))) || controls[0];
-    if (reference) {
-      const referenceStyle = getComputedStyle(reference);
-      host.style.setProperty("--usage-color", referenceStyle.color);
-      if (referenceStyle.fontSize) host.style.setProperty("--usage-font-size", referenceStyle.fontSize);
-      const surface = getComputedStyle(composer).backgroundColor;
-      host.style.setProperty("--usage-surface", surface && surface !== "rgba(0, 0, 0, 0)" ? surface : "rgba(255, 255, 255, .96)");
-    }
-    const hostHeight = box(host)?.height || 28;
-    const placementY = Math.max(8, Math.min(window.innerHeight - hostHeight - 8, rowCenter - hostHeight / 2));
-    host.style.setProperty("--usage-left", `${Math.round(placementX)}px`);
-    host.style.setProperty("--usage-top", `${Math.round(placementY)}px`);
-    host.style.setProperty("--usage-max-width", `${available}px`);
-    const popoverWidth = Math.max(280, Math.min(720, window.innerWidth - 24));
-    const popoverShift = Math.min(0, window.innerWidth - 12 - placementX - popoverWidth);
-    host.style.setProperty("--usage-popover-width", `${popoverWidth}px`);
-    host.style.setProperty("--usage-popover-shift", `${Math.max(12 - placementX, popoverShift)}px`);
-    host.dataset.anchor = approval ? "approval" : anchor ? "control" : "composer-left";
-    host.dataset.compact = String(available < 210);
-    host.hidden = available < 104;
-  };
-
   const ensure = () => {
-    const placement = findPlacement();
+    const placement = findPlacement(HOST_ID);
     const state = window[STATE_KEY];
-    if (!placement) {
+    if (!placement.composer) {
       document.getElementById(HOST_ID)?.remove();
-      if (state) state.host = null;
+      if (state) {
+        state.host = null;
+        state.health = { ok: false, reason: placement.reason, strategy: placement.strategy, checkedAt: Date.now() };
+      }
       return null;
     }
     let host = document.getElementById(HOST_ID);
@@ -880,11 +849,12 @@
         if (!(input instanceof HTMLInputElement) || input.type !== "checkbox") return;
         const state = window[STATE_KEY];
         const usage = normalizeUsage(state?.usage || window[USAGE_KEY]);
-        if (["minimalMode", "countdownVisualization"].includes(input.dataset.setting)) {
+        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications"].includes(input.dataset.setting)) {
           const settings = loadSettings();
           settings[input.dataset.setting] = input.checked;
           saveSettings(settings);
           render(host, usage);
+          if (input.dataset.setting === "updateNotifications" && input.checked) refreshUpdateBadge(host, settings, true);
           return;
         }
         if (!input.dataset.metric || !input.dataset.source) return;
@@ -912,8 +882,20 @@
     const portal = document.body || placement.composer.parentElement;
     const moved = host.parentElement !== portal;
     if (moved) portal.appendChild(host);
-    configurePosition(host, placement.composer);
-    if (state) state.host = host;
+    const position = configurePosition(host, placement.composer, HOST_ID);
+    host.dataset.placementStrategy = placement.strategy;
+    host.dataset.status = position.ok ? "ready" : "degraded";
+    if (state) {
+      state.host = host;
+      state.health = {
+        ok: position.ok,
+        reason: position.reason,
+        strategy: placement.strategy,
+        anchor: position.anchor,
+        availableWidth: position.availableWidth,
+        checkedAt: Date.now(),
+      };
+    }
     if (created || moved || host.dataset.rendered !== "true") render(host, state?.usage || window[USAGE_KEY]);
     return host;
   };
@@ -924,16 +906,25 @@
     scheduler.timeout = setTimeout(() => {
       scheduler.timeout = null;
       ensure();
-    }, 120);
+    }, PLACEMENT_DEBOUNCE_MS);
   };
   const observer = new MutationObserver(scheduleEnsure);
   observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
-  const timer = setInterval(ensure, 4000);
+  const timer = setInterval(() => {
+    if (!document.hidden) ensure();
+  }, LAYOUT_FALLBACK_INTERVAL_MS);
   const countdownTimer = setInterval(() => {
+    if (document.hidden) return;
     const state = window[STATE_KEY];
     if (state?.host) updateCountdowns(state.host, state.usage);
-  }, 250);
+  }, COUNTDOWN_INTERVAL_MS);
   const resizeHandler = scheduleEnsure;
+  const visibilityHandler = () => {
+    if (document.hidden) return;
+    ensure();
+    const state = window[STATE_KEY];
+    if (state?.host) updateCountdowns(state.host, state.usage);
+  };
   const outsideHandler = (event) => {
     const host = document.getElementById(HOST_ID);
     if (!host || host.dataset.open !== "true" || host.contains(event.target)) return;
@@ -944,6 +935,7 @@
   };
   window.addEventListener("resize", resizeHandler, { passive: true });
   window.addEventListener("pointerdown", outsideHandler, true);
+  document.addEventListener("visibilitychange", visibilityHandler);
 
   window[STATE_KEY] = {
     observer,
@@ -951,15 +943,17 @@
     countdownTimer,
     scheduler,
     resizeHandler,
+    visibilityHandler,
     outsideHandler,
     host: null,
+    health: { ok: false, reason: "initializing", strategy: "none", checkedAt: Date.now() },
     usage: normalizeUsage(previousUsage),
     ensure,
+    diagnose() { return { ...this.health }; },
     updateUsage(value) {
       const usage = preserveMetricsWhileLoading(this.usage, normalizeUsage(value));
       this.usage = usage;
       window[USAGE_KEY] = usage;
-      window[LEGACY_USAGE_KEY] = usage;
       const host = ensure();
       if (host) render(host, usage);
       return true;
@@ -971,19 +965,15 @@
       if (scheduler.timeout) clearTimeout(scheduler.timeout);
       window.removeEventListener("resize", resizeHandler);
       window.removeEventListener("pointerdown", outsideHandler, true);
+      document.removeEventListener("visibilitychange", visibilityHandler);
       document.getElementById(HOST_ID)?.remove();
-      document.getElementById(LEGACY_HOST_ID)?.remove();
       delete window[USAGE_KEY];
       delete window[STATE_KEY];
-      delete window[LEGACY_USAGE_KEY];
-      delete window[LEGACY_STATE_KEY];
+      delete window.__CODEX_USAGE_MONITOR_MODULES__;
       return true;
     },
   };
   window[USAGE_KEY] = window[STATE_KEY].usage;
-  // Temporary aliases let an already-running pre-1.0 injector update the migrated monitor.
-  window[LEGACY_STATE_KEY] = window[STATE_KEY];
-  window[LEGACY_USAGE_KEY] = window[STATE_KEY].usage;
   const host = ensure();
   return {
     installed: Boolean(host),

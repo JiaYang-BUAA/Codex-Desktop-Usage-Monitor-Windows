@@ -9,7 +9,7 @@ Track official subscription quota and reset time, task token usage, API account 
 
 这是一个直接显示在 Windows 版 OpenAI Codex Desktop 输入区域内的用量监视栏。它通过仅绑定本机的 CDP 运行时注入，在 Codex 输入栏旁显示官方订阅周期余量与重置时间、任务 Token、API 账户和 API Key 用量。它不是桌面悬浮窗，也不修改 WindowsApps、`app.asar`、Codex 登录文件或模型配置。
 
-**v1.8.7 更新：**适配新版 Codex Desktop 输入框的滚动容器布局。监视器改为页面顶层固定定位，展开面板不再被输入框裁切，也不会触发横向滚动条；新增对应的溢出容器回归测试，并更新展开面板截图。
+**v2.0.0 更新：**将界面常量、中英文文案、Codex DOM 定位和版本检查拆成独立模块；新增布局策略与失败原因自检、中文/English UI 切换和可选的 GitHub 版本提醒。本机任务日志保持增量读取，并在活跃与空闲状态间自动切换扫描频率；页面隐藏时暂停布局与倒计时刷新。v2.0.0 同时移除了旧版 Dream Skin 运行时兼容代码，保留从 v1 设置到 v2 设置的一次性迁移。
 
 - 直接注入 Codex Desktop 渲染页面，不是独立悬浮窗。
 - 同一面板支持官方订阅、API 账户和 API Key 三种数据源。
@@ -17,6 +17,7 @@ Track official subscription quota and reset time, task token usage, API account 
 - 使用本机 CDP 运行时注入，不修改 Codex 安装文件；凭据使用 Windows DPAPI 持久化保护。
 - 安装器会创建独立的 `Codex Usage Monitor` 桌面快捷方式，一次启动 Codex 与监视器。
 - 官方订阅模式无需额外填写凭据。
+- 支持中文与 English UI；版本提醒默认关闭，开启后最多每 24 小时向 GitHub Releases API 发起一次无凭据请求，只显示可用版本链接，不会自动下载或执行文件。
 
 监视栏位于“替我审批”右侧。普通模式最多显示 8 项数据，极简模式最多显示 14 项。
 
@@ -88,9 +89,9 @@ pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完
 
 ### 1.4 展开监视栏查看和勾选
 
-点击监视栏即可展开三栏面板。左侧“官方订阅”下方另设“本次任务相关”分区，集中显示当前任务累计 Token 和上次对话消耗 Token。每项前的复选框决定是否显示在折叠后的监视栏中，最多显示 8 项；三栏网络数据共用 60 秒刷新周期，官方订阅及本次任务中符合条件的本机 Token 最多约 2 秒更新一次。请求失败时保留上一次成功数据；有缓存时指示灯变为红色，没有可用数据时显示灰色。
+点击监视栏即可展开三栏面板。左侧“官方订阅”下方另设“本次任务相关”分区，集中显示当前任务累计 Token 和上次对话消耗 Token。每项前的复选框决定是否显示在折叠后的监视栏中，最多显示 8 项；三栏网络数据共用 60 秒刷新周期。本机 Token 日志采用增量读取：检测到任务活动后的短时间内约每 2 秒检查一次，空闲后约每 12 秒检查一次。请求失败时保留上一次成功数据；有缓存时指示灯变为红色，没有可用数据时显示灰色。
 
-面板右下角、“Codex Usage Monitor for Windows v1.8.7”标识上方提供两个显示开关以及“最多显示 · 刷新”提示：开启“极简模式”后，折叠监视栏只显示数值与单位，不显示数据项名称，可最多选择 14 项，并在选中 9 项及以上时启用双行压缩布局；普通模式仍最多选择 8 项。开启“倒计时可视化”后，折叠监视栏最左侧显示与文字同色的圆形表盘，绿色指针每 60 秒顺时针旋转一圈。这些选择保存在 Codex 本地页面设置中。
+面板右下角、“Codex Usage Monitor for Windows v2.0.0”标识上方提供四个显示开关以及“最多显示 · 刷新”提示：开启“极简模式”后，折叠监视栏只显示数值与单位，不显示数据项名称，可最多选择 14 项，并在选中 9 项及以上时启用双行压缩布局；普通模式仍最多选择 8 项。开启“倒计时可视化”后，折叠监视栏最左侧显示与文字同色的圆形表盘，绿色指针每 60 秒顺时针旋转一圈。“English UI”在中英文界面间切换；“版本提醒”开启后按最多每天一次的频率检查 GitHub Release，新版可用时只把右下角版本号变成发布页链接。这些选择保存在 Codex 本地页面设置中。
 
 ## 2. 完整说明
 
@@ -268,7 +269,11 @@ CDP 只绑定 `127.0.0.1`，并只连接同一回环端口公布的 Codex 页面
 ```text
 AGENTS.md                     Codex 安装、配置与安全指引
 install.ps1                   当前用户稳定目录安装器
-assets/usage-inject.js         renderer 内的三栏监视器 UI
+assets/usage-constants.js      界面版本、刷新周期和选择上限
+assets/usage-i18n.js           中文与 English UI 文案
+assets/usage-placement.js      Codex DOM 定位适配器和布局诊断
+assets/usage-update.js         可选的 GitHub Release 版本检查
+assets/usage-inject.js         监视栏渲染与交互入口
 config/providers/              无密钥 Provider 示例
 scripts/usage-client.mjs       官方/API 账户/API Key 用量客户端
 scripts/*monitor*.ps1          启动、安装、停止和配置脚本

@@ -6,7 +6,13 @@ import { JSDOM } from "jsdom";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
-const payload = await fs.readFile(path.join(root, "assets", "usage-inject.js"), "utf8");
+const payload = (await Promise.all([
+  "usage-constants.js",
+  "usage-i18n.js",
+  "usage-placement.js",
+  "usage-update.js",
+  "usage-inject.js",
+].map((name) => fs.readFile(path.join(root, "assets", name), "utf8")))).join("\n");
 
 const composerMarkup = (withApproval = true) => `
   <div class="composer-surface-chrome" style="position: relative">
@@ -19,10 +25,9 @@ const composerMarkup = (withApproval = true) => `
   </div>`;
 
 const dom = new JSDOM(`<!doctype html>
-<html class="codex-dream-skin" data-dream-shell="light">
-  <head><style id="codex-dream-skin-style">html { color: pink; }</style></head>
+<html>
+  <head></head>
   <body>
-    <div id="codex-dream-skin-chrome"></div>
     <div id="composer-overflow-root" style="overflow: auto; width: 700px">
       <div id="composer-wrapper" style="position: relative">${composerMarkup()}</div>
     </div>
@@ -34,7 +39,6 @@ const dom = new JSDOM(`<!doctype html>
 });
 
 const { window } = dom;
-window.__CODEX_DREAM_SKIN_STATE__ = { cleanup() { delete window.__CODEX_DREAM_SKIN_STATE__; return true; } };
 window.Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
   const value = (() => {
     if (this.id === "composer-wrapper" || this.matches(".composer-surface-chrome")) return { x: 100, y: 100, width: 700, height: 100 };
@@ -96,9 +100,16 @@ const usage = {
   },
 };
 
+window.localStorage.setItem("codex-usage-monitor-settings-v1", JSON.stringify({
+  metrics: {},
+  minimalMode: false,
+  countdownVisualization: false,
+}));
+
 try {
   const result = window.eval(payload);
   assert.equal(result.installed, true);
+  assert.equal(window.localStorage.getItem("codex-usage-monitor-settings-v1"), null);
   let host = window.document.getElementById("codex-usage-monitor");
   assert.ok(host?.shadowRoot);
   assert.equal(host.parentElement, window.document.body);
@@ -145,7 +156,7 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-summary-item\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*height:\s*100%;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /data-density="packed"[^}]+\.usage-summary-item:nth-child\(2\)\s*\{\s*padding-left:\s*0;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /data-density="packed"[^}]+\.usage-summary-item:nth-child\(2\)::before\s*\{\s*display:\s*none;/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-switches\s*\{[\s\S]*?display:\s*flex;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-switches\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(2, max-content\);/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring\s*\{[\s\S]*?top:\s*0;[\s\S]*?width:\s*13px;[\s\S]*?border:\s*1\.5px solid currentColor;[\s\S]*?background:\s*transparent;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring::before\s*\{[\s\S]*?top:\s*-3px;[\s\S]*?width:\s*3px;[\s\S]*?height:\s*3px;[\s\S]*?background:\s*currentColor/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring::after\s*\{[\s\S]*?width:\s*1\.5px;[\s\S]*?height:\s*calc\(50% \+ \.5px\);[\s\S]*?background:\s*#22c55e;[\s\S]*?transform:\s*rotate\(var\(--usage-refresh-progress\)\);[\s\S]*?transform-origin:\s*50% 100%;/);
@@ -193,17 +204,17 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand span")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v1.8.7", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.0.0", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{\s*font-size:\s*12px;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
   assert.equal(columns[0].querySelector(".usage-column-meta"), null);
   assert.equal(columns[1].querySelector(".usage-column-meta"), null);
   assert.equal(columns[2].querySelector(".usage-column-meta span:first-child").textContent, "最多显示 8 项");
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-meta\s*\{[\s\S]*?justify-content:\s*flex-end;/);
   assert.match(host.shadowRoot.querySelector(".usage-refresh-countdown").textContent, /^刷新 \d+秒后$/);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化"]);
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 2);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "English UI", "版本提醒"]);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 4);
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').firstElementChild.className, "usage-mode-switches");
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').lastElementChild.className, "usage-column-meta");
   assert.equal(columns[2].querySelector(".usage-column-footer").nextElementSibling, columns[2].querySelector(".usage-column-brand"));
@@ -211,7 +222,7 @@ try {
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, true);
 
   host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
-  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).minimalMode, true);
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).minimalMode, true);
   assert.equal(host.dataset.density, "normal");
   assert.equal(host.shadowRoot.querySelector(".usage-column-meta span:first-child").textContent, "极简最多 14 项");
   assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "07-24 12:00", "¥20", "¥5", "不限"]);
@@ -243,12 +254,12 @@ try {
     input.checked = false;
     input.dispatchEvent(new window.Event("change", { bubbles: true }));
   }
-  assert.deepEqual(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).metrics["api-account"], ["balance"]);
+  assert.deepEqual(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).metrics["api-account"], ["balance"]);
   host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
   assert.notEqual(host.dataset.density, "normal");
 
   host.shadowRoot.querySelector('input[data-setting="countdownVisualization"]').click();
-  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).countdownVisualization, true);
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).countdownVisualization, true);
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, false);
   const realDateNow = window.Date.now;
   let ringNow = realDateNow();
@@ -274,7 +285,7 @@ try {
   const densityToggle = host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]');
   assert.equal(densityToggle.checked, true);
   densityToggle.click();
-  assert.deepEqual(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1")).metrics["api-account"], []);
+  assert.deepEqual(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).metrics["api-account"], []);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 4);
   assert.equal(host.dataset.density, "normal");
   host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]').click();
@@ -310,10 +321,21 @@ try {
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
   assert.equal(host.shadowRoot.querySelector('[data-source="api-account"][data-metric="lastModel"]').disabled, false);
 
-  const saved = JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v1"));
+  const saved = JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2"));
   assert.equal(saved.unifiedMetricsVersion, 1);
   assert.equal(saved.source, undefined);
   assert.deepEqual(saved.metrics["api-account"], ["totalTokens", "todayTokens"]);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
+  assert.match(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().strategy, /composer|editable/);
+
+  host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
+  assert.deepEqual(
+    [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-title span:last-child").textContent),
+    ["Official Subscription", "API Account", "API Key"],
+  );
+  assert.equal(host.shadowRoot.querySelector(".usage-column-subsection-title span:last-child").textContent, "Current Task");
+  assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5-hour remaining");
+  host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
 
   window.document.getElementById("composer-wrapper").innerHTML = composerMarkup();
   await new Promise((resolve) => setTimeout(resolve, 250));
@@ -323,8 +345,21 @@ try {
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, false);
 
+  window.document.getElementById("composer-wrapper").replaceChildren();
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, false);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().reason, "visible-editable-not-found");
+  window.document.getElementById("composer-wrapper").innerHTML = composerMarkup();
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure()?.shadowRoot);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
+
+  const reinjected = window.eval(payload);
+  assert.equal(reinjected.installed, true);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
+
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.cleanup(), true);
   assert.equal(window.document.getElementById("codex-usage-monitor"), null);
+  assert.equal(window.__CODEX_USAGE_MONITOR_MODULES__, undefined);
 } finally {
   dom.window.close();
 }

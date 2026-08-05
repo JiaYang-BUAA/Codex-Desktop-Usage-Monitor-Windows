@@ -50,7 +50,8 @@ foreach ($file in $powerShellFiles) {
 }
 
 $javascriptFiles = @(
-  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\validate-provider.mjs',
+  'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js', 'assets\usage-update.js',
+  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\validate-provider.mjs',
   'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs'
 )
 foreach ($relative in $javascriptFiles) {
@@ -111,7 +112,8 @@ if ($successProbe.TimedOut -or $successProbe.ExitCode -ne 0 -or $successProbe.St
 }
 
 $runtimeFiles = @(
-  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\monitor-utils.ps1',
+  'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js', 'assets\usage-update.js',
+  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1',
   'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\launch-codex-monitor-hidden.vbs',
   'scripts\install-monitor-launcher.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1',
   'scripts\configure-api-account.ps1', 'scripts\clear-api-account.ps1', 'scripts\configure-token-baseline.ps1', 'scripts\clear-token-baseline.ps1'
@@ -141,7 +143,10 @@ if ($runtimeSource -notmatch 'usageStartPromise = usageClient\.start\(\)') { thr
 if ($runtimeSource -notmatch '注入验证探针失败，将继续重试' -or $runtimeSource -notmatch '\$detailText\s*=.*\[string\]\(Get-Content') { throw 'Monitor startup retry and empty-log safety contract is missing.' }
 if ($runtimeSource -notmatch '\$owned = @\(Get-CodexUsageInjectorProcesses\)') { throw 'Cross-port injector cleanup contract is missing.' }
 if ($runtimeSource -notmatch 'rate-limited' -or $runtimeSource -notmatch 'HTTP 429') { throw 'API rate-limit backoff contract is missing.' }
-if ($runtimeSource -notmatch 'minimalMode' -or $runtimeSource -notmatch 'countdownVisualization' -or $runtimeSource -notmatch 'usage-refresh-ring') { throw 'Display mode controls are missing.' }
+if ($runtimeSource -notmatch 'minimalMode' -or $runtimeSource -notmatch 'countdownVisualization' -or $runtimeSource -notmatch 'englishUi' -or $runtimeSource -notmatch 'updateNotifications' -or $runtimeSource -notmatch 'usage-refresh-ring') { throw 'Display mode controls are missing.' }
+if ($runtimeSource -notmatch 'placementStrategy' -or $runtimeSource -notmatch 'visible-editable-not-found' -or $runtimeSource -notmatch 'diagnose\(\)') { throw 'DOM compatibility diagnostics are missing.' }
+if ($runtimeSource -notmatch 'LOCAL_TOKEN_IDLE_SCAN_MS\s*=\s*12000' -or $runtimeSource -notmatch 'localTokenNextScanDelay') { throw 'Adaptive local-token scan contract is missing.' }
+if ($runtimeSource -match '(?i)dream[ -]?skin|CODEX_DREAM|codex-dream') { throw 'Removed Dream Skin runtime compatibility is still present.' }
 if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state contract is missing.' }
 if ($runtimeSource -notmatch '--remote-debugging-address=127\.0\.0\.1') { throw 'Local CDP binding contract is missing.' }
 if ($runtimeSource -notmatch 'Codex Usage Monitor\.lnk') { throw 'English shortcut name contract is missing.' }

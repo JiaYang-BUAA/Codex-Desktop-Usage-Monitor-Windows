@@ -5,11 +5,15 @@ import { CombinedUsageClient } from "./usage-client.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
-const usageAsset = path.join(root, "assets", "usage-inject.js");
+const usageAssets = [
+  "usage-constants.js",
+  "usage-i18n.js",
+  "usage-placement.js",
+  "usage-update.js",
+  "usage-inject.js",
+].map((name) => path.join(root, "assets", name));
 const HOST_ID = "codex-usage-monitor";
 const STATE_KEY = "__CODEX_USAGE_MONITOR_STATE__";
-const LEGACY_HOST_ID = "codex-dream-skin-usage";
-const LEGACY_STATE_KEY = "__CODEX_DREAM_SKIN_USAGE_STATE__";
 const TARGET_ABSENCE_EXIT_MS = 60000;
 
 function parseArgs(argv) {
@@ -195,7 +199,7 @@ function isMonitorTarget(target) {
 }
 
 async function readUsagePayload() {
-  return fs.readFile(usageAsset, "utf8");
+  return (await Promise.all(usageAssets.map((asset) => fs.readFile(asset, "utf8")))).join("\n");
 }
 
 function updateExpression(value) {
@@ -203,7 +207,7 @@ function updateExpression(value) {
 }
 
 function removeExpression() {
-  return `(() => { let removed = false; for (const key of [${JSON.stringify(STATE_KEY)}, ${JSON.stringify(LEGACY_STATE_KEY)}, "__CODEX_DREAM_SKIN_STATE__"]) { try { if (window[key]?.cleanup?.()) removed = true; } catch {} } for (const id of [${JSON.stringify(HOST_ID)}, ${JSON.stringify(LEGACY_HOST_ID)}]) document.getElementById(id)?.remove(); return removed; })()`;
+  return `(() => { let removed = false; try { if (window[${JSON.stringify(STATE_KEY)}]?.cleanup?.()) removed = true; } catch {} document.getElementById(${JSON.stringify(HOST_ID)})?.remove(); return removed; })()`;
 }
 
 async function applyMonitor(session, usage) {
@@ -223,7 +227,7 @@ async function removeFromSession(session) {
 }
 
 async function verifySession(session) {
-  return session.evaluate(`(() => { const host = document.getElementById(${JSON.stringify(HOST_ID)}); return { installed: Boolean(host?.shadowRoot), anchor: host?.dataset?.anchor || null, status: host?.dataset?.status || null }; })()`);
+  return session.evaluate(`(() => { const host = document.getElementById(${JSON.stringify(HOST_ID)}); const health = window[${JSON.stringify(STATE_KEY)}]?.diagnose?.() || null; return { installed: Boolean(host?.shadowRoot), anchor: host?.dataset?.anchor || null, status: host?.dataset?.status || null, strategy: host?.dataset?.placementStrategy || health?.strategy || null, reason: health?.reason || null }; })()`);
 }
 
 async function syncCurrentThread(session, usageClient) {

@@ -14,9 +14,14 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import {
+  LOCAL_TOKEN_ACTIVE_SCAN_MS,
+  LOCAL_TOKEN_IDLE_SCAN_MS,
+  LOCAL_TOKEN_ACTIVE_WINDOW_MS,
+  localTokenNextScanDelay,
+} from "./usage/scheduling.mjs";
 
 const DEFAULT_REFRESH_MS = 60000;
-const LOCAL_TOKEN_SCAN_MS = 2000;
 const LOCAL_TOKEN_COUNTER_SCHEMA_VERSION = 7;
 const LOCAL_TOKEN_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 const TOKEN_COUNT_MARKER = Buffer.from('"token_count"', "utf8");
@@ -484,11 +489,13 @@ function discoverRecentSessionFiles(root, dayStart, currentThreadId = null) {
 
 function readAppendedUsageLines(filePath, fileState, onLine) {
   let handle = null;
+  let appendedBytes = 0;
   try {
     handle = openSync(filePath, "r");
     const size = fstatSync(handle).size;
     if (size < fileState.offset) fileState.offset = 0;
     let readPosition = fileState.offset;
+    const initialPosition = readPosition;
     let pending = Buffer.alloc(0);
     while (readPosition < size) {
       const length = Math.min(LOCAL_TOKEN_READ_CHUNK_BYTES, size - readPosition);
@@ -514,26 +521,34 @@ function readAppendedUsageLines(filePath, fileState, onLine) {
       pending = current.subarray(lineStart);
     }
     fileState.offset = readPosition - pending.length;
+    appendedBytes = Math.max(0, readPosition - initialPosition);
   } finally {
     if (handle !== null) closeSync(handle);
   }
+  return appendedBytes;
 }
 
 export class LocalCodexTokenTracker {
   constructor({
     sessionRoot = resolveLocalTokenSessionRoot(process.env.CODEX_USAGE_SESSION_ROOT),
     counterPath = resolveLocalTokenCounterPath(process.env.CODEX_USAGE_OFFICIAL_COUNTER_PATH),
-    scanIntervalMs = LOCAL_TOKEN_SCAN_MS,
+    scanIntervalMs = LOCAL_TOKEN_ACTIVE_SCAN_MS,
+    idleScanIntervalMs = LOCAL_TOKEN_IDLE_SCAN_MS,
+    activeWindowMs = LOCAL_TOKEN_ACTIVE_WINDOW_MS,
     officialModelProviders = null,
     now = () => Date.now(),
     onUpdate = () => {},
   } = {}) {
     this.sessionRoot = sessionRoot ? path.resolve(sessionRoot) : null;
     this.counterPath = counterPath ? path.resolve(counterPath) : null;
-    this.scanIntervalMs = Math.max(500, Number(scanIntervalMs) || LOCAL_TOKEN_SCAN_MS);
+    this.scanIntervalMs = Math.max(500, Number(scanIntervalMs) || LOCAL_TOKEN_ACTIVE_SCAN_MS);
+    this.idleScanIntervalMs = Math.max(1000, Number(idleScanIntervalMs) || LOCAL_TOKEN_IDLE_SCAN_MS);
+    this.activeWindowMs = Math.max(this.scanIntervalMs, Number(activeWindowMs) || LOCAL_TOKEN_ACTIVE_WINDOW_MS);
     this.now = typeof now === "function" ? now : () => Date.now();
     this.onUpdate = onUpdate;
     this.timer = null;
+    this.running = false;
+    this.lastActivityAt = null;
     this.refreshing = null;
     this.fileStates = new Map();
     this.seenEvents = new Set();
@@ -686,6 +701,7 @@ export class LocalCodexTokenTracker {
         ? Math.min(dayStart, this.officialLifetimeCheckpointAt)
         : dayStart;
       const files = discoverRecentSessionFiles(this.sessionRoot, scanStart, this.currentThreadId);
+      let activityDetected = false;
       for (const filePath of files) {
         const state = this.fileStates.get(filePath) || {
           offset: 0,
@@ -703,7 +719,7 @@ export class LocalCodexTokenTracker {
           forkSessionTimestamp: null,
         };
         try {
-          readAppendedUsageLines(filePath, state, (line) => {
+          const appendedBytes = readAppendedUsageLines(filePath, state, (line) => {
             const context = parseLocalTokenContextEvent(line);
             if (context) {
               if (context.kind === "session") {
@@ -786,10 +802,12 @@ export class LocalCodexTokenTracker {
             const nextTodayTokens = this.todayTokens + delta;
             if (Number.isSafeInteger(nextTodayTokens)) this.todayTokens = nextTodayTokens;
           });
+          if (appendedBytes > 0) activityDetected = true;
           this.fileStates.set(filePath, state);
         } catch {}
       }
       const todayTokens = this.currentTokens();
+      if (activityDetected) this.lastActivityAt = now;
       const lifetimeTokens = this.currentLifetimeTokens();
       const currentTask = this.currentThreadId ? this.threadLatest.get(this.currentThreadId) || null : null;
       if (this.counterDirty) {
@@ -815,16 +833,31 @@ export class LocalCodexTokenTracker {
   }
 
   async start() {
+    this.running = true;
     await this.refresh();
-    if (!this.timer) {
-      this.timer = setInterval(() => this.refresh().catch(() => {}), this.scanIntervalMs);
-      this.timer.unref?.();
-    }
+    this.scheduleNextScan();
     return this.view;
   }
 
+  scheduleNextScan() {
+    if (!this.running || this.timer) return;
+    const delay = localTokenNextScanDelay({
+      now: this.now(),
+      lastActivityAt: this.lastActivityAt,
+      activeScanMs: this.scanIntervalMs,
+      idleScanMs: this.idleScanIntervalMs,
+      activeWindowMs: this.activeWindowMs,
+    });
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.refresh().catch(() => {}).finally(() => this.scheduleNextScan());
+    }, delay);
+    this.timer.unref?.();
+  }
+
   async stop() {
-    if (this.timer) clearInterval(this.timer);
+    this.running = false;
+    if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     await this.refreshing?.catch(() => {});
   }
@@ -1765,7 +1798,7 @@ export function mergeRateLimitSnapshot(previous, patch) {
   return merged;
 }
 
-export function resolveCodexExecutable(explicitPath = process.env.CODEX_USAGE_CODEX_PATH || process.env.CODEX_DREAM_SKIN_CODEX_PATH) {
+export function resolveCodexExecutable(explicitPath = process.env.CODEX_USAGE_CODEX_PATH) {
   const candidates = [
     explicitPath,
     process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Programs", "OpenAI Codex CLI", "codex.exe") : null,
@@ -1814,7 +1847,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "1.0.0" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "2.0.0" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");

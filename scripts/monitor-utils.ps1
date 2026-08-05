@@ -10,7 +10,6 @@ $CodexUsagePersistedAccountConfigPath = Join-Path $CodexUsageStateRoot 'account.
 $CodexUsagePersistedAccountTokenPath = Join-Path $CodexUsageStateRoot 'account-token.dpapi'
 $CodexUsagePersistedAccountEntropy = [Text.Encoding]::UTF8.GetBytes('CodexUsageMonitor/v1/APIAccountToken')
 $CodexUsageAccountCounterPath = Join-Path $CodexUsageStateRoot 'account-token-counter.json'
-$CodexUsageLegacyStatePath = Join-Path $env:LOCALAPPDATA 'CodexDreamSkin\state.json'
 $CodexUsageVersion = (Get-Content -LiteralPath (Join-Path $CodexUsageRoot 'VERSION') -Raw).Trim()
 $CodexUsageUtf8 = [Text.UTF8Encoding]::new($false)
 try { [Console]::OutputEncoding = $CodexUsageUtf8 } catch {}
@@ -527,7 +526,7 @@ function Resolve-CodexUsageRunnableCliPath {
 }
 
 function Get-CodexUsageState {
-  foreach ($statePath in @($CodexUsageStatePath, $CodexUsageLegacyStatePath)) {
+  foreach ($statePath in @($CodexUsageStatePath)) {
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { continue }
     try { return Get-Content -LiteralPath $statePath -Raw -Encoding utf8 | ConvertFrom-Json } catch {}
   }
@@ -549,7 +548,11 @@ function Test-CodexUsagePackagePath([string]$InjectorPath) {
     if ([IO.Path]::GetFileName($full) -ine 'injector.mjs') { return $false }
     $scripts = Split-Path -Parent $full
     $package = Split-Path -Parent $scripts
-    foreach ($relative in @('VERSION', 'assets\usage-inject.js', 'scripts\usage-client.mjs', 'scripts\monitor-utils.ps1')) {
+    foreach ($relative in @(
+      'VERSION',
+      'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js', 'assets\usage-update.js', 'assets\usage-inject.js',
+      'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1'
+    )) {
       if (-not (Test-Path -LiteralPath (Join-Path $package $relative) -PathType Leaf)) { return $false }
     }
     return $true
