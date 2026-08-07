@@ -4,6 +4,7 @@
     ".composer-surface-chrome",
     '[data-testid="composer"]',
     '[data-testid*="composer-"]',
+    '[class*="ComposerLayoutRoot"]',
   ]);
   const EDITABLE_SELECTOR = 'textarea, [contenteditable="true"]';
   const CONTROL_SELECTOR = 'button, [role="button"]';
@@ -63,7 +64,12 @@
     const bottomRow = controlBoxes
       .filter((item) => Math.abs(item.rect.y + item.rect.height / 2 - bottomCenter) <= 14)
       .sort((left, right) => left.rect.x - right.rect.x);
-    const anchor = approval || bottomRow[0]?.node || null;
+    const widestGap = bottomRow.slice(1).reduce((widest, right, index) => {
+      const left = bottomRow[index];
+      const gap = right.rect.x - left.rect.right;
+      return !widest || gap > widest.width ? { left, right, width: gap } : widest;
+    }, null);
+    const anchor = approval || widestGap?.left.node || bottomRow[0]?.node || null;
     const anchorBox = box(anchor);
     const rowCenter = anchorBox ? anchorBox.y + anchorBox.height / 2 : composerBox.bottom - 22;
     const controlsToRight = controls
@@ -72,7 +78,9 @@
         && Math.abs(rect.y + rect.height / 2 - rowCenter) <= 14);
     const anchorRight = anchorBox?.right ?? composerBox.x + 12;
     const placementX = anchorRight + 8;
-    const rightBoundary = controlsToRight.reduce((minimum, value) => Math.min(minimum, value.rect.x), composerBox.right);
+    const rightBoundary = approval || !widestGap
+      ? controlsToRight.reduce((minimum, value) => Math.min(minimum, value.rect.x), composerBox.right)
+      : widestGap.right.rect.x;
     const available = Math.max(0, Math.floor(rightBoundary - placementX - 8));
     const reference = anchor || controls.find((node) => /(?:\b5\.\d|model|极高|high)/i.test(controlText(node))) || controls[0];
     if (reference) {
@@ -91,7 +99,7 @@
     const popoverShift = Math.min(0, window.innerWidth - 12 - placementX - popoverWidth);
     host.style.setProperty("--usage-popover-width", `${popoverWidth}px`);
     host.style.setProperty("--usage-popover-shift", `${Math.max(12 - placementX, popoverShift)}px`);
-    host.dataset.anchor = approval ? "approval" : anchor ? "control" : "composer-left";
+    host.dataset.anchor = approval ? "approval" : widestGap ? "control-gap" : anchor ? "control" : "composer-left";
     host.dataset.compact = String(available < 210);
     host.hidden = available < 104;
     return {

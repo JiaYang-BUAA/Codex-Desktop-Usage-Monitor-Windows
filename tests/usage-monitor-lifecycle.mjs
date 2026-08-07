@@ -24,6 +24,22 @@ const composerMarkup = (withApproval = true) => `
     <button aria-label="发送"></button>
   </div>`;
 
+const updatedComposerMarkup = () => `
+  <div class="_ComposerLayoutRoot_2av5p_3" style="position: relative">
+    <div class="_ComposerLayoutBody_2av5p_179">
+      <div class="contents">
+        <div class="_ComposerLayoutFooter_2av5p_335">
+          <div contenteditable="true"></div>
+          <button aria-label="添加文件等内容"></button>
+          <button aria-label="权限"></button>
+          <button>5.6 Sol 极高</button>
+          <button aria-label="听写"></button>
+          <button aria-label="发送"></button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
 const dom = new JSDOM(`<!doctype html>
 <html>
   <head></head>
@@ -41,12 +57,13 @@ const dom = new JSDOM(`<!doctype html>
 const { window } = dom;
 window.Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
   const value = (() => {
-    if (this.id === "composer-wrapper" || this.matches(".composer-surface-chrome")) return { x: 100, y: 100, width: 700, height: 100 };
+    if (this.id === "composer-wrapper" || this.matches('.composer-surface-chrome, [class*="ComposerLayoutRoot"]')) return { x: 100, y: 100, width: 700, height: 100 };
     if (this.id === "codex-usage-monitor") return { x: 234, y: 164, width: 380, height: 28 };
     if (this.matches('[contenteditable="true"]')) return { x: 112, y: 112, width: 676, height: 44 };
     const text = `${this.getAttribute?.("aria-label") || ""} ${this.textContent || ""}`;
     if (/添加/.test(text)) return { x: 108, y: 164, width: 28, height: 28 };
     if (/(?:替我审批|请求批准|完全访问(?:权限)?|自定义(?:\s*\(config\.toml\))?)/.test(text)) return { x: 141, y: 164, width: 85, height: 28 };
+    if (/权限/.test(text)) return { x: 141, y: 164, width: 28, height: 28 };
     if (/5\.6/.test(text)) return { x: 622, y: 164, width: 105, height: 28 };
     if (/听写/.test(text)) return { x: 728, y: 164, width: 28, height: 28 };
     if (/发送/.test(text)) return { x: 764, y: 164, width: 28, height: 28 };
@@ -107,6 +124,7 @@ window.localStorage.setItem("codex-usage-monitor-settings-v1", JSON.stringify({
 }));
 
 try {
+  assert.match(payload, /const observerTarget = document\.documentElement \|\| document;/);
   const result = window.eval(payload);
   assert.equal(result.installed, true);
   assert.equal(window.localStorage.getItem("codex-usage-monitor-settings-v1"), null);
@@ -205,7 +223,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.0.1", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.0.2", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -351,6 +369,17 @@ try {
   assert.ok(host?.shadowRoot);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, false);
+
+  window.document.getElementById("composer-wrapper").innerHTML = updatedComposerMarkup();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  window.__CODEX_USAGE_MONITOR_STATE__.ensure();
+  host = window.document.getElementById("codex-usage-monitor");
+  assert.ok(host?.shadowRoot);
+  assert.equal(host.hidden, false);
+  assert.equal(host.dataset.anchor, "control-gap");
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().strategy, "explicit-editable");
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().availableWidth > 300);
 
   window.document.getElementById("composer-wrapper").replaceChildren();
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null);

@@ -941,7 +941,8 @@
     }, PLACEMENT_DEBOUNCE_MS);
   };
   const observer = new MutationObserver(scheduleEnsure);
-  observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+  const observerTarget = document.documentElement || document;
+  observer.observe(observerTarget, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
   const timer = setInterval(() => {
     if (!document.hidden) ensure();
   }, LAYOUT_FALLBACK_INTERVAL_MS);
