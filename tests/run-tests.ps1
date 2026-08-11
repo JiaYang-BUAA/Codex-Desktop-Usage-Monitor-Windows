@@ -52,7 +52,7 @@ foreach ($file in $powerShellFiles) {
 $javascriptFiles = @(
   'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js', 'assets\usage-update.js',
   'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\validate-provider.mjs',
-  'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs'
+  'scripts\ui-settings.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs'
 )
 foreach ($relative in $javascriptFiles) {
   & $node --check (Join-Path $root $relative)
@@ -63,7 +63,10 @@ foreach ($relative in $javascriptFiles) {
 if ($LASTEXITCODE -ne 0) { throw 'Usage client tests failed.' }
 & $node (Join-Path $root 'tests\usage-monitor-lifecycle.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Renderer lifecycle tests failed.' }
+& $node (Join-Path $root 'tests\ui-settings.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'UI settings persistence tests failed.' }
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\provider-persistence.ps1')
+& $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\panel-configuration.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Provider persistence tests failed.' }
 foreach ($relative in @('config\providers\cctq.example.json', 'config\providers\custom.example.json')) {
   & $node (Join-Path $root 'scripts\validate-provider.mjs') (Join-Path $root $relative) *> $null

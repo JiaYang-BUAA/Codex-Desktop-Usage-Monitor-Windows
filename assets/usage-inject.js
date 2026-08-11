@@ -5,6 +5,7 @@
   }
   const {
     VERSION, STATE_KEY, USAGE_KEY, HOST_ID, SETTINGS_KEY, PREVIOUS_SETTINGS_KEY,
+    PERSISTED_SETTINGS_KEY, SETTINGS_BINDING, CONFIGURATION_KEY, CONFIGURATION_BINDING,
     REFRESH_INTERVAL_MS, LAYOUT_FALLBACK_INTERVAL_MS, COUNTDOWN_INTERVAL_MS,
     PLACEMENT_DEBOUNCE_MS, UPDATE_CHECK_INTERVAL_MS, MAX_SELECTED_METRICS,
     MAX_MINIMAL_SELECTED_METRICS,
@@ -17,9 +18,57 @@
     { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 --", value: "--", defaultVisible: false },
     { id: "lastTurnTokens", label: "上次对话消耗 Token", display: "上次 --", value: "--", defaultVisible: false },
   ];
+  const DEFAULT_METRIC_SELECTIONS = Object.freeze({
+    official: Object.freeze(["secondaryRemaining", "currentTaskTokens"]),
+  });
+  const CUSTOM_PROVIDER_DEFAULTS = Object.freeze({
+    id: "custom", label: "API Key", baseUrl: "",
+    usagePath: "", statusPath: "", authHeader: "Authorization", authScheme: "Bearer",
+    usageRoot: "data", statusRoot: "data", used: "total_used", limit: "total_granted",
+    unlimited: "unlimited", expiresAt: "expires_at", quotaPerUnit: "quota_per_unit",
+    currency: "currency", defaultQuotaPerUnit: "1", defaultCurrency: "USD",
+  });
 
   const previousUsage = window[STATE_KEY]?.usage || window[USAGE_KEY] || null;
   try { window[STATE_KEY]?.cleanup?.(); } catch {}
+
+  const normalizeConfigurationSummary = (value) => {
+    const source = value && typeof value === "object" ? value : {};
+    const account = source.account && typeof source.account === "object" ? source.account : {};
+    const provider = source.provider && typeof source.provider === "object" ? source.provider : {};
+    const response = provider.response && typeof provider.response === "object" ? provider.response : {};
+    return {
+      account: {
+        configured: Boolean(account.configured),
+        baseUrl: typeof account.baseUrl === "string" ? account.baseUrl.slice(0, 2048) : "https://www.cctq.ai",
+        userId: typeof account.userId === "string" ? account.userId.slice(0, 20) : "",
+        baselineConfigured: Boolean(account.baselineConfigured),
+        initialTokens: typeof account.initialTokens === "string" && /^\d{1,19}$/.test(account.initialTokens)
+          ? account.initialTokens
+          : finiteNumber(account.initialTokens) ? String(Math.max(0, Math.trunc(Number(account.initialTokens)))) : "0",
+      },
+      provider: {
+        configured: Boolean(provider.configured),
+        id: typeof provider.id === "string" ? provider.id.slice(0, 32) : CUSTOM_PROVIDER_DEFAULTS.id,
+        label: typeof provider.label === "string" ? provider.label.slice(0, 24) : CUSTOM_PROVIDER_DEFAULTS.label,
+        baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl.slice(0, 2048) : CUSTOM_PROVIDER_DEFAULTS.baseUrl,
+        usagePath: typeof provider.requests?.usagePath === "string" ? provider.requests.usagePath.slice(0, 2048) : CUSTOM_PROVIDER_DEFAULTS.usagePath,
+        statusPath: typeof provider.requests?.statusPath === "string" ? provider.requests.statusPath.slice(0, 2048) : "",
+        authHeader: typeof provider.auth?.header === "string" ? provider.auth.header.slice(0, 128) : "Authorization",
+        authScheme: typeof provider.auth?.scheme === "string" ? provider.auth.scheme.slice(0, 32) : "Bearer",
+        usageRoot: typeof response.usageRoot === "string" ? response.usageRoot.slice(0, 256) : "data",
+        statusRoot: typeof response.statusRoot === "string" ? response.statusRoot.slice(0, 256) : "data",
+        used: typeof response.used === "string" ? response.used.slice(0, 256) : "total_used",
+        limit: typeof response.limit === "string" ? response.limit.slice(0, 256) : "total_granted",
+        unlimited: typeof response.unlimited === "string" ? response.unlimited.slice(0, 256) : CUSTOM_PROVIDER_DEFAULTS.unlimited,
+        expiresAt: typeof response.expiresAt === "string" ? response.expiresAt.slice(0, 256) : "expires_at",
+        quotaPerUnit: typeof response.quotaPerUnit === "string" ? response.quotaPerUnit.slice(0, 256) : "quota_per_unit",
+        currency: typeof response.currency === "string" ? response.currency.slice(0, 256) : CUSTOM_PROVIDER_DEFAULTS.currency,
+        defaultQuotaPerUnit: finiteNumber(response.defaultQuotaPerUnit) ? String(response.defaultQuotaPerUnit) : CUSTOM_PROVIDER_DEFAULTS.defaultQuotaPerUnit,
+        defaultCurrency: typeof response.defaultCurrency === "string" ? response.defaultCurrency.slice(0, 12) : CUSTOM_PROVIDER_DEFAULTS.defaultCurrency,
+      },
+    };
+  };
 
   const setText = (node, value) => {
     const text = String(value ?? "");
@@ -154,7 +203,10 @@
   };
   const loadSettings = () => {
     try {
-      const value = JSON.parse(localStorage.getItem(SETTINGS_KEY) || localStorage.getItem(PREVIOUS_SETTINGS_KEY) || "null");
+      const persisted = window[PERSISTED_SETTINGS_KEY];
+      const value = persisted && typeof persisted === "object"
+        ? persisted
+        : JSON.parse(localStorage.getItem(SETTINGS_KEY) || localStorage.getItem(PREVIOUS_SETTINGS_KEY) || "null");
       const metrics = value?.metrics && typeof value.metrics === "object" ? value.metrics : {};
       return {
         metrics: Object.fromEntries(Object.entries(metrics).map(([id, ids]) => [id, Array.isArray(ids) ? ids.map((item) => item === "dayTokens" ? "todayTokens" : item).filter((item) => typeof item === "string").slice(0, 12) : []])),
@@ -175,8 +227,10 @@
   };
   const saveSettings = (value) => {
     try {
+      window[PERSISTED_SETTINGS_KEY] = value;
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(value));
       localStorage.removeItem(PREVIOUS_SETTINGS_KEY);
+      if (typeof window[SETTINGS_BINDING] === "function") window[SETTINGS_BINDING](JSON.stringify(value));
     } catch {}
   };
   const selectedMetrics = (source, settings) => {
@@ -184,7 +238,7 @@
     const hasSavedSelection = Object.prototype.hasOwnProperty.call(settings.metrics, source.id);
     let ids = hasSavedSelection && Array.isArray(settings.metrics[source.id])
       ? settings.metrics[source.id].filter((id) => available.has(id))
-      : source.metrics.filter((item) => item.defaultVisible).map((item) => item.id);
+      : (DEFAULT_METRIC_SELECTIONS[source.id] || []).filter((id) => available.has(id));
     return ids.map((id) => available.get(id)).filter(Boolean);
   };
   const metricValue = (metric, prefix) => metric?.value || metric?.display?.replace(prefix, "").trim() || "--";
@@ -417,6 +471,93 @@
       padding-bottom: 5px;
       font-weight: 650;
     }
+    .usage-column-heading { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .usage-config-trigger {
+      min-height: 25px;
+      margin-left: auto;
+      padding: 2px 7px;
+      border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+      border-radius: 5px;
+      color: inherit;
+      background: transparent;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .usage-config-trigger:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+    .usage-config-trigger:focus-visible,
+    .usage-config-control:focus-visible,
+    .usage-config-submit:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 42%, transparent); outline-offset: 1px; }
+    .usage-config-form { display: grid; gap: 8px; padding: 3px 0 5px; }
+    .usage-config-field { display: grid; gap: 3px; min-width: 0; }
+    .usage-config-label { font-size: 10px; font-weight: 650; line-height: 1.25; }
+    .usage-config-control {
+      box-sizing: border-box;
+      width: 100%;
+      min-width: 0;
+      min-height: 32px;
+      padding: 5px 7px;
+      border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+      border-radius: 5px;
+      color: inherit;
+      background: Canvas;
+      font: inherit;
+    }
+    .usage-config-control[aria-invalid="true"] { border-color: #ef4444; }
+    .usage-config-error { min-height: 13px; color: #dc2626; font-size: 9px; line-height: 1.3; }
+    .usage-config-hint { color: inherit; font-size: 9px; line-height: 1.35; opacity: .62; }
+    .usage-config-secret-wrap { position: relative; }
+    .usage-config-secret-wrap .usage-config-control { padding-right: 44px; }
+    .usage-config-reveal {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 42px;
+      height: 32px;
+      padding: 0;
+      border: 0;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+      opacity: .68;
+      font: inherit;
+      font-size: 9px;
+    }
+    .usage-config-reveal:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 42%, transparent); outline-offset: -2px; }
+    .usage-config-advanced { display: grid; gap: 8px; padding-top: 2px; }
+    .usage-config-disclosure {
+      border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+      border-radius: 5px;
+      padding: 0 7px;
+    }
+    .usage-config-disclosure > summary {
+      min-height: 31px;
+      display: flex;
+      align-items: center;
+      color: inherit;
+      font-size: 10px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .usage-config-disclosure[open] { padding-bottom: 7px; }
+    .usage-config-disclosure > summary:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 42%, transparent); outline-offset: 1px; }
+    .usage-config-advanced-title { margin: 1px 0; font-size: 10px; font-weight: 700; opacity: .72; }
+    .usage-config-status { min-height: 15px; font-size: 9px; line-height: 1.35; }
+    .usage-config-status[data-kind="error"] { color: #dc2626; }
+    .usage-config-status[data-kind="success"] { color: #15803d; }
+    .usage-config-submit {
+      min-height: 32px;
+      padding: 5px 10px;
+      border: 1px solid color-mix(in srgb, currentColor 36%, transparent);
+      border-radius: 5px;
+      color: Canvas;
+      background: color-mix(in srgb, currentColor 88%, Canvas);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .usage-config-submit:disabled { cursor: wait; opacity: .55; }
+    .usage-config-trigger:active, .usage-config-reveal:active, .usage-config-submit:active { opacity: .72; }
     .usage-status { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #a1a1aa; }
     .usage-column[data-status="ready"] .usage-status { background: #22c55e; }
     .usage-column[data-status="loading"] .usage-status { background: #facc15; }
@@ -575,6 +716,7 @@
       .usage-toggle-track { width: 22px; flex-basis: 22px; }
       .usage-mode-toggle input:checked + .usage-toggle-track::after { transform: translateX(8px); }
       .usage-column-meta { font-size: 9px; }
+      .usage-config-trigger { padding-inline: 5px; }
     }
     @supports not (color: color-mix(in srgb, red 50%, transparent)) {
       .usage-summary { border-color: rgba(128, 128, 128, .22); background: rgba(128, 128, 128, .06); }
@@ -632,7 +774,180 @@
     }
   };
 
-  const render = (host, value) => {
+  const configurationDraft = (sourceId) => {
+    const configuration = window[STATE_KEY]?.configuration;
+    if (!configuration) return {};
+    if (configuration.drafts[sourceId]) return configuration.drafts[sourceId];
+    if (sourceId === "api-account") {
+      configuration.drafts[sourceId] = {
+        baseUrl: configuration.summary.account.baseUrl || "https://www.cctq.ai",
+        userId: configuration.summary.account.userId || "",
+        token: "",
+        initialTokens: configuration.summary.account.initialTokens || "0",
+      };
+    } else {
+      const summary = configuration.summary.provider;
+      configuration.drafts[sourceId] = { ...(summary.configured ? summary : CUSTOM_PROVIDER_DEFAULTS), apiKey: "" };
+    }
+    return configuration.drafts[sourceId];
+  };
+
+  const configurationField = (t, { name, label, value = "", type = "text", inputMode = "", placeholder = "", hint = "", required = false }) => {
+    const field = document.createElement("label");
+    field.className = "usage-config-field";
+    const labelNode = document.createElement("span");
+    labelNode.className = "usage-config-label";
+    labelNode.textContent = label;
+    const input = document.createElement("input");
+    input.className = "usage-config-control";
+    input.dataset.configField = name;
+    input.name = name;
+    input.type = type;
+    if (inputMode) input.inputMode = inputMode;
+    input.value = String(value ?? "");
+    input.placeholder = placeholder;
+    input.required = required;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    const error = document.createElement("span");
+    error.className = "usage-config-error";
+    error.dataset.configError = name;
+    error.id = `usage-config-error-${name}`;
+    const hintNode = document.createElement("span");
+    hintNode.className = "usage-config-hint";
+    hintNode.id = `usage-config-hint-${name}`;
+    hintNode.textContent = hint;
+    input.setAttribute("aria-describedby", `${hint ? `${hintNode.id} ` : ""}${error.id}`);
+    if (type === "password") {
+      const wrapper = document.createElement("span");
+      wrapper.className = "usage-config-secret-wrap";
+      const reveal = document.createElement("button");
+      reveal.type = "button";
+      reveal.className = "usage-config-reveal";
+      reveal.dataset.revealSecret = name;
+      reveal.textContent = t.language === "en" ? "Show" : "显示";
+      reveal.title = t.language === "en" ? "Show or hide credential" : "显示或隐藏凭据";
+      reveal.setAttribute("aria-label", reveal.title);
+      wrapper.append(input, reveal);
+      field.append(labelNode, wrapper);
+    } else {
+      field.append(labelNode, input);
+    }
+    if (hint) field.append(hintNode);
+    field.append(error);
+    return field;
+  };
+
+  const createConfigurationForm = (source, t) => {
+    const configuration = window[STATE_KEY]?.configuration;
+    const draft = configurationDraft(source.id);
+    const form = document.createElement("form");
+    form.className = "usage-config-form";
+    form.dataset.configSource = source.id;
+    form.noValidate = true;
+    if (source.accountType === "api-account") {
+      form.append(
+        configurationField(t, { name: "baseUrl", label: t("accountBaseUrl"), value: draft.baseUrl, required: true }),
+        configurationField(t, { name: "userId", label: t("accountUserId"), value: draft.userId, required: true }),
+        configurationField(t, {
+          name: "token", label: t("accountToken"), value: draft.token, type: "password",
+          placeholder: configuration?.summary.account.configured ? t("configuredSecretHint") : t("newSecretHint"),
+          hint: configuration?.summary.account.configured ? t("storedCredentialNotice") : "",
+        }),
+        configurationField(t, {
+          name: "initialTokens", label: t("accountTokenBaseline"), value: draft.initialTokens,
+          inputMode: "numeric", hint: t("tokenBaselineHint"), required: true,
+        }),
+      );
+    } else {
+      const configured = Boolean(configuration?.summary.provider.configured);
+      form.append(configurationField(t, {
+        name: "apiKey", label: t("apiKeySecret"), value: draft.apiKey, type: "password",
+        placeholder: configured ? t("configuredSecretHint") : t("newSecretHint"),
+        hint: configured ? t("storedCredentialNotice") : "",
+      }));
+      const baseUrlField = () => configurationField(t, {
+        name: "baseUrl", label: t("apiServiceUrl"), value: draft.baseUrl,
+        placeholder: "https://api.example.com", hint: t("apiServiceUrlHint"), required: true,
+      });
+      const usagePathField = () => configurationField(t, {
+        name: "usagePath", label: t("usagePath"), value: draft.usagePath,
+        placeholder: "/v1/usage", hint: t("usagePathHint"), required: true,
+      });
+      if (!configured) form.append(baseUrlField(), usagePathField());
+      const disclosure = document.createElement("details");
+      disclosure.className = "usage-config-disclosure";
+      const disclosureSummary = document.createElement("summary");
+      disclosureSummary.textContent = configured ? t("connectionSettings") : t("advancedSettings");
+      const advanced = document.createElement("div");
+      advanced.className = "usage-config-advanced";
+      if (configured) advanced.append(baseUrlField(), usagePathField());
+      const advancedTitle = document.createElement("div");
+      advancedTitle.className = "usage-config-advanced-title";
+      advancedTitle.textContent = t("responseMapping");
+      advanced.append(
+        configurationField(t, { name: "statusPath", label: t("statusPath"), value: draft.statusPath }),
+        configurationField(t, { name: "authHeader", label: t("authHeader"), value: draft.authHeader, required: true }),
+        configurationField(t, { name: "authScheme", label: t("authScheme"), value: draft.authScheme }),
+        advancedTitle,
+      );
+      for (const [name, label] of [
+        ["usageRoot", t("usageRoot")], ["statusRoot", t("statusRoot")], ["used", t("usedField")],
+        ["limit", t("limitField")], ["unlimited", t("unlimitedField")], ["expiresAt", t("expiresAtField")],
+        ["quotaPerUnit", t("quotaPerUnitField")], ["currency", t("currencyField")],
+        ["defaultQuotaPerUnit", t("defaultQuotaPerUnit")], ["defaultCurrency", t("defaultCurrency")],
+      ]) advanced.append(configurationField(t, { name, label, value: draft[name], required: true }));
+      disclosure.append(disclosureSummary, advanced);
+      form.append(disclosure);
+    }
+    const status = document.createElement("div");
+    status.className = "usage-config-status";
+    status.setAttribute("role", configuration?.status?.kind === "error" ? "alert" : "status");
+    status.setAttribute("aria-live", "polite");
+    status.dataset.kind = configuration?.status?.kind || "idle";
+    status.textContent = configuration?.status?.sourceId === source.id ? configuration.status.message : "";
+    const submit = document.createElement("button");
+    submit.type = "submit";
+    submit.className = "usage-config-submit";
+    submit.disabled = Boolean(configuration?.pending);
+    submit.textContent = configuration?.pending ? t("savingConfiguration") : t("saveConfiguration");
+    form.append(status, submit);
+    return form;
+  };
+
+  const validConfigurationUrl = (value) => {
+    try {
+      const url = new URL(value);
+      const local = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname.toLowerCase());
+      return !url.username && !url.password && !url.search && !url.hash && (url.protocol === "https:" || (url.protocol === "http:" && local));
+    } catch { return false; }
+  };
+
+  const validateConfiguration = (sourceId, draft, t) => {
+    const configuration = window[STATE_KEY]?.configuration;
+    const errors = {};
+    if (!String(draft.baseUrl || "").trim()) errors.baseUrl = t("requiredField");
+    else if (!validConfigurationUrl(String(draft.baseUrl).trim())) errors.baseUrl = t("invalidUrl");
+    const secretName = sourceId === "api-account" ? "token" : "apiKey";
+    const configured = sourceId === "api-account" ? configuration?.summary.account.configured : configuration?.summary.provider.configured;
+    const secret = String(draft[secretName] || "");
+    if (!secret && !configured) errors[secretName] = t("requiredField");
+    else if (secret && (!/^[\x21-\x7E]+$/.test(secret) || secret.length > 16384)) errors[secretName] = t("invalidCredential");
+    if (sourceId === "api-account") {
+      if (!/^[1-9][0-9]{0,19}$/.test(String(draft.userId || ""))) errors.userId = t("invalidUserId");
+      const baseline = String(draft.initialTokens || "").trim();
+      if (!/^\d+$/.test(baseline) || baseline.length > 19 || (baseline.length === 19 && baseline > "9223372036854775807")) {
+        errors.initialTokens = t("invalidTokenBaseline");
+      }
+    } else {
+      for (const name of ["usagePath", "authHeader", "usageRoot", "statusRoot", "used", "limit", "unlimited", "expiresAt", "quotaPerUnit", "currency", "defaultQuotaPerUnit", "defaultCurrency"]) {
+        if (!String(draft[name] || "").trim()) errors[name] = t("requiredField");
+      }
+    }
+    return errors;
+  };
+
+  const render = (host, value, forceColumns = false) => {
     if (!host?.shadowRoot) return;
     const usage = normalizeUsage(value);
     const settings = loadSettings();
@@ -713,7 +1028,7 @@
     shadow.querySelector(".usage-summary")?.setAttribute("aria-label", t("displayedItems", { count: selected.length }));
     shadow.querySelector(".usage-popover")?.setAttribute("aria-label", t("displaySettings"));
     const columns = shadow.querySelector(".usage-columns");
-    if (columns) {
+    if (columns && (forceColumns || !shadow.activeElement?.closest?.(".usage-config-form"))) {
       const selectedKeys = new Set(selected.map((item) => `${item.source.id}:${item.metric.id}`));
       columns.replaceChildren(...sources.map((source) => {
         const column = document.createElement("section");
@@ -729,8 +1044,20 @@
         status.title = source.error || statusText;
         status.setAttribute("aria-label", statusText);
         const heading = document.createElement("span");
+        heading.className = "usage-column-heading";
         heading.textContent = source.label;
         title.append(status, heading);
+        const configurable = ["api-account", "api-key"].includes(source.accountType);
+        const configurationOpen = window[STATE_KEY]?.configuration?.openSourceId === source.id;
+        if (configurable) {
+          const configure = document.createElement("button");
+          configure.type = "button";
+          configure.className = "usage-config-trigger";
+          configure.dataset.configureSource = source.id;
+          configure.textContent = configurationOpen ? t("back") : t("configure");
+          configure.setAttribute("aria-expanded", String(configurationOpen));
+          title.append(configure);
+        }
         const createRows = (metrics) => {
           const rows = document.createElement("div");
           rows.className = "usage-column-rows";
@@ -766,6 +1093,10 @@
         const primaryMetrics = source.id === "official"
           ? source.metrics.filter((metric) => !TASK_METRIC_IDS.has(metric.id))
           : source.metrics;
+        if (configurationOpen) {
+          column.append(title, createConfigurationForm(source, t));
+          return column;
+        }
         column.append(title, createRows(primaryMetrics));
         if (taskMetrics.length) {
           const taskSection = document.createElement("section");
@@ -779,6 +1110,7 @@
           taskStatus.title = taskReady ? t("taskReady") : t("taskUnavailable");
           taskStatus.setAttribute("aria-label", taskReady ? t("ready") : t("unavailable"));
           const taskHeading = document.createElement("span");
+          taskHeading.className = "usage-column-heading";
           taskHeading.textContent = t("taskSection");
           taskTitle.append(taskStatus, taskHeading);
           taskSection.append(taskTitle, createRows(taskMetrics));
@@ -875,6 +1207,100 @@
         const popover = host.shadowRoot.querySelector(".usage-popover");
         if (popover) popover.hidden = !open;
         if (open) render(host, window[STATE_KEY]?.usage || window[USAGE_KEY]);
+      });
+      host.shadowRoot.addEventListener("click", (event) => {
+        const trigger = event.target?.closest?.("[data-configure-source]");
+        if (trigger) {
+          const state = window[STATE_KEY];
+          if (!state?.configuration?.pending) {
+            const sourceId = trigger.dataset.configureSource;
+            state.configuration.openSourceId = state.configuration.openSourceId === sourceId ? null : sourceId;
+            state.configuration.status = { sourceId, kind: "idle", message: "" };
+            render(host, state.usage, true);
+            if (state.configuration.openSourceId) {
+              host.shadowRoot.querySelector(`[data-config-source="${sourceId}"] .usage-config-control`)?.focus();
+            }
+          }
+          return;
+        }
+        const reveal = event.target?.closest?.("[data-reveal-secret]");
+        if (reveal) {
+          const input = host.shadowRoot.querySelector(`[data-config-field="${reveal.dataset.revealSecret}"]`);
+          if (input instanceof HTMLInputElement) {
+            input.type = input.type === "password" ? "text" : "password";
+            const t = createTranslator(loadSettings().englishUi ? "en" : "zh");
+            reveal.textContent = input.type === "password" ? (t.language === "en" ? "Show" : "显示") : (t.language === "en" ? "Hide" : "隐藏");
+          }
+        }
+      });
+      host.shadowRoot.addEventListener("input", (event) => {
+        const control = event.target;
+        if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement)) return;
+        const form = control.closest("[data-config-source]");
+        if (!form || !control.dataset.configField) return;
+        const state = window[STATE_KEY];
+        if (!state?.configuration) return;
+        const sourceId = form.dataset.configSource;
+        const draft = configurationDraft(sourceId);
+        draft[control.dataset.configField] = control.value;
+        control.removeAttribute("aria-invalid");
+        setText(form.querySelector(`[data-config-error="${control.dataset.configField}"]`), "");
+      });
+      host.shadowRoot.addEventListener("submit", (event) => {
+        const form = event.target;
+        if (!(form instanceof HTMLFormElement) || !form.dataset.configSource) return;
+        event.preventDefault();
+        const state = window[STATE_KEY];
+        if (!state?.configuration || state.configuration.pending) return;
+        const sourceId = form.dataset.configSource;
+        const draft = configurationDraft(sourceId);
+        const t = createTranslator(loadSettings().englishUi ? "en" : "zh");
+        const errors = validateConfiguration(sourceId, draft, t);
+        for (const control of form.querySelectorAll("[data-config-field]")) {
+          const message = errors[control.dataset.configField] || "";
+          control.setAttribute("aria-invalid", String(Boolean(message)));
+          setText(form.querySelector(`[data-config-error="${control.dataset.configField}"]`), message);
+        }
+        const firstInvalid = form.querySelector('[aria-invalid="true"]');
+        if (firstInvalid) {
+          firstInvalid.closest("details")?.setAttribute("open", "");
+          firstInvalid.focus();
+          return;
+        }
+        if (typeof window[CONFIGURATION_BINDING] !== "function") {
+          state.configuration.status = { sourceId, kind: "error", message: t("configurationUnavailable") };
+          render(host, state.usage, true);
+          return;
+        }
+        const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        const type = sourceId === "api-account" ? "api-account" : "api-key";
+        const request = type === "api-account"
+          ? {
+              requestId, type, baseUrl: draft.baseUrl.trim(), userId: draft.userId.trim(), token: draft.token,
+              initialTokens: draft.initialTokens.trim(),
+            }
+          : {
+              requestId, type, apiKey: draft.apiKey,
+              provider: {
+                id: /^[a-z0-9][a-z0-9_-]{0,31}$/.test(draft.id || "") ? draft.id : "custom",
+                label: "API Key",
+                baseUrl: draft.baseUrl.trim(), usagePath: draft.usagePath,
+                statusPath: draft.statusPath, authHeader: draft.authHeader, authScheme: draft.authScheme,
+                usageRoot: draft.usageRoot, statusRoot: draft.statusRoot, used: draft.used, limit: draft.limit,
+                unlimited: draft.unlimited, expiresAt: draft.expiresAt, quotaPerUnit: draft.quotaPerUnit,
+                currency: draft.currency, defaultQuotaPerUnit: Number(draft.defaultQuotaPerUnit),
+                defaultCurrency: draft.defaultCurrency,
+              },
+            };
+        state.configuration.pending = requestId;
+        state.configuration.status = { sourceId, kind: "idle", message: t("savingConfiguration") };
+        render(host, state.usage, true);
+        try { window[CONFIGURATION_BINDING](JSON.stringify(request)); }
+        catch {
+          state.configuration.pending = null;
+          state.configuration.status = { sourceId, kind: "error", message: t("configurationUnavailable") };
+          render(host, state.usage, true);
+        }
       });
       host.shadowRoot.addEventListener("change", (event) => {
         const input = event.target;
@@ -981,8 +1407,16 @@
     host: null,
     health: { ok: false, reason: "initializing", strategy: "none", checkedAt: Date.now() },
     usage: normalizeUsage(previousUsage),
+    configuration: {
+      summary: normalizeConfigurationSummary(window[CONFIGURATION_KEY]),
+      openSourceId: null,
+      drafts: {},
+      pending: null,
+      status: { sourceId: null, kind: "idle", message: "" },
+    },
     ensure,
     diagnose() { return { ...this.health }; },
+    getSettings() { return loadSettings(); },
     updateUsage(value) {
       const usage = preserveMetricsWhileLoading(this.usage, normalizeUsage(value));
       this.usage = usage;
@@ -991,7 +1425,30 @@
       if (host) render(host, usage);
       return true;
     },
+    configurationResult(requestId, result) {
+      if (!this.configuration.pending || requestId !== this.configuration.pending) return false;
+      const sourceId = this.configuration.openSourceId;
+      const t = createTranslator(loadSettings().englishUi ? "en" : "zh");
+      this.configuration.pending = null;
+      if (result?.ok) {
+        this.configuration.summary = normalizeConfigurationSummary(result.configuration || this.configuration.summary);
+        if (this.configuration.drafts[sourceId]) {
+          this.configuration.drafts[sourceId].token = "";
+          this.configuration.drafts[sourceId].apiKey = "";
+        }
+        this.configuration.status = { sourceId, kind: "success", message: t("configurationSaved") };
+      } else {
+        const detail = typeof result?.message === "string" ? result.message.slice(0, 240) : t("configurationFailed");
+        this.configuration.status = { sourceId, kind: "error", message: detail };
+      }
+      const host = ensure();
+      if (host) render(host, this.usage, true);
+      return true;
+    },
     cleanup() {
+      for (const draft of Object.values(this.configuration?.drafts || {})) {
+        if (draft && typeof draft === "object") { draft.token = ""; draft.apiKey = ""; }
+      }
       observer.disconnect();
       clearInterval(timer);
       clearInterval(countdownTimer);

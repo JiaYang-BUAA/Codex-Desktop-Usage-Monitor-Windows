@@ -26,6 +26,7 @@
   "scripts/configure-api-account.ps1",
   "scripts/configure-token-baseline.ps1",
   "scripts/configure-api-provider.ps1",
+  "scripts/configure-from-panel.ps1",
   "scripts/configure-cctq.ps1",
   "scripts/injector.mjs",
   "scripts/launch-codex-monitor-hidden.vbs",
@@ -34,11 +35,14 @@
   "scripts/monitor-utils.ps1",
   "scripts/restore-monitor.ps1",
   "scripts/start-monitor.ps1",
+  "scripts/ui-settings.mjs",
   "scripts/usage-client.mjs",
   "scripts/usage/scheduling.mjs",
   "scripts/validate-provider.mjs",
   "tests/provider-persistence.ps1",
+  "tests/panel-configuration.ps1",
   "tests/run-tests.ps1",
   "tests/usage-client.mjs",
-  "tests/usage-monitor-lifecycle.mjs"
+  "tests/usage-monitor-lifecycle.mjs",
+  "tests/ui-settings.mjs"
 ]

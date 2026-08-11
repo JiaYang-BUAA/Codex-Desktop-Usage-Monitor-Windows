@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { CombinedUsageClient } from "./usage-client.mjs";
+import { createUiSettingsStore, MAX_UI_SETTINGS_BYTES } from "./ui-settings.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -14,6 +16,11 @@ const usageAssets = [
 ].map((name) => path.join(root, "assets", name));
 const HOST_ID = "codex-usage-monitor";
 const STATE_KEY = "__CODEX_USAGE_MONITOR_STATE__";
+const PERSISTED_SETTINGS_KEY = "__CODEX_USAGE_MONITOR_PERSISTED_SETTINGS__";
+const SETTINGS_BINDING = "__codexUsageMonitorSaveSettings";
+const CONFIGURATION_KEY = "__CODEX_USAGE_MONITOR_CONFIGURATION__";
+const CONFIGURATION_BINDING = "__codexUsageMonitorConfigureSource";
+const MAX_CONFIGURATION_BYTES = 131072;
 const TARGET_ABSENCE_EXIT_MS = 60000;
 
 function parseArgs(argv) {
@@ -202,6 +209,47 @@ async function readUsagePayload() {
   return (await Promise.all(usageAssets.map((asset) => fs.readFile(asset, "utf8")))).join("\n");
 }
 
+async function pathExists(targetPath) {
+  try { return (await fs.stat(targetPath)).isFile(); } catch { return false; }
+}
+
+async function readConfigurationSummary() {
+  const stateRoot = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor") : null;
+  const summary = {
+    account: { configured: false, baseUrl: "https://www.cctq.ai", userId: "", baselineConfigured: false, initialTokens: "0" },
+    provider: { configured: false },
+  };
+  if (!stateRoot) return summary;
+  const accountConfigPath = path.join(stateRoot, "account.json");
+  const accountSecretPath = path.join(stateRoot, "account-token.dpapi");
+  const accountCounterPath = path.join(stateRoot, "account-token-counter.json");
+  const providerConfigPath = path.join(stateRoot, "provider.json");
+  const providerSecretPath = path.join(stateRoot, "api-key.dpapi");
+  try {
+    const value = JSON.parse(await fs.readFile(accountConfigPath, "utf8"));
+    if (value?.schemaVersion === 1) {
+      summary.account = {
+        configured: await pathExists(accountSecretPath),
+        baseUrl: typeof value.baseUrl === "string" ? value.baseUrl : summary.account.baseUrl,
+        userId: typeof value.userId === "string" ? value.userId : "",
+        baselineConfigured: false,
+        initialTokens: "0",
+      };
+    }
+  } catch {}
+  try {
+    const text = await fs.readFile(accountCounterPath, "utf8");
+    const initialTokens = text.match(/"initialTokens"\s*:\s*(\d+)/)?.[1];
+    summary.account.baselineConfigured = /"baselineConfigured"\s*:\s*true/i.test(text) && Boolean(initialTokens);
+    if (initialTokens) summary.account.initialTokens = initialTokens;
+  } catch {}
+  try {
+    const value = JSON.parse(await fs.readFile(providerConfigPath, "utf8"));
+    if (value?.schemaVersion === 1) summary.provider = { ...value, configured: await pathExists(providerSecretPath) };
+  } catch {}
+  return summary;
+}
+
 function updateExpression(value) {
   return `(() => { const state = window[${JSON.stringify(STATE_KEY)}]; return typeof state?.updateUsage === "function" ? state.updateUsage(${JSON.stringify(value)}) : false; })()`;
 }
@@ -210,16 +258,113 @@ function removeExpression() {
   return `(() => { let removed = false; try { if (window[${JSON.stringify(STATE_KEY)}]?.cleanup?.()) removed = true; } catch {} document.getElementById(${JSON.stringify(HOST_ID)})?.remove(); return removed; })()`;
 }
 
-async function applyMonitor(session, usage) {
+function settingsSeedExpression(value) {
+  return `(() => { const value = ${JSON.stringify(value)}; if (value && typeof value === "object") window[${JSON.stringify(PERSISTED_SETTINGS_KEY)}] = value; else delete window[${JSON.stringify(PERSISTED_SETTINGS_KEY)}]; return true; })()`;
+}
+
+function configurationSeedExpression(value) {
+  return `(() => { window[${JSON.stringify(CONFIGURATION_KEY)}] = ${JSON.stringify(value)}; return true; })()`;
+}
+
+function configurationResultExpression(requestId, result) {
+  return `(() => window[${JSON.stringify(STATE_KEY)}]?.configurationResult?.(${JSON.stringify(requestId)}, ${JSON.stringify(result)}) || false)()`;
+}
+
+function readSettingsExpression() {
+  return `(() => window[${JSON.stringify(STATE_KEY)}]?.getSettings?.() || null)()`;
+}
+
+async function registerSettingsBinding(session, settingsStore) {
+  session.on("Runtime.bindingCalled", ({ name, payload }) => {
+    if (name !== SETTINGS_BINDING || typeof payload !== "string" || Buffer.byteLength(payload, "utf8") > MAX_UI_SETTINGS_BYTES) return;
+    let value;
+    try { value = JSON.parse(payload); } catch { return; }
+    settingsStore.save(value).catch((error) => console.error(`[usage-monitor] UI settings save failed: ${error.message}`));
+  });
+  await session.send("Runtime.addBinding", { name: SETTINGS_BINDING });
+}
+
+function runPanelConfiguration(request) {
+  const powerShell = process.env.CODEX_USAGE_POWERSHELL_PATH || "pwsh.exe";
+  const script = path.join(root, "scripts", "configure-from-panel.ps1");
+  return new Promise((resolve) => {
+    const child = spawn(powerShell, ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], {
+      windowsHide: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let outputTooLarge = false;
+    const collect = (target, chunk) => {
+      const next = target + String(chunk);
+      if (Buffer.byteLength(next, "utf8") > MAX_CONFIGURATION_BYTES) outputTooLarge = true;
+      return outputTooLarge ? target : next;
+    };
+    child.stdout.on("data", (chunk) => { stdout = collect(stdout, chunk); });
+    child.stderr.on("data", (chunk) => { stderr = collect(stderr, chunk); });
+    const timer = setTimeout(() => { try { child.kill(); } catch {} }, 120000);
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve({ ok: false, message: "无法启动本机配置服务。" });
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      if (outputTooLarge) { resolve({ ok: false, message: "配置服务返回内容过大。" }); return; }
+      const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      try {
+        const result = JSON.parse(lines.at(-1) || "");
+        resolve(result && typeof result === "object" ? result : { ok: false, message: "配置服务返回无效。" });
+      } catch {
+        resolve({ ok: false, message: stderr.trim() ? "配置服务执行失败。" : "配置服务没有返回结果。" });
+      }
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(request));
+  });
+}
+
+function startMonitorReplacement(port) {
+  const powerShell = process.env.CODEX_USAGE_POWERSHELL_PATH || "pwsh.exe";
+  const script = path.join(root, "scripts", "start-monitor.ps1");
+  try {
+    const child = spawn(powerShell, ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Port", String(port), "-Replace"], {
+      detached: true, windowsHide: true, stdio: "ignore",
+    });
+    child.unref();
+  } catch {}
+}
+
+async function registerConfigurationBinding(session, port) {
+  session.on("Runtime.bindingCalled", ({ name, payload }) => {
+    if (name !== CONFIGURATION_BINDING || typeof payload !== "string" || Buffer.byteLength(payload, "utf8") > MAX_CONFIGURATION_BYTES) return;
+    let request;
+    try { request = JSON.parse(payload); } catch { return; }
+    const requestId = typeof request?.requestId === "string" ? request.requestId : "";
+    if (!/^[a-z0-9-]{8,64}$/.test(requestId) || !["api-account", "api-key"].includes(request?.type)) return;
+    runPanelConfiguration(request).then(async (result) => {
+      await session.evaluate(configurationResultExpression(requestId, result)).catch(() => {});
+      if (result?.ok) setTimeout(() => startMonitorReplacement(port), 750);
+    }).catch(() => {});
+  });
+  await session.send("Runtime.addBinding", { name: CONFIGURATION_BINDING });
+}
+
+async function applyMonitor(session, usage, settingsStore) {
   // Read the current asset for every renderer load so an updated package is never replaced by stale source.
+  if (settingsStore) await session.evaluate(settingsSeedExpression(settingsStore.current));
+  await session.evaluate(configurationSeedExpression(await readConfigurationSummary()));
   const result = await session.evaluate(await readUsagePayload());
   if (usage) await session.evaluate(updateExpression(usage));
+  if (settingsStore && !settingsStore.current) {
+    const rendererSettings = await session.evaluate(readSettingsExpression());
+    if (rendererSettings) await settingsStore.save(rendererSettings);
+  }
   return result || { installed: false, mode: "monitor-only", anchoredToApproval: false };
 }
 
-async function updateMonitor(session, usage) {
+async function updateMonitor(session, usage, settingsStore) {
   const updated = await session.evaluate(updateExpression(usage));
-  return updated ? updated : applyMonitor(session, usage);
+  return updated ? updated : applyMonitor(session, usage, settingsStore);
 }
 
 async function removeFromSession(session) {
@@ -260,6 +405,7 @@ async function closeSessions(sessions) {
 
 async function runOnce(options) {
   const targets = await waitForTargets(options.port, options.timeoutMs);
+  const settingsStore = options.mode === "remove" ? null : await createUiSettingsStore();
   const results = [];
   for (const target of targets) {
     if (!isMonitorTarget(target)) {
@@ -273,7 +419,8 @@ async function runOnce(options) {
         results.push({ targetId: target.id, removed: await removeFromSession(session) });
         continue;
       }
-      const applied = await applyMonitor(session, null);
+      await registerSettingsBinding(session, settingsStore);
+      const applied = await applyMonitor(session, null, settingsStore);
       if (options.screenshot) await capture(session, options.screenshot);
       const verified = await verifySession(session);
       results.push({ targetId: target.id, title: target.title, applied, verified });
@@ -286,11 +433,13 @@ async function runOnce(options) {
     ? monitorResults.length > 0 && monitorResults.every((item) => item.verified?.installed)
     : true;
   console.log(JSON.stringify({ mode: options.mode, monitorOnly: true, port: options.port, verified, targets: results }, null, 2));
+  if (settingsStore) await settingsStore.flush();
   if (options.mode === "verify" && !verified) process.exitCode = 1;
 }
 
 async function runWatch(options) {
   const sessions = new Map();
+  const settingsStore = await createUiSettingsStore();
   let latestUsage = null;
   let stopping = false;
   let targetsMissingSince = null;
@@ -300,7 +449,7 @@ async function runWatch(options) {
     onUpdate: (usage) => {
       latestUsage = usage;
       for (const entry of sessions.values()) {
-        updateMonitor(entry.session, usage).catch((error) => console.error(`[usage-monitor] update failed: ${error.message}`));
+        updateMonitor(entry.session, usage, settingsStore).catch((error) => console.error(`[usage-monitor] update failed: ${error.message}`));
       }
     },
   });
@@ -319,11 +468,13 @@ async function runWatch(options) {
         if (sessions.get(target.id)?.session === session) sessions.delete(target.id);
       }, { once: true });
       session.on("Page.loadEventFired", () => {
-        applyMonitor(session, latestUsage)
+        applyMonitor(session, latestUsage, settingsStore)
           .then(() => syncCurrentThread(session, usageClient))
           .catch((error) => console.error(`[usage-monitor] renderer reload failed: ${error.message}`));
       });
-      await applyMonitor(session, latestUsage);
+      await registerSettingsBinding(session, settingsStore);
+      await registerConfigurationBinding(session, options.port);
+      await applyMonitor(session, latestUsage, settingsStore);
       await syncCurrentThread(session, usageClient);
     } catch (error) {
       if (sessions.get(target.id)?.session === session) sessions.delete(target.id);
@@ -337,6 +488,7 @@ async function runWatch(options) {
     stopping = true;
     await usageStartPromise.catch(() => {});
     await usageClient.stop().catch(() => {});
+    await settingsStore.flush().catch(() => {});
     await closeSessions(sessions);
   };
   process.once("SIGINT", () => { stop().finally(() => process.exit(0)); });

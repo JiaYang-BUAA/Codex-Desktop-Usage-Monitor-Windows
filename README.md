@@ -9,7 +9,7 @@ Track official subscription quota and reset time, task token usage, API account 
 
 这是一个直接显示在 Windows 版 OpenAI Codex Desktop 输入区域内的用量监视栏。它通过仅绑定本机的 CDP 运行时注入，在 Codex 输入栏旁显示官方订阅周期余量与重置时间、任务 Token、API 账户和 API Key 用量。它不是桌面悬浮窗，也不修改 WindowsApps、`app.asar`、Codex 登录文件或模型配置。
 
-**v2.0.2 更新：**适配新版 Codex Desktop Composer 布局。新版界面没有审批按钮时，监视栏会自动使用底部控件之间的最大可用空隙，不再因宽度误判而消失；同时修复渲染页面初始化早期可能发生的注入失败。
+**v2.1.0 更新：**API 账户和 API Key 可直接在展开面板安全配置；API Key 使用面向小白的渐进式表单，已有连接时只显示 Key，复杂字段折叠到高级设置。显示项和四个界面开关改由监视器后台持久化，Codex 重启或更新后仍能恢复上次选择；全新设置默认仅显示“7天剩余”和“当前任务累计 Token”。
 
 - 直接注入 Codex Desktop 渲染页面，不是独立悬浮窗。
 - 同一面板支持官方订阅、API 账户和 API Key 三种数据源。
@@ -19,7 +19,7 @@ Track official subscription quota and reset time, task token usage, API account 
 - 官方订阅模式无需额外填写凭据。
 - 支持中文与 English UI；版本更新提醒默认关闭，开启后最多每 24 小时向 GitHub Releases API 发起一次无凭据请求，只显示可用版本链接，不会自动下载或执行文件。
 
-监视栏会根据当前 Codex Composer 结构自动放置：旧版界面优先位于审批按钮右侧，新版界面则使用底部控件之间的最大可用空隙。普通模式最多显示 8 项数据，极简模式最多显示 14 项。
+监视栏会根据当前 Codex Composer 结构自动放置：旧版界面优先位于审批按钮右侧，新版界面则使用底部控件之间的最大可用空隙。全新设置默认只显示“7天剩余”和“当前任务累计 Token”；普通模式最多显示 8 项数据，极简模式最多显示 14 项。
 
 **普通模式**
 
@@ -52,7 +52,7 @@ Track official subscription quota and reset time, task token usage, API account 
 ```text
 请安装这个项目：https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows
 先阅读仓库根目录的 AGENTS.md 和 README.md。运行 install.ps1，自动寻找 Microsoft Store 和常见非 Store Codex 路径；找不到时才询问我选择真实的 ChatGPT.exe 或 codex.exe。不要猜路径，不要修改 WindowsApps、app.asar、Codex 登录文件或模型配置，不要终止或重启我当前的 Codex。安装后验证桌面上的“Codex Usage Monitor”快捷方式。
-然后询问我需要启用官方订阅、API 账户、API Key 中的哪些数据源。询问每项配置时，同时告诉我一般在哪里找到：Base URL 通常在服务商的 API 或开发者文档；数字用户 ID 通常在用户资料、账户信息或个人中心；API 账户访问令牌通常在用户资料、安全设置、Access Token 或用户令牌页面；API Key 通常在开发者控制台、API Keys、密钥管理或令牌管理页面；累计 Token 通常在用量统计、账单、消费记录或 Token 统计页面。名称因服务商而异，账户访问令牌不一定等于 API Key；找不到时询问服务商名称并让我提供公开文档或脱敏截图，不要猜。API 账户和 API Key 的密钥只能让我复制到 Windows 剪贴板后由脚本读取，不能让我粘贴到聊天、源码、JSON 或日志。询问 API 账户的累计 Token 初始值；这是当前真实的完整整数，如果我不知道就使用 0 并说明之后会按可见日志累加。若我的接口返回字段和示例不同，请先检查脱敏后的响应结构，自动调整本地字段映射或归一化代码，增加测试并运行完整测试，不要把我的密钥或私有响应写入仓库。
+然后询问我需要启用官方订阅、API 账户、API Key 中的哪些数据源。询问每项配置时，同时告诉我一般在哪里找到：Base URL 通常在服务商的 API 或开发者文档；数字用户 ID 通常在用户资料、账户信息或个人中心；API 账户访问令牌通常在用户资料、安全设置、Access Token 或用户令牌页面；API Key 通常在开发者控制台、API Keys、密钥管理或令牌管理页面；累计 Token 通常在用量统计、账单、消费记录或 Token 统计页面。名称因服务商而异，账户访问令牌不一定等于 API Key；找不到时询问服务商名称并让我提供公开文档或脱敏截图，不要猜。API 账户和 API Key 的密钥只能填入本机展开面板的密码框，或复制到 Windows 剪贴板后由兼容脚本读取，不能让我粘贴到聊天、源码、JSON 或日志。询问 API 账户的累计 Token 初始值；这是当前真实的完整整数，如果我不知道就使用 0 并说明之后会按可见日志累加。若我的接口返回字段和示例不同，请先检查脱敏后的响应结构，自动调整本地字段映射或归一化代码，增加测试并运行完整测试，不要把我的密钥或私有响应写入仓库。
 ```
 
 安装完成后，先正常退出已经打开的 Codex，再双击桌面快捷方式 `Codex Usage Monitor`。原生 Codex 图标不会自动开放本机 CDP 端口，因此不会注入监视器。快捷方式会同时启动 Codex 和监视器，不显示正常的黑色命令行窗口。
@@ -62,13 +62,13 @@ Track official subscription quota and reset time, task token usage, API account 
 > **如果不懂如何运行下面的命令，请直接让 Codex 按本教程帮你完成安装和配置，无需自己手动操作。**
 
 - 官方订阅：周期和账户汇总来自 Codex Desktop 本机 app-server；“今日 Token”读取本机任务的 `token_count` 事件，并把确认使用当前 ChatGPT 官方认证的每回合 `total_token_usage` 正增量直接累加。“累计 Token”以最近一次官方值为基准，在官方值不变时叠加此后本机产生的官方订阅 Token；官方完整整数一旦变化，立即清空本机临时增量并直接采用新官方值。API、API Key 和无法确认来源的回合不计入。无需配置，启动后自动读取。
-- API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备服务商的接口文档、账户访问令牌和数字用户 ID。Base URL 通常在“API 文档”或“开发者文档”；用户 ID 通常在“用户资料”“账户信息”或“个人中心”；访问令牌通常在“用户资料”“安全设置”“Access Token”或“用户令牌”页面。访问令牌不一定等于 API Key。先让 Codex 按接口文档确认或适配请求路径与返回字段，再复制令牌并运行：
+- API 账户：数据来自第三方服务商的账户信息与请求日志接口。准备服务商的接口文档、账户访问令牌和数字用户 ID。Base URL 通常在“API 文档”或“开发者文档”；用户 ID 通常在“用户资料”“账户信息”或“个人中心”；访问令牌通常在“用户资料”“安全设置”“Access Token”或“用户令牌”页面。访问令牌不一定等于 API Key。点击监视栏展开面板，再点击“API 账户”标题后的“配置”，填写 Base URL、用户 ID、Access Token 和当前真实的累计 Token 基准；不知道精确基准时填 `0`。保存前会验证账户接口并读取当前日志建立检查点，成功后使用当前 Windows 用户 DPAPI 加密保存令牌。命令行兼容入口仍可使用：
 
   ```powershell
   pwsh -NoProfile -File .\scripts\configure-api-account.ps1 -FromClipboard -UserId <你的用户ID> -BaseUrl https://api.example.com
   ```
 
-- API Key：数据来自服务商针对 API key 提供的额度或用量查询接口。API Key 通常在“开发者控制台”“API Keys”“密钥管理”或“令牌管理”页面创建；查询接口一般记录在“用量”“额度”“账单”或 API 文档中。把服务商的接口文档交给 Codex，让它根据通用模板填写请求地址、认证头和返回字段映射。确认配置后复制 API key，再从剪贴板安全保存；不要把 key 写进聊天或 JSON：
+- API Key：数据来自服务商针对 API key 提供的额度或用量查询接口。API Key 通常在“开发者控制台”“API Keys”“密钥管理”或“令牌管理”页面创建；查询接口一般记录在“用量”“额度”“账单”或 API 文档中。点击“API Key”标题后的“配置”：已有连接配置时默认只需填写或更换 API Key；首次配置时再填写 API 服务地址和用量接口路径。认证头与响应字段映射收在“高级设置”中，接口格式与通用默认值一致时无需修改。密钥框不会回填；已经配置时留空可保留原密钥。命令行兼容入口仍可使用：
 
   ```powershell
   Copy-Item .\config\providers\custom.example.json .\config\providers\my-provider.local.json
@@ -77,7 +77,7 @@ Track official subscription quota and reset time, task token usage, API account 
 
 > **API Key 请求受限提醒：**部分服务商会限制用量查询接口的调用频率。界面显示“请求受限”表示服务商返回了 `HTTP 429`，不一定代表 API key 失效或模型请求不可用。监视器会保留上一次成功数据，并按 60、120、240、300 秒逐步延长重试间隔；恢复成功后回到 60 秒刷新。请等待自动重试，不要反复重启 Codex 或重复运行配置命令，否则可能延长限流时间。
 
-API 账户配置后，输入当前真实累计 Token（完整整数，不要写“5亿”）。该数值通常可在服务商的“用量统计”“账单”“消费记录”或“Token 统计”页面找到；如果页面只显示取整后的“万/亿”，应打开详情或导出记录，不要自行猜测精确整数：
+展开面板已经可以直接填写累计 Token 基准。下面的命令仅作为命令行兼容入口，用于单独重设当前真实累计 Token（完整整数，不要写“5亿”）。该数值通常可在服务商的“用量统计”“账单”“消费记录”或“Token 统计”页面找到；如果页面只显示取整后的“万/亿”，应打开详情或导出记录，不要自行猜测精确整数：
 
 ```powershell
 pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完整整数>
@@ -89,9 +89,9 @@ pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完
 
 ### 1.4 展开监视栏查看和勾选
 
-点击监视栏即可展开三栏面板。左侧“官方订阅”下方另设“本次任务相关”分区，集中显示当前任务累计 Token 和上次对话消耗 Token。每项前的复选框决定是否显示在折叠后的监视栏中，最多显示 8 项；三栏网络数据共用 60 秒刷新周期。本机 Token 日志采用增量读取：检测到任务活动后的短时间内约每 2 秒检查一次，空闲后约每 12 秒检查一次。请求失败时保留上一次成功数据；有缓存时指示灯变为红色，没有可用数据时显示灰色。
+点击监视栏即可展开三栏面板。API 账户和 API Key 栏标题后各有“配置”按钮，点击后在当前栏内显示带明确标签、内联校验和保存状态的配置表单；再次点击“返回”恢复指标列表。左侧“官方订阅”下方另设“本次任务相关”分区，集中显示当前任务累计 Token 和上次对话消耗 Token。每项前的复选框决定是否显示在折叠后的监视栏中，最多显示 8 项；三栏网络数据共用 60 秒刷新周期。本机 Token 日志采用增量读取：检测到任务活动后的短时间内约每 2 秒检查一次，空闲后约每 12 秒检查一次。请求失败时保留上一次成功数据；有缓存时指示灯变为红色，没有可用数据时显示灰色。
 
-面板右下角、“Codex Usage Monitor for Windows v2.0.2”标识上方提供四个显示开关以及“最多显示 · 刷新”提示：开启“极简模式”后，折叠监视栏只显示数值与单位，不显示数据项名称，可最多选择 14 项，并在选中 9 项及以上时启用双行压缩布局；普通模式仍最多选择 8 项。开启“倒计时可视化”后，折叠监视栏最左侧显示与文字同色的圆形表盘，绿色指针每 60 秒顺时针旋转一圈。“English UI”在中英文界面间切换；“版本更新提醒”开启后按最多每天一次的频率检查 GitHub Release，新版可用时只把右下角版本号变成发布页链接。这些选择保存在 Codex 本地页面设置中。
+面板右下角、“Codex Usage Monitor for Windows v2.1.0”标识上方提供四个显示开关以及“最多显示 · 刷新”提示：开启“极简模式”后，折叠监视栏只显示数值与单位，不显示数据项名称，可最多选择 14 项，并在选中 9 项及以上时启用双行压缩布局；普通模式仍最多选择 8 项。开启“倒计时可视化”后，折叠监视栏最左侧显示与文字同色的圆形表盘，绿色指针每 60 秒顺时针旋转一圈。“English UI”在中英文界面间切换；“版本更新提醒”开启后按最多每天一次的频率检查 GitHub Release，新版可用时只把右下角版本号变成发布页链接。显示项和开关由监视器后台保存到 `%LOCALAPPDATA%\CodexUsageMonitor\ui-settings.json`，不依赖 Codex 页面存储，也不包含账号凭据。
 
 ## 2. 完整说明
 
@@ -221,6 +221,8 @@ pwsh -NoProfile -File .\install.ps1
 
 ### 2.5 API Key 配置与持久化
 
+直接在展开面板的 API Key 栏点击“配置”。界面不要求选择供应商：已有连接配置时只显示 API Key 和可折叠的“连接设置”；首次配置时显示 API Key、API 服务地址和用量接口路径，其余认证头与响应字段映射放在“高级设置”中。保存时配置通过本机 CDP 桥交给后台，API Key 使用当前 Windows 用户 DPAPI 加密，既不会写入页面设置文件，也不会出现在 Provider JSON 中。
+
 复制 Provider 示例为本地文件后填写字段映射，不要提交 `*.local.json`：
 
 ```powershell
@@ -262,7 +264,7 @@ pwsh -NoProfile -File .\scripts\build-release.ps1
 
 ### 2.8 安全边界与项目结构
 
-CDP 只绑定 `127.0.0.1`，并只连接同一回环端口公布的 Codex 页面；携带凭据的远程 API 请求强制使用 HTTPS、拒绝重定向，并限制单个 JSON 响应体最大为 2 MiB；监视器不会强制结束正在运行的 Codex；明文 key 只在后台 Node 进程内存中短暂存在。安装、配置和安全契约详见 [AGENTS.md](AGENTS.md)。
+CDP 只绑定 `127.0.0.1`，并只连接同一回环端口公布的 Codex 页面；携带凭据的远程 API 请求强制使用 HTTPS、拒绝重定向，并限制单个 JSON 响应体最大为 2 MiB；监视器不会强制结束正在运行的 Codex；通过面板提交的明文凭据只在当前表单和本机配置进程内存中短暂存在，保存后由 DPAPI 加密，前端草稿会被清空。安装、配置和安全契约详见 [AGENTS.md](AGENTS.md)。
 
 桌面快捷方式使用 `%LOCALAPPDATA%\CodexUsageMonitor\codex-usage-monitor-v2.ico` 中的稳定图标缓存。安装器从本机 Codex 的透明 PNG 生成标准 ICO，不依赖 Microsoft Store 中带版本号的安装目录；Codex 自动更新后图标路径和透明背景仍然有效。
 

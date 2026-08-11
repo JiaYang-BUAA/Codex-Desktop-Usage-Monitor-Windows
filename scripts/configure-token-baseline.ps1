@@ -2,7 +2,8 @@
 param(
   [ValidateRange(1024, 65535)]
   [int]$Port = 9335,
-  [long]$InitialTokens = -1
+  [long]$InitialTokens = -1,
+  [switch]$NoRestart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,11 +117,16 @@ foreach ($item in $items) {
 Save-CodexUsageTokenBaseline -InitialTokens $InitialTokens -CheckpointAt $checkpointAt -RecentLogIds @($recentLogIds) `
   -DailyDate $dailyDate -DailyTokens $dailyTokens -DailyCheckpointAt $dailyCheckpointAt -DailyLogIds @($dailyLogIds)
 $env:CODEX_USAGE_ACCOUNT_COUNTER_PATH = $CodexUsageAccountCounterPath
+$message = "累计 Token 初始值已设置为 $InitialTokens"
+if ($NoRestart) {
+  Write-Host "$message。"
+  return
+}
 $activePort = Resolve-CodexUsageCdpPort $Port
 if ($activePort) {
   & (Join-Path $PSScriptRoot 'start-monitor.ps1') -Port $activePort -Replace
   if ($LASTEXITCODE -ne 0) { throw "初始值已保存，但重启监视器失败，退出码 $LASTEXITCODE。" }
-  Write-Host "累计 Token 初始值已设置为 $InitialTokens，监视器已重新加载。"
+  Write-Host "$message，监视器已重新加载。"
 } else {
-  Write-Host "累计 Token 初始值已设置为 $InitialTokens；下次启动监视器时生效。"
+  Write-Host "$message；下次启动监视器时生效。"
 }

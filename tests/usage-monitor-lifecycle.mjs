@@ -118,10 +118,29 @@ const usage = {
 };
 
 window.localStorage.setItem("codex-usage-monitor-settings-v1", JSON.stringify({
-  metrics: {},
+  metrics: {
+    official: ["primaryRemaining", "primaryReset"],
+    "api-account": ["balance"],
+    acme: ["usedAmount", "quotaLimit"],
+  },
   minimalMode: false,
   countdownVisualization: false,
 }));
+window.__CODEX_USAGE_MONITOR_CONFIGURATION__ = {
+  account: { configured: true, baseUrl: "https://www.cctq.ai", userId: "10530", baselineConfigured: true, initialTokens: "123456" },
+  provider: {
+    configured: true, schemaVersion: 1, id: "cctq", label: "CCTQ API", baseUrl: "https://www.cctq.ai",
+    requests: { usagePath: "/api/usage/token/", statusPath: "/api/status" },
+    auth: { header: "Authorization", scheme: "Bearer" },
+    response: {
+      usageRoot: "data", statusRoot: "data", used: "total_used", limit: "total_granted",
+      unlimited: "unlimited_quota", expiresAt: "expires_at", quotaPerUnit: "quota_per_unit",
+      currency: "quota_display_type", defaultQuotaPerUnit: 500000, defaultCurrency: "CNY",
+    },
+  },
+};
+const configurationPayloads = [];
+window.__codexUsageMonitorConfigureSource = (value) => configurationPayloads.push(JSON.parse(value));
 
 try {
   assert.match(payload, /const observerTarget = document\.documentElement \|\| document;/);
@@ -189,12 +208,12 @@ try {
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
   const columns = [...host.shadowRoot.querySelectorAll(".usage-column")];
   assert.equal(columns.length, 3);
-  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-title span:last-child").textContent), ["官方订阅", "API 账户", "API Key"]);
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["官方订阅", "API 账户", "API Key"]);
   assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "loading", "error"]);
   assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [7, 8, 4]);
   const taskSection = columns[0].querySelector(".usage-column-subsection");
   assert.ok(taskSection);
-  assert.equal(taskSection.querySelector(".usage-column-title span:last-child").textContent, "本次任务相关");
+  assert.equal(taskSection.querySelector(".usage-column-heading").textContent, "本次任务相关");
   assert.equal(taskSection.querySelector(".usage-status").getAttribute("aria-label"), "正常");
   assert.equal(columns[0].querySelector(":scope > .usage-column-rows").querySelectorAll(".usage-detail-row").length, 5);
   assert.equal(taskSection.querySelectorAll(".usage-detail-row").length, 2);
@@ -223,7 +242,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.0.2", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.1.0", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -237,6 +256,45 @@ try {
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').firstElementChild.className, "usage-mode-switches");
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').lastElementChild.className, "usage-column-meta");
   assert.equal(columns[2].querySelector(".usage-column-footer").nextElementSibling, columns[2].querySelector(".usage-column-brand"));
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-config-trigger")].map((button) => button.textContent), ["配置", "配置"]);
+  host.shadowRoot.querySelector('[data-configure-source="api-account"]').click();
+  let accountForm = host.shadowRoot.querySelector('[data-config-source="api-account"]');
+  assert.ok(accountForm);
+  assert.equal(accountForm.querySelector('[data-config-field="baseUrl"]').value, "https://www.cctq.ai");
+  assert.equal(accountForm.querySelector('[data-config-field="userId"]').value, "10530");
+  assert.equal(accountForm.querySelector('[data-config-field="token"]').type, "password");
+  assert.equal(accountForm.querySelector('[data-config-field="token"]').closest(".usage-config-field").querySelector(".usage-config-label").textContent, "访问令牌（Access Token）");
+  assert.match(accountForm.querySelector('[data-config-field="token"]').closest(".usage-config-field").querySelector(".usage-config-hint").textContent, /不显示已保存的凭据/);
+  assert.equal(accountForm.querySelector('[data-config-field="initialTokens"]').value, "123456");
+  assert.match(accountForm.querySelector('[data-config-field="initialTokens"]').closest(".usage-config-field").querySelector(".usage-config-hint").textContent, /完整整数/);
+  accountForm.requestSubmit();
+  assert.equal(configurationPayloads.length, 1);
+  assert.equal(configurationPayloads[0].type, "api-account");
+  assert.equal(configurationPayloads[0].token, "");
+  assert.equal(configurationPayloads[0].initialTokens, "123456");
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.configurationResult(configurationPayloads[0].requestId, {
+    ok: true,
+    configuration: window.__CODEX_USAGE_MONITOR_CONFIGURATION__,
+  }), true);
+  assert.match(host.shadowRoot.querySelector(".usage-config-status").textContent, /安全保存/);
+  host.shadowRoot.querySelector('[data-configure-source="api-account"]').click();
+  host.shadowRoot.querySelector('[data-configure-source="acme"]').click();
+  const configuredProviderForm = host.shadowRoot.querySelector('[data-config-source="acme"]');
+  assert.equal(configuredProviderForm.querySelector('[data-config-field="preset"]'), null);
+  assert.equal(configuredProviderForm.querySelector('[data-config-field="apiKey"]').type, "password");
+  assert.equal(configuredProviderForm.querySelector(".usage-config-disclosure > summary").textContent, "连接设置");
+  assert.equal(configuredProviderForm.querySelector(".usage-config-disclosure").open, false);
+  assert.doesNotMatch(configuredProviderForm.textContent, /CCTQ/);
+  configuredProviderForm.requestSubmit();
+  assert.equal(configurationPayloads.length, 2);
+  assert.equal(configurationPayloads[1].type, "api-key");
+  assert.equal(configurationPayloads[1].preset, undefined);
+  assert.equal(configurationPayloads[1].provider.label, "API Key");
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.configurationResult(configurationPayloads[1].requestId, {
+    ok: true,
+    configuration: window.__CODEX_USAGE_MONITOR_CONFIGURATION__,
+  }), true);
+  host.shadowRoot.querySelector('[data-configure-source="acme"]').click();
   assert.equal(host.shadowRoot.querySelector(".usage-summary").firstElementChild.className, "usage-refresh-ring");
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, true);
 
@@ -349,10 +407,10 @@ try {
 
   host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
   assert.deepEqual(
-    [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-title span:last-child").textContent),
+    [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-heading").textContent),
     ["Official Subscription", "API Account", "API Key"],
   );
-  assert.equal(host.shadowRoot.querySelector(".usage-column-subsection-title span:last-child").textContent, "Current Task");
+  assert.equal(host.shadowRoot.querySelector(".usage-column-subsection-title .usage-column-heading").textContent, "Current Task");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5-hour remaining");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "128K");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "12M");
@@ -396,8 +454,76 @@ try {
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.cleanup(), true);
   assert.equal(window.document.getElementById("codex-usage-monitor"), null);
   assert.equal(window.__CODEX_USAGE_MONITOR_MODULES__, undefined);
+
+  const persistedPayloads = [];
+  window.__codexUsageMonitorSaveSettings = (value) => persistedPayloads.push(JSON.parse(value));
+  window.localStorage.clear();
+  delete window.__CODEX_USAGE_MONITOR_PERSISTED_SETTINGS__;
+  window.__CODEX_USAGE_MONITOR_CONFIGURATION__ = {
+    account: { configured: false, baseUrl: "https://www.cctq.ai", userId: "", baselineConfigured: false, initialTokens: "0" },
+    provider: { configured: false },
+  };
+  window.__CODEX_USAGE_MONITOR__ = usage;
+  assert.equal(window.eval(payload).installed, true);
+  host = window.document.getElementById("codex-usage-monitor");
+  host.shadowRoot.querySelector(".usage-summary").click();
+  host.shadowRoot.querySelector('[data-configure-source="acme"]').click();
+  const beginnerForm = host.shadowRoot.querySelector('[data-config-source="acme"]');
+  assert.equal(beginnerForm.querySelector('[data-config-field="preset"]'), null);
+  assert.equal(beginnerForm.querySelector('[data-config-field="baseUrl"]').value, "");
+  assert.equal(beginnerForm.querySelector('[data-config-field="usagePath"]').value, "");
+  assert.equal(beginnerForm.querySelector(".usage-config-disclosure > summary").textContent, "高级设置（通常无需修改）");
+  assert.doesNotMatch(beginnerForm.textContent, /CCTQ/);
+  for (const [name, value] of [["apiKey", "test-key"], ["baseUrl", "https://api.example.com"], ["usagePath", "/v1/usage"], ["authHeader", ""]]) {
+    const input = beginnerForm.querySelector(`[data-config-field="${name}"]`);
+    input.value = value;
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+  }
+  beginnerForm.requestSubmit();
+  assert.equal(beginnerForm.querySelector(".usage-config-disclosure").open, true);
+  assert.match(beginnerForm.querySelector('[data-config-error="authHeader"]').textContent, /不能为空/);
+  host.shadowRoot.querySelector('[data-configure-source="acme"]').click();
+  host.shadowRoot.querySelector(".usage-summary").click();
+  assert.deepEqual(
+    [...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.dataset.metric),
+    ["secondaryRemaining", "currentTaskTokens"],
+  );
+  assert.deepEqual(
+    [...host.shadowRoot.querySelectorAll('input[data-source="official"]:checked')].map((item) => item.dataset.metric),
+    ["secondaryRemaining", "currentTaskTokens"],
+  );
+  assert.equal(host.shadowRoot.querySelectorAll('input[data-source="api-account"]:checked, input[data-source="acme"]:checked').length, 0);
+  assert.ok(persistedPayloads.length >= 1);
+  assert.deepEqual(persistedPayloads.at(-1).metrics, {});
+
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.cleanup(), true);
+  window.localStorage.clear();
+  window.__CODEX_USAGE_MONITOR_PERSISTED_SETTINGS__ = {
+    schemaVersion: 1,
+    metrics: { official: ["lifetimeTokens"] },
+    apiKeyMetricsVersion: 0,
+    officialMetricsVersion: 0,
+    unifiedMetricsVersion: 1,
+    minimalMode: true,
+    countdownVisualization: false,
+    englishUi: false,
+    updateNotifications: false,
+  };
+  window.__CODEX_USAGE_MONITOR__ = usage;
+  assert.equal(window.eval(payload).installed, true);
+  host = window.document.getElementById("codex-usage-monitor");
+  assert.deepEqual(
+    [...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.dataset.metric),
+    ["lifetimeTokens"],
+  );
+  assert.equal(host.dataset.minimal, "true");
+  host.shadowRoot.querySelector('input[data-source="official"][data-metric="secondaryRemaining"]').click();
+  assert.deepEqual(persistedPayloads.at(-1).metrics.official, ["lifetimeTokens", "secondaryRemaining"]);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.cleanup(), true);
+  delete window.__codexUsageMonitorSaveSettings;
+  delete window.__CODEX_USAGE_MONITOR_PERSISTED_SETTINGS__;
 } finally {
   dom.window.close();
 }
 
-console.log("PASS: unified three-column panel, per-source status, global selection limit, aggregated summary, replacement recovery, and cleanup lifecycle.");
+console.log("PASS: unified panel, defaults, persistent settings bridge, replacement recovery, and cleanup lifecycle.");
