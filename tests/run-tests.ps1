@@ -174,18 +174,26 @@ foreach ($requiredGuideText in @('install\.ps1', 'Never ask.*API key', 'WindowsA
   if ($agentGuide -notmatch $requiredGuideText) { throw "Codex installation guide is missing: $requiredGuideText" }
 }
 $readme = Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw -Encoding UTF8
-foreach ($requiredReadmeText in @('简要安装说明', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', '完整说明', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 初始值', '请求状态', '账户余额', '限额', '60 秒', '有限页数', '极简模式', '倒计时可视化', '圆形表盘', 'official-token-counter.json', '本机实时累计', '当前任务累计 Token', '上次对话消耗 Token')) {
+foreach ($requiredReadmeText in @('三步开始使用', 'docs/images/monitor-collapsed.png', 'docs/images/monitor-expanded.png', 'docs/images/monitor-minimal.png', 'docs/images/configure-api-key.png', 'docs/data-sources.md', 'docs/troubleshooting.md', 'AGENTS.md', 'install.ps1', 'API 账户', 'API Key', '累计 Token 基准', '请求状态', '账户余额', '限额', '60', '极简模式', '倒计时可视化', '当前任务累计 Token', '上次对话消耗 Token', '直接关闭杀毒软件')) {
   if ($readme -notmatch [regex]::Escape($requiredReadmeText)) { throw "README installation guidance is missing: $requiredReadmeText" }
 }
 if ($readme -match '(?m)^#{2,}\s+[\d.]*\s*界面预览\s*$') { throw 'README preview should be an unnumbered introduction.' }
-$briefInstallAt = $readme.IndexOf('## 1. 简要安装说明')
+$briefInstallAt = $readme.IndexOf('## 1. 三步开始使用')
 $previewAt = $readme.IndexOf('docs/images/monitor-expanded.png')
-$dataSourceAt = $readme.IndexOf('### 1.3 选择数据源并配置')
-$codexHelpAt = $readme.IndexOf('如果不懂如何运行下面的命令')
-$officialSourceAt = if ($dataSourceAt -ge 0) { $readme.IndexOf('- 官方订阅：', $dataSourceAt) } else { -1 }
-$expandedViewAt = $readme.IndexOf('### 1.4 展开监视栏查看和勾选')
+$disclaimerAt = $readme.IndexOf('本项目是非官方项目')
 if ($previewAt -lt 0 -or $briefInstallAt -lt 0 -or $previewAt -ge $briefInstallAt) { throw 'README preview must appear before the brief installation section.' }
-if ($dataSourceAt -lt 0 -or $codexHelpAt -le $dataSourceAt -or $officialSourceAt -le $codexHelpAt -or $expandedViewAt -le $officialSourceAt) { throw 'README Codex help note must follow the data-source heading and precede its commands.' }
+if ($disclaimerAt -lt 0 -or $disclaimerAt -ge $previewAt) { throw 'README unofficial-project disclaimer must appear before the preview.' }
+if ($readme -match 'CCTQ') { throw 'README quick path should remain provider-neutral; protocol compatibility belongs in the detailed data-source guide.' }
+
+$dataSourceGuide = Get-Content -LiteralPath (Join-Path $root 'docs\data-sources.md') -Raw -Encoding UTF8
+foreach ($requiredDataSourceText in @('official-token-counter.json', '本机实时累计', '有限页数', '圆形表盘', 'CCTQ 风格', '请求指纹', 'HTTP 429', 'K', 'M', 'B')) {
+  if ($dataSourceGuide -notmatch [regex]::Escape($requiredDataSourceText)) { throw "Detailed data-source guide is missing: $requiredDataSourceText" }
+}
+
+$troubleshootingGuide = Get-Content -LiteralPath (Join-Path $root 'docs\troubleshooting.md') -Raw -Encoding UTF8
+foreach ($requiredTroubleshootingText in @('state.json', '动态端口', 'launcher-error.log', '-Replace', '直接关闭杀毒软件')) {
+  if ($troubleshootingGuide -notmatch [regex]::Escape($requiredTroubleshootingText)) { throw "Troubleshooting guide is missing: $requiredTroubleshootingText" }
+}
 
 function Test-JsonPropertyNames($Value) {
   if ($null -eq $Value) { return }
