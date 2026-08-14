@@ -50,9 +50,9 @@ foreach ($file in $powerShellFiles) {
 }
 
 $javascriptFiles = @(
-  'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js', 'assets\usage-update.js',
+  'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js',
   'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\validate-provider.mjs',
-  'scripts\ui-settings.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs'
+  'scripts\ui-settings.mjs', 'scripts\auto-updater.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs', 'tests\auto-updater.mjs'
 )
 foreach ($relative in $javascriptFiles) {
   & $node --check (Join-Path $root $relative)
@@ -65,6 +65,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Usage client tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Renderer lifecycle tests failed.' }
 & $node (Join-Path $root 'tests\ui-settings.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'UI settings persistence tests failed.' }
+& $node (Join-Path $root 'tests\auto-updater.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Automatic updater tests failed.' }
+& $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\auto-update.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Automatic update package validation tests failed.' }
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\provider-persistence.ps1')
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\panel-configuration.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Provider persistence tests failed.' }
@@ -115,8 +119,8 @@ if ($successProbe.TimedOut -or $successProbe.ExitCode -ne 0 -or $successProbe.St
 }
 
 $runtimeFiles = @(
-  'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js', 'assets\usage-update.js',
-  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1',
+  'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js',
+  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-update.ps1', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1',
   'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\launch-codex-monitor-hidden.vbs',
   'scripts\install-monitor-launcher.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1',
   'scripts\configure-api-account.ps1', 'scripts\clear-api-account.ps1', 'scripts\configure-token-baseline.ps1', 'scripts\clear-token-baseline.ps1'
@@ -158,6 +162,8 @@ if ($runtimeSource -notmatch 'Resolve-CodexUsageRunnableCliPath') { throw 'Store
 if ($runtimeSource -notmatch '-ExecutionPolicy Bypass') { throw 'Hidden launcher execution-policy bypass is missing.' }
 if ($runtimeSource -notmatch 'exitCode = shell\.Run\(command, 0, True\)') { throw 'Hidden launcher exit-code capture is missing.' }
 if ($runtimeSource -notmatch 'launcher-error\.log') { throw 'Hidden launcher bootstrap log contract is missing.' }
+if ($runtimeSource -notmatch 'release-assets\.githubusercontent\.com' -or $runtimeSource -notmatch 'SHA-256' -or $runtimeSource -notmatch '24 \* 60 \* 60 \* 1000') { throw 'Automatic update verification and 24-hour schedule contract is missing.' }
+if ($runtimeSource -match 'fetch\(API_URL' -or $runtimeSource -match 'checkForUpdate') { throw 'Renderer-side update checks must not remain active.' }
 
 $githubDirectory = Join-Path $root '.github'
 if (Test-Path -LiteralPath $githubDirectory -PathType Container) {

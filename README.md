@@ -9,7 +9,7 @@
 
 > 本项目是非官方项目，与 OpenAI 没有隶属、赞助或背书关系。Codex 更新可能改变页面结构；项目会持续通过兼容性测试适配新版界面。
 
-**v2.1.0 更新：**API 账户和 API Key 可直接在展开面板安全配置；API Key 使用面向小白的渐进式表单。显示项和四个界面开关改由监视器后台持久化，Codex 重启或更新后仍能恢复上次选择；全新设置默认仅显示“7天剩余”和“当前任务累计 Token”。
+**v2.1.1 更新：**“版本更新提醒”升级为可选的安全自动更新。开启后每 24 小时检查一次正式 GitHub Release，下载包通过版本、来源、大小、ZIP 路径和 SHA-256 校验后自动安装并热替换监视器后台；失败时继续使用当前版本，不会重启 Codex。
 
 ![Codex Usage Monitor v2.1.0 展开面板](docs/images/monitor-expanded.png)
 
@@ -17,7 +17,7 @@
 - 自动适配新版与旧版 Codex Composer 布局。
 - 凭据使用当前 Windows 用户的 DPAPI 加密保存，不进入源码、页面设置或日志。
 - 安装器会创建独立的 `Codex Usage Monitor` 桌面快捷方式，一次启动 Codex 与监视器。
-- 支持中文与 English UI、极简模式、倒计时可视化和可选的版本更新提醒。
+- 支持中文与 English UI、极简模式、倒计时可视化和可选的安全自动更新。
 
 ## 1. 三步开始使用
 
@@ -74,7 +74,7 @@ API 账户和 API Key 标题后各有一个“配置”按钮。API Key 已有�
 
 ![API Key 小白配置界面](docs/images/configure-api-key.png)
 
-显示项、极简模式、倒计时可视化、English UI 和版本更新提醒由监视器后台保存到 `%LOCALAPPDATA%\CodexUsageMonitor\ui-settings.json`。设置文件不包含账号凭据，Codex 重启、更新或页面存储被重建后仍能恢复。
+显示项、极简模式、倒计时可视化、English UI 和自动更新开关由监视器后台保存到 `%LOCALAPPDATA%\CodexUsageMonitor\ui-settings.json`。开启自动更新后，运行中的监视器最多每 24 小时检查一次本项目的 GitHub Release；发现正式新版本时，会下载名称与版本严格匹配的 Windows ZIP、核对 GitHub 提供的 SHA-256 摘要，校验通过后安装并热替换监视器后台，不会重启 Codex。检查、下载或校验失败时继续使用当前版本，下个周期再试。设置文件不包含账号凭据，Codex 重启、更新或页面存储被重建后仍能恢复。
 
 ## 3. 配置数据源
 

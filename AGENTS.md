@@ -88,6 +88,7 @@ Do not replace the normal Codex shortcut. Do not modify `WindowsApps`, `app.asar
 - Preserve user changes and `*.local.json` files. Never commit provider secrets or personal paths.
 - Keep CDP bound to `127.0.0.1` and retain the policy that an already-running Codex instance is not forcefully restarted.
 - Preserve automatic CDP port fallback. Read the selected runtime port from `%LOCALAPPDATA%\CodexUsageMonitor\state.json` when verifying an installed monitor.
+- Preserve the opt-in automatic update boundary: check no more than once per 24 hours, accept only a newer non-draft/non-prerelease GitHub Release with the exact package name, require its GitHub SHA-256 digest, validate ZIP paths and size limits, and keep the current installation running on every failure. Never restart or terminate Codex as part of an update.
 - After code or configuration-template changes, run `pwsh -NoProfile -File .\tests\run-tests.ps1`.
 - After installer or package-manifest changes, also verify `pwsh -NoProfile -File .\install.ps1 -InstallRoot <temporary-directory> -SkipShortcut` and remove only that exact temporary directory afterward.
 - Report the installed path, shortcut path, selected mode, tests run, and any action the user still needs to take. Never claim that the monitor is visible until it has actually been launched and verified in a CDP-enabled Codex session.

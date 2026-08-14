@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { CombinedUsageClient } from "./usage-client.mjs";
 import { createUiSettingsStore, MAX_UI_SETTINGS_BYTES } from "./ui-settings.mjs";
+import { createAutoUpdater } from "./auto-updater.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -11,7 +12,6 @@ const usageAssets = [
   "usage-constants.js",
   "usage-i18n.js",
   "usage-placement.js",
-  "usage-update.js",
   "usage-inject.js",
 ].map((name) => path.join(root, "assets", name));
 const HOST_ID = "codex-usage-monitor";
@@ -274,12 +274,14 @@ function readSettingsExpression() {
   return `(() => window[${JSON.stringify(STATE_KEY)}]?.getSettings?.() || null)()`;
 }
 
-async function registerSettingsBinding(session, settingsStore) {
+async function registerSettingsBinding(session, settingsStore, onSettingsChanged = null) {
   session.on("Runtime.bindingCalled", ({ name, payload }) => {
     if (name !== SETTINGS_BINDING || typeof payload !== "string" || Buffer.byteLength(payload, "utf8") > MAX_UI_SETTINGS_BYTES) return;
     let value;
     try { value = JSON.parse(payload); } catch { return; }
-    settingsStore.save(value).catch((error) => console.error(`[usage-monitor] UI settings save failed: ${error.message}`));
+    settingsStore.save(value)
+      .then((saved) => onSettingsChanged?.(saved))
+      .catch((error) => console.error(`[usage-monitor] UI settings save failed: ${error.message}`));
   });
   await session.send("Runtime.addBinding", { name: SETTINGS_BINDING });
 }
@@ -440,6 +442,7 @@ async function runOnce(options) {
 async function runWatch(options) {
   const sessions = new Map();
   const settingsStore = await createUiSettingsStore();
+  const autoUpdater = createAutoUpdater({ root, port: options.port, settingsStore });
   let latestUsage = null;
   let stopping = false;
   let targetsMissingSince = null;
@@ -472,9 +475,10 @@ async function runWatch(options) {
           .then(() => syncCurrentThread(session, usageClient))
           .catch((error) => console.error(`[usage-monitor] renderer reload failed: ${error.message}`));
       });
-      await registerSettingsBinding(session, settingsStore);
+      await registerSettingsBinding(session, settingsStore, (value) => autoUpdater.settingsChanged(value));
       await registerConfigurationBinding(session, options.port);
       await applyMonitor(session, latestUsage, settingsStore);
+      autoUpdater.settingsChanged(settingsStore.current);
       await syncCurrentThread(session, usageClient);
     } catch (error) {
       if (sessions.get(target.id)?.session === session) sessions.delete(target.id);
@@ -487,6 +491,7 @@ async function runWatch(options) {
     if (stopping) return;
     stopping = true;
     await usageStartPromise.catch(() => {});
+    autoUpdater.stop();
     await usageClient.stop().catch(() => {});
     await settingsStore.flush().catch(() => {});
     await closeSessions(sessions);
@@ -500,6 +505,7 @@ async function runWatch(options) {
     usageStartPromise = usageClient.start().catch((error) => {
       console.error(`[usage-monitor] initial usage refresh failed: ${error.message}`);
     });
+    autoUpdater.start();
     while (!stopping) {
       const targets = await getTargets(options.port);
       const monitorTargets = targets.filter(isMonitorTarget);

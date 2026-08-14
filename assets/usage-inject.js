@@ -1,18 +1,17 @@
 (() => {
   const modules = window.__CODEX_USAGE_MONITOR_MODULES__;
-  if (!modules?.constants || !modules?.i18n || !modules?.placement || !modules?.update) {
+  if (!modules?.constants || !modules?.i18n || !modules?.placement) {
     throw new Error("Codex Usage Monitor modules are incomplete.");
   }
   const {
     VERSION, STATE_KEY, USAGE_KEY, HOST_ID, SETTINGS_KEY, PREVIOUS_SETTINGS_KEY,
     PERSISTED_SETTINGS_KEY, SETTINGS_BINDING, CONFIGURATION_KEY, CONFIGURATION_BINDING,
     REFRESH_INTERVAL_MS, LAYOUT_FALLBACK_INTERVAL_MS, COUNTDOWN_INTERVAL_MS,
-    PLACEMENT_DEBOUNCE_MS, UPDATE_CHECK_INTERVAL_MS, MAX_SELECTED_METRICS,
+    PLACEMENT_DEBOUNCE_MS, MAX_SELECTED_METRICS,
     MAX_MINIMAL_SELECTED_METRICS,
   } = modules.constants;
   const { createTranslator } = modules.i18n;
   const { findPlacement, configurePosition } = modules.placement;
-  const { checkForUpdate } = modules.update;
   const TASK_METRIC_IDS = new Set(["currentTaskTokens", "lastTurnTokens"]);
   const TASK_METRIC_FALLBACKS = [
     { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 --", value: "--", defaultVisible: false },
@@ -742,18 +741,6 @@
     ? MAX_MINIMAL_SELECTED_METRICS
     : MAX_SELECTED_METRICS;
 
-  const refreshUpdateBadge = async (host, settings = loadSettings(), force = false) => {
-    if (!host?.shadowRoot || !settings.updateNotifications) return;
-    const result = await checkForUpdate({ currentVersion: VERSION, intervalMs: UPDATE_CHECK_INTERVAL_MS, force });
-    if (!result?.available || !host?.shadowRoot) return;
-    const t = createTranslator(settings.englishUi ? "en" : "zh");
-    const product = host.shadowRoot.querySelector(".usage-brand-product");
-    if (!product) return;
-    product.textContent = t("updateAvailable", { version: result.latestVersion });
-    product.title = t("updateTitle", { version: result.latestVersion });
-    product.href = result.url;
-  };
-
   const updateCountdowns = (host, value) => {
     if (!host?.shadowRoot) return;
     const usage = normalizeUsage(value);
@@ -1175,7 +1162,6 @@
       }));
     }
     updateCountdowns(host, usage);
-    refreshUpdateBadge(host, settings);
     host.dataset.rendered = "true";
   };
 
@@ -1312,7 +1298,6 @@
           settings[input.dataset.setting] = input.checked;
           saveSettings(settings);
           render(host, usage);
-          if (input.dataset.setting === "updateNotifications" && input.checked) refreshUpdateBadge(host, settings, true);
           return;
         }
         if (!input.dataset.metric || !input.dataset.source) return;
