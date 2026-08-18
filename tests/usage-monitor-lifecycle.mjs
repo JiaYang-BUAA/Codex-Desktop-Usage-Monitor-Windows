@@ -54,6 +54,7 @@ const dom = new JSDOM(`<!doctype html>
 });
 
 const { window } = dom;
+window.document.hasFocus = () => true;
 window.Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
   const value = (() => {
     if (this.id === "composer-wrapper" || this.matches('.composer-surface-chrome, [class*="ComposerLayoutRoot"]')) return { x: 100, y: 100, width: 700, height: 100 };
@@ -155,10 +156,29 @@ try {
   assert.equal(host.style.getPropertyValue("--usage-font-size"), "14px");
   assert.equal(host.style.getPropertyValue("--usage-left"), "234px");
   assert.equal(host.style.getPropertyValue("--usage-top"), "164px");
+  const initialMonitorLeft = host.style.getPropertyValue("--usage-left");
+  const quickComposer = window.document.createElement("div");
+  quickComposer.className = "composer-surface-chrome quick-chat-composer";
+  quickComposer.innerHTML = '<div contenteditable="true"></div><button>快速聊天</button><button>发送</button>';
+  window.document.getElementById("composer-wrapper").parentElement.insertBefore(quickComposer, window.document.getElementById("composer-wrapper"));
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(host.style.getPropertyValue("--usage-left"), initialMonitorLeft);
+  window.document.getElementById("composer-wrapper").innerHTML = composerMarkup();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(host.dataset.anchor, "approval");
+  assert.equal(host.style.getPropertyValue("--usage-left"), initialMonitorLeft);
+  quickComposer.remove();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
   const approvalButton = [...window.document.querySelectorAll("button")]
     .find((button) => button.textContent.includes("替我审批"));
   assert.ok(approvalButton);
-  const initialMonitorLeft = host.style.getPropertyValue("--usage-left");
+  window.dispatchEvent(new window.Event("blur"));
+  assert.equal(host.hidden, true);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().reason, "window-not-focused");
+  window.dispatchEvent(new window.Event("focus"));
+  assert.equal(host.hidden, false);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
   for (const label of ["请求批准", "替我审批", "完全访问权限", "完全访问", "自定义 (config.toml)", "自定义"]) {
     approvalButton.textContent = label;
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -241,7 +261,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.1.1", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.1.2", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);

@@ -9,7 +9,7 @@ import {
   selectReleaseAsset,
 } from "../scripts/auto-updater.mjs";
 
-assert.equal(compareVersions("2.1.1", "2.1.0"), 1);
+assert.equal(compareVersions("2.1.2", "2.1.1"), 1);
 assert.equal(compareVersions("2.1.0", "2.1.0"), 0);
 assert.equal(compareVersions("2.0.9", "2.1.0"), -1);
 assert.throws(() => compareVersions("2.1", "2.1.0"), /Invalid semantic version/);
@@ -20,17 +20,17 @@ const digest = crypto.createHash("sha256").update(bytes).digest("hex");
 const release = (overrides = {}) => ({
   draft: false,
   prerelease: false,
-  tag_name: "v2.1.1",
+  tag_name: "v2.1.2",
   assets: [{
-    name: "codex-usage-monitor-windows-2.1.1.zip",
+    name: "codex-usage-monitor-windows-2.1.2.zip",
     size: bytes.length,
     digest: `sha256:${digest}`,
-    browser_download_url: "https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/download/v2.1.1/codex-usage-monitor-windows-2.1.1.zip",
+    browser_download_url: "https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/download/v2.1.2/codex-usage-monitor-windows-2.1.2.zip",
   }],
   ...overrides,
 });
 
-assert.equal(selectReleaseAsset(release(), "2.1.0").version, "2.1.1");
+assert.equal(selectReleaseAsset(release(), "2.1.1").version, "2.1.2");
 assert.equal(selectReleaseAsset(release({ draft: true }), "2.1.0"), null);
 assert.equal(selectReleaseAsset(release({ prerelease: true }), "2.1.0"), null);
 assert.equal(selectReleaseAsset(release({ tag_name: "v2.0.9" }), "2.1.0"), null);
@@ -65,10 +65,10 @@ try {
     },
   });
   const result = await updater.check({ force: true });
-  assert.deepEqual(result, { status: "installing", version: "2.1.1" });
+  assert.deepEqual(result, { status: "installing", version: "2.1.2" });
   assert.equal(calls.length, 3);
   assert.equal(spawnCall.options.detached, true);
-  assert.ok(spawnCall.args.includes("2.1.1"));
+  assert.ok(spawnCall.args.includes("2.1.2"));
   assert.ok(spawnCall.args.includes("9345"));
   assert.equal(JSON.parse(await fs.readFile(statePath, "utf8")).status, "installing");
 

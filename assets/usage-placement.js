@@ -23,7 +23,7 @@
   const isApprovalControl = (node) => APPROVAL_PATTERN.test(controlText(node));
   const composerSelector = COMPOSER_SELECTORS.join(", ");
 
-  const findPlacement = (hostId) => {
+  const findPlacement = (hostId, preferredComposer = null) => {
     const composers = [...document.querySelectorAll(composerSelector)].filter(isVisible);
     const editables = [...document.querySelectorAll(EDITABLE_SELECTOR)]
       .filter((node) => isVisible(node) && !node.closest(`#${hostId}`));
@@ -39,8 +39,37 @@
       }
       return null;
     };
-    const match = editables.map(nearestComposer).find(Boolean)
-      || (composers.length ? { composer: composers.at(-1), strategy: "explicit-composer" } : null);
+    const preferredEditable = preferredComposer && preferredComposer.isConnected && isVisible(preferredComposer)
+      ? editables.find((editable) => preferredComposer.contains(editable))
+      : null;
+    const preferredMatch = preferredEditable ? nearestComposer(preferredEditable) : null;
+    const candidates = editables
+      .map((editable, order) => {
+        const match = nearestComposer(editable);
+        return match ? { ...match, editable, order } : null;
+      })
+      .filter(Boolean)
+      .filter((candidate, index, all) => all.findIndex((item) => item.composer === candidate.composer) === index);
+    const candidateScore = (candidate) => {
+      const controls = [...candidate.composer.querySelectorAll(CONTROL_SELECTOR)]
+        .filter((node) => isVisible(node) && !node.closest(`#${hostId}`));
+      const composerBox = box(candidate.composer);
+      return {
+        approval: controls.some(isApprovalControl) ? 1 : 0,
+        explicit: candidate.composer.matches(composerSelector) ? 1 : 0,
+        x: composerBox?.x ?? Number.POSITIVE_INFINITY,
+        order: candidate.order,
+      };
+    };
+    const fallbackMatch = candidates.sort((left, right) => {
+      const leftScore = candidateScore(left);
+      const rightScore = candidateScore(right);
+      return rightScore.approval - leftScore.approval
+        || rightScore.explicit - leftScore.explicit
+        || leftScore.x - rightScore.x
+        || leftScore.order - rightScore.order;
+    })[0] || (composers.length ? { composer: composers.at(-1), strategy: "explicit-composer" } : null);
+    const match = preferredMatch || fallbackMatch;
     if (!match) {
       return {
         composer: null,

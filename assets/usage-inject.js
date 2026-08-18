@@ -12,6 +12,10 @@
   } = modules.constants;
   const { createTranslator } = modules.i18n;
   const { findPlacement, configurePosition } = modules.placement;
+  const isVisible = (node) => {
+    const rect = node?.getBoundingClientRect?.();
+    return Boolean(rect && rect.width > 0 && rect.height > 0);
+  };
   const TASK_METRIC_IDS = new Set(["currentTaskTokens", "lastTurnTokens"]);
   const TASK_METRIC_FALLBACKS = [
     { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 --", value: "--", defaultVisible: false },
@@ -29,6 +33,7 @@
   });
 
   const previousUsage = window[STATE_KEY]?.usage || window[USAGE_KEY] || null;
+  let windowActive = typeof document.hasFocus !== "function" || document.hasFocus();
   try { window[STATE_KEY]?.cleanup?.(); } catch {}
 
   const normalizeConfigurationSummary = (value) => {
@@ -342,7 +347,7 @@
       position: fixed;
       left: var(--usage-left, 0px);
       top: var(--usage-top, 0px);
-      z-index: 2147483000;
+      z-index: 1000;
       display: inline-flex;
       max-width: var(--usage-max-width, 280px);
       color: var(--usage-color, currentColor);
@@ -1165,9 +1170,24 @@
     host.dataset.rendered = "true";
   };
 
+  let preferredComposer = null;
   const ensure = () => {
-    const placement = findPlacement(HOST_ID);
+    if (typeof document.hasFocus === "function") windowActive = document.hasFocus();
     const state = window[STATE_KEY];
+    if (!windowActive) {
+      const inactiveHost = document.getElementById(HOST_ID);
+      if (inactiveHost) {
+        inactiveHost.hidden = true;
+        inactiveHost.dataset.status = "inactive";
+      }
+      if (state) {
+        state.host = inactiveHost || null;
+        state.health = { ok: false, reason: "window-not-focused", strategy: "inactive", checkedAt: Date.now() };
+      }
+      return inactiveHost || null;
+    }
+    if (preferredComposer && (!preferredComposer.isConnected || !isVisible(preferredComposer))) preferredComposer = null;
+    const placement = findPlacement(HOST_ID, preferredComposer);
     if (!placement.composer) {
       document.getElementById(HOST_ID)?.remove();
       if (state) {
@@ -1176,6 +1196,7 @@
       }
       return null;
     }
+    preferredComposer = placement.composer;
     let host = document.getElementById(HOST_ID);
     let created = false;
     if (!host?.shadowRoot) {
@@ -1369,6 +1390,20 @@
     const state = window[STATE_KEY];
     if (state?.host) updateCountdowns(state.host, state.usage);
   };
+  const focusHandler = () => {
+    windowActive = typeof document.hasFocus !== "function" || document.hasFocus();
+    ensure();
+  };
+  const blurHandler = () => {
+    windowActive = false;
+    const host = document.getElementById(HOST_ID);
+    if (host) {
+      host.hidden = true;
+      host.dataset.status = "inactive";
+    }
+    const state = window[STATE_KEY];
+    if (state) state.health = { ok: false, reason: "window-not-focused", strategy: "inactive", checkedAt: Date.now() };
+  };
   const outsideHandler = (event) => {
     const host = document.getElementById(HOST_ID);
     if (!host || host.dataset.open !== "true" || host.contains(event.target)) return;
@@ -1379,6 +1414,8 @@
   };
   window.addEventListener("resize", resizeHandler, { passive: true });
   window.addEventListener("pointerdown", outsideHandler, true);
+  window.addEventListener("focus", focusHandler);
+  window.addEventListener("blur", blurHandler);
   document.addEventListener("visibilitychange", visibilityHandler);
 
   window[STATE_KEY] = {
@@ -1388,6 +1425,8 @@
     scheduler,
     resizeHandler,
     visibilityHandler,
+    focusHandler,
+    blurHandler,
     outsideHandler,
     host: null,
     health: { ok: false, reason: "initializing", strategy: "none", checkedAt: Date.now() },
@@ -1440,6 +1479,8 @@
       if (scheduler.timeout) clearTimeout(scheduler.timeout);
       window.removeEventListener("resize", resizeHandler);
       window.removeEventListener("pointerdown", outsideHandler, true);
+      window.removeEventListener("focus", focusHandler);
+      window.removeEventListener("blur", blurHandler);
       document.removeEventListener("visibilitychange", visibilityHandler);
       document.getElementById(HOST_ID)?.remove();
       delete window[USAGE_KEY];
