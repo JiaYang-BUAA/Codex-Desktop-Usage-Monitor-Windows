@@ -54,7 +54,6 @@ const dom = new JSDOM(`<!doctype html>
 });
 
 const { window } = dom;
-window.document.hasFocus = () => true;
 window.Element.prototype.getBoundingClientRect = function getBoundingClientRect() {
   const value = (() => {
     if (this.id === "composer-wrapper" || this.matches('.composer-surface-chrome, [class*="ComposerLayoutRoot"]')) return { x: 100, y: 100, width: 700, height: 100 };
@@ -174,8 +173,8 @@ try {
     .find((button) => button.textContent.includes("替我审批"));
   assert.ok(approvalButton);
   window.dispatchEvent(new window.Event("blur"));
-  assert.equal(host.hidden, true);
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().reason, "window-not-focused");
+  assert.equal(host.hidden, false);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
   window.dispatchEvent(new window.Event("focus"));
   assert.equal(host.hidden, false);
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
@@ -261,7 +260,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.1.2", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.1.3", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);

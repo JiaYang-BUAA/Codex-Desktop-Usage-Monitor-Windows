@@ -151,7 +151,8 @@ if ($runtimeSource -notmatch '注入验证探针失败，将继续重试' -or $r
 if ($runtimeSource -notmatch '\$owned = @\(Get-CodexUsageInjectorProcesses\)') { throw 'Cross-port injector cleanup contract is missing.' }
 if ($runtimeSource -notmatch 'rate-limited' -or $runtimeSource -notmatch 'HTTP 429') { throw 'API rate-limit backoff contract is missing.' }
 if ($runtimeSource -notmatch 'minimalMode' -or $runtimeSource -notmatch 'countdownVisualization' -or $runtimeSource -notmatch 'englishUi' -or $runtimeSource -notmatch 'updateNotifications' -or $runtimeSource -notmatch 'usage-refresh-ring') { throw 'Display mode controls are missing.' }
-if ($runtimeSource -notmatch 'placementStrategy' -or $runtimeSource -notmatch 'visible-editable-not-found' -or $runtimeSource -notmatch 'preferredComposer' -or $runtimeSource -notmatch 'candidateScore' -or $runtimeSource -notmatch 'diagnose\(\)' -or $runtimeSource -notmatch 'window-not-focused' -or $runtimeSource -notmatch 'blurHandler') { throw 'DOM compatibility diagnostics are missing.' }
+if ($runtimeSource -notmatch 'placementStrategy' -or $runtimeSource -notmatch 'visible-editable-not-found' -or $runtimeSource -notmatch 'preferredComposer' -or $runtimeSource -notmatch 'candidateScore' -or $runtimeSource -notmatch 'diagnose\(\)') { throw 'DOM compatibility diagnostics are missing.' }
+if ($runtimeSource -match 'window-not-focused' -or $runtimeSource -match 'blurHandler' -or $runtimeSource -match 'document\.hasFocus') { throw 'The monitor must remain visible when the Codex window loses focus.' }
 if ($runtimeSource -notmatch 'LOCAL_TOKEN_IDLE_SCAN_MS\s*=\s*12000' -or $runtimeSource -notmatch 'localTokenNextScanDelay') { throw 'Adaptive local-token scan contract is missing.' }
 if ($runtimeSource -match '(?i)dream[ -]?skin|CODEX_DREAM|codex-dream') { throw 'Removed Dream Skin runtime compatibility is still present.' }
 if ($runtimeSource -notmatch 'runtimeVersion') { throw 'Runtime version state contract is missing.' }
