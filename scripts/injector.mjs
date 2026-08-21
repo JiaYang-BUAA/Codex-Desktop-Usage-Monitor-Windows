@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CombinedUsageClient } from "./usage-client.mjs";
 import { createUiSettingsStore, MAX_UI_SETTINGS_BYTES } from "./ui-settings.mjs";
 import { createAutoUpdater } from "./auto-updater.mjs";
+import { isMainCodexRendererTarget, syncCurrentThread } from "./current-thread.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -197,12 +198,7 @@ async function waitForTargets(port, timeoutMs) {
 }
 
 function isMonitorTarget(target) {
-  try {
-    const url = decodeURIComponent(String(target.url));
-    return !url.includes("avatar-overlay");
-  } catch {
-    return !String(target.url).includes("avatar-overlay");
-  }
+  return isMainCodexRendererTarget(target);
 }
 
 async function readUsagePayload() {
@@ -375,24 +371,6 @@ async function removeFromSession(session) {
 
 async function verifySession(session) {
   return session.evaluate(`(() => { const host = document.getElementById(${JSON.stringify(HOST_ID)}); const health = window[${JSON.stringify(STATE_KEY)}]?.diagnose?.() || null; return { installed: Boolean(host?.shadowRoot), anchor: host?.dataset?.anchor || null, status: host?.dataset?.status || null, strategy: host?.dataset?.placementStrategy || health?.strategy || null, reason: health?.reason || null }; })()`);
-}
-
-async function syncCurrentThread(session, usageClient) {
-  const threadId = await session.evaluate(`(() => {
-    const attributes = ["data-above-composer-conversation-id", "data-conversation-id", "data-thread-id"];
-    for (const attribute of attributes) {
-      const nodes = [...document.querySelectorAll(\`[\${attribute}]\`)];
-      const active = nodes.filter((node) => {
-        const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      }).at(-1) || nodes.at(-1) || null;
-      const value = active?.getAttribute(attribute) || "";
-      const match = value.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0];
-      if (match) return match;
-    }
-    return null;
-  })()`);
-  usageClient.setCurrentThreadId(threadId);
 }
 
 async function capture(session, targetPath) {
