@@ -51,14 +51,16 @@ foreach ($file in $powerShellFiles) {
 
 $javascriptFiles = @(
   'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js',
-  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\validate-provider.mjs',
-  'scripts\ui-settings.mjs', 'scripts\auto-updater.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs', 'tests\auto-updater.mjs'
+  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\current-thread.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\validate-provider.mjs',
+  'scripts\ui-settings.mjs', 'scripts\auto-updater.mjs', 'tests\current-thread.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs', 'tests\auto-updater.mjs'
 )
 foreach ($relative in $javascriptFiles) {
   & $node --check (Join-Path $root $relative)
   if ($LASTEXITCODE -ne 0) { throw "JavaScript syntax failed: $relative" }
 }
 
+& $node (Join-Path $root 'tests\current-thread.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Current task selection tests failed.' }
 & $node (Join-Path $root 'tests\usage-client.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Usage client tests failed.' }
 & $node (Join-Path $root 'tests\usage-monitor-lifecycle.mjs')
@@ -120,7 +122,7 @@ if ($successProbe.TimedOut -or $successProbe.ExitCode -ne 0 -or $successProbe.St
 
 $runtimeFiles = @(
   'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js',
-  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-update.ps1', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1',
+  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\current-thread.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-update.ps1', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1',
   'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\launch-codex-monitor-hidden.vbs',
   'scripts\install-monitor-launcher.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1',
   'scripts\configure-api-account.ps1', 'scripts\clear-api-account.ps1', 'scripts\configure-token-baseline.ps1', 'scripts\clear-token-baseline.ps1'
@@ -135,7 +137,7 @@ if ($runtimeSource -notmatch 'CODEX_USAGE_API_KEY') { throw 'API key environment
 if ($runtimeSource -notmatch 'CODEX_USAGE_ACCOUNT_TOKEN' -or $runtimeSource -notmatch 'New-Api-User') { throw 'API account environment or authentication contract is missing.' }
 if ($runtimeSource -notmatch 'account-token-counter.json' -or $runtimeSource -notmatch 'InitialTokens') { throw 'Token baseline persistence contract is missing.' }
 if ($runtimeSource -notmatch 'official-token-counter.json' -or $runtimeSource -notmatch 'LocalCodexTokenTracker' -or $runtimeSource -notmatch 'last_token_usage' -or $runtimeSource -notmatch 'LOCAL_TOKEN_COUNTER_SCHEMA_VERSION\s*=\s*7' -or $runtimeSource -notmatch 'officialLifetimePendingTokens' -or $runtimeSource -notmatch 'setOfficialLifetimeTokens' -or $runtimeSource -notmatch 'OFFICIAL_MODEL_PROVIDER_ID' -or $runtimeSource -notmatch 'requires_openai_auth' -or $runtimeSource -notmatch 'account/read' -or $runtimeSource -notmatch 'config/read' -or $runtimeSource -notmatch 'conversationTokenDelta' -or $runtimeSource -notmatch 'official-conversation-raw' -or $runtimeSource -notmatch 'seenEvents' -or $runtimeSource -notmatch 'thread_settings_applied' -or $runtimeSource -notmatch 'session_meta' -or $runtimeSource -notmatch 'turn_id' -or $runtimeSource -notmatch 'chatgptauthtokens' -or $runtimeSource -notmatch 'personalaccesstoken') { throw 'Official authenticated-provider raw conversation Token attribution and persistence contract is missing.' }
-if ($runtimeSource -notmatch 'data-above-composer-conversation-id' -or $runtimeSource -notmatch 'data-conversation-id' -or $runtimeSource -notmatch 'data-thread-id' -or $runtimeSource -notmatch 'currentTaskTokens' -or $runtimeSource -notmatch 'lastTurnTokens') { throw 'Current-task Token usage contract is missing.' }
+if ($runtimeSource -notmatch 'data-above-composer-conversation-id' -or $runtimeSource -notmatch 'data-conversation-id' -or $runtimeSource -notmatch 'data-thread-id' -or $runtimeSource -notmatch 'chatgpt' -or $runtimeSource -notmatch 'auxiliaryConversationPresent' -or $runtimeSource -notmatch 'initialRoute' -or $runtimeSource -notmatch 'isMainCodexRendererTarget' -or $runtimeSource -notmatch 'currentTaskTokens' -or $runtimeSource -notmatch 'lastTurnTokens') { throw 'Current-task Token usage contract is missing.' }
 if ($runtimeSource -notmatch 'ProtectedData') { throw 'DPAPI persistence contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageCliPath') { throw 'Codex CLI auto-discovery contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageNonStoreDesktopPath') { throw 'Non-Store Codex Desktop auto-discovery contract is missing.' }

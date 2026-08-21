@@ -32,6 +32,7 @@
   "scripts/configure-api-provider.ps1",
   "scripts/configure-from-panel.ps1",
   "scripts/configure-cctq.ps1",
+  "scripts/current-thread.mjs",
   "scripts/injector.mjs",
   "scripts/launch-codex-monitor-hidden.vbs",
   "scripts/install-monitor-launcher.ps1",
@@ -48,6 +49,7 @@
   "tests/auto-update.ps1",
   "tests/panel-configuration.ps1",
   "tests/run-tests.ps1",
+  "tests/current-thread.mjs",
   "tests/usage-client.mjs",
   "tests/usage-monitor-lifecycle.mjs",
   "tests/ui-settings.mjs"
