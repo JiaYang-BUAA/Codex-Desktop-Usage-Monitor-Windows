@@ -344,20 +344,49 @@ function Resolve-CodexUsageNodePath {
   throw 'Node.js 未找到。请安装 Node.js 22+，或设置 CODEX_USAGE_NODE_PATH。'
 }
 
-function Get-CodexUsageAppPackage {
-  $packageNames = @($env:CODEX_USAGE_APP_PACKAGE_NAME, 'OpenAI.Codex') | Where-Object { $_ } | Select-Object -Unique
-  foreach ($name in $packageNames) {
-    $package = Get-AppxPackage -Name $name -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
-    if ($package) { return $package }
-  }
+function Get-CodexUsageAppPackageViaWindowsPowerShell {
+  $windowsPowerShell = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+  if (-not $windowsPowerShell) { return $null }
+  $query = @'
+$package = Get-AppxPackage -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.InstallLocation -and
+    ((@($env:CODEX_USAGE_APP_PACKAGE_NAME, 'OpenAI.Codex') -contains $_.Name) -or ($_.Name -match '(?i)OpenAI|Codex|ChatGPT')) -and
+    (Test-Path -LiteralPath (Join-Path $_.InstallLocation 'app\ChatGPT.exe') -PathType Leaf)
+  } |
+  Sort-Object Version -Descending |
+  Select-Object -First 1
+if ($package) {
+  $package | Select-Object Name,InstallLocation,PackageFamilyName,Version | ConvertTo-Json -Compress
+}
+'@
   try {
-    $package = Get-AppxPackage -ErrorAction Stop | Where-Object {
-      $_.InstallLocation -and
-      ($_.Name -match '(?i)OpenAI|Codex|ChatGPT') -and
-      (Test-Path -LiteralPath (Join-Path $_.InstallLocation 'app\ChatGPT.exe') -PathType Leaf)
-    } | Sort-Object Version -Descending | Select-Object -First 1
-    if ($package) { return $package }
+    $json = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $query 2>$null) -join [Environment]::NewLine
+    if (-not [string]::IsNullOrWhiteSpace($json)) { return ($json | ConvertFrom-Json) }
   } catch {}
+  return $null
+}
+
+function Get-CodexUsageAppPackage {
+  $appxCommand = Get-Command Get-AppxPackage -ErrorAction SilentlyContinue
+  if ($appxCommand) {
+    $packageNames = @($env:CODEX_USAGE_APP_PACKAGE_NAME, 'OpenAI.Codex') | Where-Object { $_ } | Select-Object -Unique
+    foreach ($name in $packageNames) {
+      $package = Get-AppxPackage -Name $name -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+      if ($package) { return $package }
+    }
+    try {
+      $package = Get-AppxPackage -ErrorAction Stop | Where-Object {
+        $_.InstallLocation -and
+        ($_.Name -match '(?i)OpenAI|Codex|ChatGPT') -and
+        (Test-Path -LiteralPath (Join-Path $_.InstallLocation 'app\ChatGPT.exe') -PathType Leaf)
+      } | Sort-Object Version -Descending | Select-Object -First 1
+      if ($package) { return $package }
+    } catch {}
+  }
+
+  $package = Get-CodexUsageAppPackageViaWindowsPowerShell
+  if ($package) { return $package }
 
   $codexCommand = Get-Command codex.exe -ErrorAction SilentlyContinue
   $codexPath = @($env:CODEX_USAGE_CODEX_PATH, $(if ($codexCommand) { $codexCommand.Source } else { $null })) |
