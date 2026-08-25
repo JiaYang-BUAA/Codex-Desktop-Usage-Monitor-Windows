@@ -9,9 +9,9 @@
 
 > 本项目是非官方项目，与 OpenAI 没有隶属、赞助或背书关系。Codex 更新可能改变页面结构；项目会持续通过兼容性测试适配新版界面。
 
-**v2.1.3 更新：**修复点击 Codex 外部窗口后监视栏消失的问题。监视栏不再依赖窗口焦点，只要主 Composer 仍存在就持续显示；快速聊天的主 Composer 识别修复保持不变。
+**v2.1.4 更新：**修复打开快速聊天或右侧栏“侧边聊天”后，当前任务相关数据失效的问题。监视器现在会跟随主 Composer 识别当前任务，并排除侧边任务、`chatgpt:` 会话和辅助预热页面。
 
-![Codex Usage Monitor v2.1.0 展开面板](docs/images/monitor-expanded.png)
+![Codex Usage Monitor v2.1.4 展开面板](docs/images/monitor-expanded.png)
 
 - 同一面板支持官方订阅、API 账户和 API Key 三种数据源。
 - 自动适配新版与旧版 Codex Composer 布局。
@@ -58,13 +58,13 @@
 
 全新设置默认只显示“7天剩余”和“当前任务累计 Token”。普通模式最多选择 8 项。
 
-![Codex Usage Monitor v2.1.0 普通模式](docs/images/monitor-collapsed.png)
+![Codex Usage Monitor v2.1.4 普通模式](docs/images/monitor-collapsed.png)
 
 ### 极简模式
 
 极简模式隐藏指标名称，仅保留数值与单位，最多选择 14 项；选中 9 项及以上时自动使用双行压缩布局。
 
-![Codex Usage Monitor v2.1.0 极简模式](docs/images/monitor-minimal.png)
+![Codex Usage Monitor v2.1.4 极简模式](docs/images/monitor-minimal.png)
 
 ### 展开面板
 
