@@ -86,6 +86,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Launcher decision tests failed.' }
 $originalLocalAppData = $env:LOCALAPPDATA
 $originalPath = $env:PATH
 $originalCliOverride = $env:CODEX_USAGE_CODEX_PATH
+$originalAppxTestOutput = $env:CODEX_USAGE_TEST_OUTPUT
 try {
   $resolutionRoot = Join-Path ([IO.Path]::GetTempPath()) "codex-usage-cli-resolution-$PID"
   $fakeLocalAppData = Join-Path $resolutionRoot 'local'
@@ -105,9 +106,44 @@ try {
   $env:LOCALAPPDATA = $originalLocalAppData
   $env:PATH = $originalPath
   $env:CODEX_USAGE_CODEX_PATH = $originalCliOverride
+  $env:CODEX_USAGE_TEST_OUTPUT = $originalAppxTestOutput
   if ($resolutionRoot -and (Test-Path -LiteralPath $resolutionRoot)) {
     Remove-Item -LiteralPath $resolutionRoot -Recurse -Force
   }
+}
+$windowsPowerShellPath = Get-CodexUsageWindowsPowerShellPath
+if (-not $windowsPowerShellPath -or $windowsPowerShellPath -notmatch '(?i)[\\/]System32[\\/]WindowsPowerShell[\\/]v1\.0[\\/]powershell\.exe$') {
+  throw "Windows PowerShell must resolve to the trusted system location: $windowsPowerShellPath"
+}
+$appxProbeRoot = Join-Path ([IO.Path]::GetTempPath()) "codex-usage-appx-probe-$PID"
+try {
+  New-Item -ItemType Directory -Force -Path $appxProbeRoot | Out-Null
+  $fakePowerShell = Join-Path $appxProbeRoot 'fake-powershell.cmd'
+  Set-Content -LiteralPath $fakePowerShell -Encoding ascii -Value @(
+    '@echo off',
+    'if /I "%CODEX_USAGE_TEST_OUTPUT%"=="valid" echo {"Name":"OpenAI.Codex","InstallLocation":"C:\\Program Files\\WindowsApps\\OpenAI.Codex_1.0.0.0_x64__test","PackageFamilyName":"OpenAI.Codex_test","Version":"1.0.0.0"}',
+    'if /I "%CODEX_USAGE_TEST_OUTPUT%"=="malformed" echo {invalid-json',
+    'exit /b 0'
+  )
+  $env:CODEX_USAGE_TEST_OUTPUT = 'valid'
+  $validPackage = Get-CodexUsageAppPackageViaWindowsPowerShell -WindowsPowerShellPath $fakePowerShell
+  if ($validPackage.Name -ne 'OpenAI.Codex' -or $validPackage.PackageFamilyName -ne 'OpenAI.Codex_test') {
+    throw 'Windows PowerShell fallback did not parse valid package JSON.'
+  }
+  $env:CODEX_USAGE_TEST_OUTPUT = 'empty'
+  if ($null -ne (Get-CodexUsageAppPackageViaWindowsPowerShell -WindowsPowerShellPath $fakePowerShell)) {
+    throw 'Windows PowerShell fallback should ignore empty output.'
+  }
+  $env:CODEX_USAGE_TEST_OUTPUT = 'malformed'
+  if ($null -ne (Get-CodexUsageAppPackageViaWindowsPowerShell -WindowsPowerShellPath $fakePowerShell)) {
+    throw 'Windows PowerShell fallback should ignore malformed JSON.'
+  }
+  if ($null -ne (Get-CodexUsageAppPackageViaWindowsPowerShell -WindowsPowerShellPath (Join-Path $appxProbeRoot 'missing.exe'))) {
+    throw 'Windows PowerShell fallback should reject a missing executable path.'
+  }
+} finally {
+  $env:CODEX_USAGE_TEST_OUTPUT = $originalAppxTestOutput
+  if (Test-Path -LiteralPath $appxProbeRoot) { Remove-Item -LiteralPath $appxProbeRoot -Recurse -Force }
 }
 $timeoutStopwatch = [Diagnostics.Stopwatch]::StartNew()
 $timeoutProbe = Invoke-CodexUsageProcessWithTimeout -FilePath $pwsh -ArgumentLine '-NoLogo -NoProfile -Command "Start-Sleep -Seconds 10"' -TimeoutMs 300

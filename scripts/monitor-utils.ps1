@@ -344,8 +344,29 @@ function Resolve-CodexUsageNodePath {
   throw 'Node.js 未找到。请安装 Node.js 22+，或设置 CODEX_USAGE_NODE_PATH。'
 }
 
+function Get-CodexUsageWindowsPowerShellPath {
+  $windowsRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+  if (-not $windowsRoot) { return $null }
+  $windowsPowerShell = Join-Path $windowsRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  if (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf) {
+    return [IO.Path]::GetFullPath($windowsPowerShell)
+  }
+  return $null
+}
+
 function Get-CodexUsageAppPackageViaWindowsPowerShell {
-  $windowsPowerShell = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+  [CmdletBinding()]
+  param([string]$WindowsPowerShellPath)
+
+  $windowsPowerShell = if ($WindowsPowerShellPath) {
+    if (Test-Path -LiteralPath $WindowsPowerShellPath -PathType Leaf) {
+      [IO.Path]::GetFullPath($WindowsPowerShellPath)
+    } else {
+      $null
+    }
+  } else {
+    Get-CodexUsageWindowsPowerShellPath
+  }
   if (-not $windowsPowerShell) { return $null }
   $query = @'
 $package = Get-AppxPackage -ErrorAction SilentlyContinue |
