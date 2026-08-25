@@ -177,7 +177,7 @@ if ($runtimeSource -notmatch 'data-above-composer-conversation-id' -or $runtimeS
 if ($runtimeSource -notmatch 'ProtectedData') { throw 'DPAPI persistence contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageCliPath') { throw 'Codex CLI auto-discovery contract is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageNonStoreDesktopPath') { throw 'Non-Store Codex Desktop auto-discovery contract is missing.' }
-if ($runtimeSource -notmatch 'Get-CodexUsageAppPackageViaWindowsPowerShell' -or $runtimeSource -notmatch 'Get-Command powershell\.exe') { throw 'PowerShell 7 Store package compatibility fallback is missing.' }
+if ($runtimeSource -notmatch 'Get-CodexUsageAppPackageViaWindowsPowerShell' -or $runtimeSource -notmatch 'Get-CodexUsageWindowsPowerShellPath') { throw 'PowerShell 7 Store package compatibility fallback is missing.' }
 if ($runtimeSource -notmatch 'Resolve-CodexUsageAvailablePort') { throw 'Automatic CDP port fallback contract is missing.' }
 if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop executable contract is missing.' }
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
