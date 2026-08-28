@@ -9,9 +9,9 @@
 
 > 本项目是非官方项目，与 OpenAI 没有隶属、赞助或背书关系。Codex 更新可能改变页面结构；项目会持续通过兼容性测试适配新版界面。
 
-**v2.1.4 更新：**修复打开快速聊天或右侧栏“侧边聊天”后，当前任务相关数据失效的问题。监视器现在会跟随主 Composer 识别当前任务，并排除侧边任务、`chatgpt:` 会话和辅助预热页面。
+**v2.1.5 更新：**展开面板中的“5小时剩余”和“7天剩余”现在会同时显示各自的重置时间与剩余百分数；折叠后的普通及极简监视栏仍只显示百分数，避免占用输入区宽度。本版本还合并了 Microsoft Store Codex 在 PowerShell 7 下的安装发现修复。
 
-![Codex Usage Monitor v2.1.4 展开面板](docs/images/monitor-expanded.png)
+![Codex Usage Monitor v2.1.5 展开面板](docs/images/monitor-expanded.png)
 
 - 同一面板支持官方订阅、API 账户和 API Key 三种数据源。
 - 自动适配新版与旧版 Codex Composer 布局。
@@ -58,17 +58,17 @@
 
 全新设置默认只显示“7天剩余”和“当前任务累计 Token”。普通模式最多选择 8 项。
 
-![Codex Usage Monitor v2.1.4 普通模式](docs/images/monitor-collapsed.png)
+![Codex Usage Monitor v2.1.5 普通模式](docs/images/monitor-collapsed.png)
 
 ### 极简模式
 
 极简模式隐藏指标名称，仅保留数值与单位，最多选择 14 项；选中 9 项及以上时自动使用双行压缩布局。
 
-![Codex Usage Monitor v2.1.4 极简模式](docs/images/monitor-minimal.png)
+![Codex Usage Monitor v2.1.5 极简模式](docs/images/monitor-minimal.png)
 
 ### 展开面板
 
-点击监视栏可展开三栏面板。每项前的复选框决定是否显示在折叠栏中；“官方订阅”下方的“本次任务相关”分区显示当前任务累计 Token 和上次对话消耗 Token。
+点击监视栏可展开三栏面板。“5小时剩余”和“7天剩余”在这里按“重置时间 · 剩余百分数”显示；每项前的复选框只决定折叠栏显示哪些指标，折叠栏中的这两项仍只显示百分数。“官方订阅”下方的“本次任务相关”分区显示当前任务累计 Token 和上次对话消耗 Token。
 
 API 账户和 API Key 标题后各有一个“配置”按钮。API Key 已有连接配置时只需填写或更换 Key，复杂连接字段默认折叠。
 
