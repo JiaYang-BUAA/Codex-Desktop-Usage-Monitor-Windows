@@ -1007,6 +1007,9 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
       display: `${label} ${remainingValue}`,
       detail: `${label}剩余：${remainingValue}`,
       value: remainingValue,
+      resetsAt: Number.isFinite(Number(item?.resetsAt)) && Number(item.resetsAt) > 0
+        ? Number(item.resetsAt)
+        : null,
       defaultVisible,
     });
   }

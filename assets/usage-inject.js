@@ -89,6 +89,7 @@
       display: typeof item.display === "string" ? item.display.slice(0, 48) : "--",
       detail: typeof item.detail === "string" ? item.detail.slice(0, 96) : null,
       value: typeof item.value === "string" ? item.value.slice(0, 48) : null,
+      resetsAt: finiteNumber(item.resetsAt) && Number(item.resetsAt) > 0 ? Number(item.resetsAt) : null,
       defaultVisible: Boolean(item.defaultVisible),
     };
   };
@@ -115,7 +116,7 @@
       const label = typeof item?.label === "string" ? item.label.slice(0, 8) : "主";
       const remaining = finiteNumber(item?.remainingPercent) ? Math.max(0, Math.min(100, Number(item.remainingPercent))) : null;
       const reset = formatReset(item?.resetsAt);
-      metrics.push({ id: index ? "secondaryRemaining" : "primaryRemaining", label: `${label} 剩余`, display: `${label} ${formatPercent(remaining)}`, detail: `${label} 剩余 ${formatPercent(remaining)}`, defaultVisible: index === 0 });
+      metrics.push({ id: index ? "secondaryRemaining" : "primaryRemaining", label: `${label} 剩余`, display: `${label} ${formatPercent(remaining)}`, detail: `${label} 剩余 ${formatPercent(remaining)}`, value: formatPercent(remaining), resetsAt: item?.resetsAt, defaultVisible: index === 0 });
       metrics.push({ id: index ? "secondaryReset" : "primaryReset", label: `${label} 重置`, display: `${label} ${reset}`, detail: `${label}：${reset}`, value: reset, defaultVisible: false });
     }
     if (finiteNumber(source.todayTokens)) metrics.push({ id: "todayTokens", label: "今日 token", display: `今日 ${formatTokens(Number(source.todayTokens))}`, detail: `今日 token：${formatTokens(Number(source.todayTokens))}`, value: String(Math.max(0, Math.round(Number(source.todayTokens)))), defaultVisible: true });
@@ -296,6 +297,7 @@
         label,
         display: `${compactLabel} ${remainingValue}`,
         value: remainingValue,
+        resetsAt: metric.resetsAt,
         defaultVisible,
       });
     }
@@ -608,7 +610,8 @@
     .usage-detail-select input:disabled { cursor: default; }
     .usage-detail-select:has(input:disabled) { opacity: .45; cursor: default; }
     .usage-detail-label { min-width: 0; color: inherit; font-weight: 650; }
-    .usage-detail-value { max-width: 94px; overflow: hidden; color: inherit; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+    .usage-detail-value { max-width: 138px; overflow: hidden; color: inherit; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .usage-detail-reset { font-weight: 500; opacity: .58; }
     .usage-column-brand {
       display: flex;
       flex-direction: column;
@@ -711,7 +714,7 @@
       .usage-column { padding-inline: 6px; }
       .usage-detail-row { gap: 4px; }
       .usage-detail-select { gap: 4px; }
-      .usage-detail-value { max-width: 72px; }
+      .usage-detail-value { max-width: 116px; }
       .usage-brand-product { font-size: 10px; }
       .usage-brand-credit { font-size: 8px; }
       .usage-mode-switches { gap: 6px; }
@@ -1071,8 +1074,15 @@
             select.append(input, label);
             const metricValueNode = document.createElement("span");
             metricValueNode.className = "usage-detail-value";
-            metricValueNode.textContent = metric.value || "--";
-            metricValueNode.title = metric.value || "--";
+            const valueText = metric.value || "--";
+            if (["primaryRemaining", "secondaryRemaining"].includes(metric.id)
+              && finiteNumber(metric.resetsAt) && Number(metric.resetsAt) > 0) {
+              const reset = document.createElement("span");
+              reset.className = "usage-detail-reset";
+              reset.textContent = t("resetsAt", { value: formatReset(metric.resetsAt) });
+              metricValueNode.append(reset, document.createTextNode(` · ${valueText}`));
+            } else metricValueNode.textContent = valueText;
+            metricValueNode.title = metricValueNode.textContent;
             row.append(select, metricValueNode);
             return row;
           }));

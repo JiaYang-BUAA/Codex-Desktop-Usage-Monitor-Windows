@@ -72,6 +72,8 @@ window.Element.prototype.getBoundingClientRect = function getBoundingClientRect(
 };
 
 const now = Date.now();
+const primaryResetsAt = new Date(2026, 6, 24, 12, 0).getTime() / 1000;
+const secondaryResetsAt = new Date(2026, 6, 30, 7, 0).getTime() / 1000;
 const usage = {
   schemaVersion: 2,
   nextRefreshAt: now + 60000,
@@ -81,8 +83,8 @@ const usage = {
     official: {
       id: "official", label: "官方订阅", accountType: "subscription", status: "ready", nextRefreshAt: now + 60000,
       metrics: [
-        { id: "primaryRemaining", label: "5小时剩余", display: "5小时 75%", value: "75%", defaultVisible: true },
-        { id: "secondaryRemaining", label: "7天剩余", display: "7天 44%", value: "44%", defaultVisible: false },
+        { id: "primaryRemaining", label: "5小时剩余", display: "5小时 75%", value: "75%", resetsAt: primaryResetsAt, defaultVisible: true },
+        { id: "secondaryRemaining", label: "7天剩余", display: "7天 44%", value: "44%", resetsAt: secondaryResetsAt, defaultVisible: false },
         { id: "primaryReset", label: "5小时重置", display: "重置 07-24 12:00", value: "07-24 12:00", defaultVisible: false },
         { id: "todayTokens", label: "今日 token", display: "今日 128k", value: "128,000", defaultVisible: true },
         { id: "lifetimeTokens", label: "累计 token", display: "累计 12m", value: "12,000,000", defaultVisible: false },
@@ -118,7 +120,7 @@ const usage = {
 
 window.localStorage.setItem("codex-usage-monitor-settings-v1", JSON.stringify({
   metrics: {
-    official: ["primaryRemaining", "primaryReset"],
+    official: ["primaryRemaining", "secondaryRemaining"],
     "api-account": ["balance"],
     acme: ["usedAmount", "quotaLimit"],
   },
@@ -220,7 +222,7 @@ try {
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
   assert.notEqual(host.dataset.density, "normal");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["5时75%", "重置07-24 12:00", "余额¥20", "已用¥5", "限额不限"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["5时75%", "7天44%", "余额¥20", "已用¥5", "限额不限"]);
 
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
@@ -237,6 +239,8 @@ try {
   assert.equal(taskSection.querySelectorAll(".usage-detail-row").length, 2);
   assert.equal(columns[0].querySelector('[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5小时剩余");
   assert.equal(columns[0].querySelector('[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "7天剩余");
+  assert.equal(columns[0].querySelector('[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "07-24 12:00重置 · 75%");
+  assert.equal(columns[0].querySelector('[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "07-30 07:00重置 · 44%");
   assert.equal(columns[0].querySelector('[data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "13万");
   assert.equal(columns[0].querySelector('[data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "1200万");
   assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3822万");
@@ -320,7 +324,7 @@ try {
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).minimalMode, true);
   assert.equal(host.dataset.density, "normal");
   assert.equal(host.shadowRoot.querySelector(".usage-column-meta span:first-child").textContent, "极简最多 14 项");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "07-24 12:00", "¥20", "¥5", "不限"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "44%", "¥20", "¥5", "不限"]);
   const minimalExtraSelectors = [
     'input[data-source="official"][data-metric="todayTokens"]',
     'input[data-source="official"][data-metric="lifetimeTokens"]',
@@ -430,6 +434,8 @@ try {
   );
   assert.equal(host.shadowRoot.querySelector(".usage-column-subsection-title .usage-column-heading").textContent, "Current Task");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5-hour remaining");
+  assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "resets 07-24 12:00 · 75%");
+  assert.equal(host.shadowRoot.querySelector('input[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "resets 07-30 07:00 · 44%");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "128K");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "12M");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "38.22M");

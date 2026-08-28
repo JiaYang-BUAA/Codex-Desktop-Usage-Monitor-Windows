@@ -66,6 +66,7 @@
       maximum: "最多显示 {count} 项",
       minimalMaximum: "极简最多 {count} 项",
       refreshIn: "刷新 {seconds}",
+      resetsAt: "{value}重置",
       metrics: Object.freeze({
         primaryRemaining: "5小时剩余", secondaryRemaining: "7天剩余", primaryReset: "重置时间",
         todayTokens: "今日 Token", lifetimeTokens: "累计 Token", currentTaskTokens: "当前任务累计 Token",
@@ -147,6 +148,7 @@
       maximum: "Up to {count} items",
       minimalMaximum: "Minimal up to {count}",
       refreshIn: "Refresh in {seconds}",
+      resetsAt: "resets {value}",
       metrics: Object.freeze({
         primaryRemaining: "5-hour remaining", secondaryRemaining: "7-day remaining", primaryReset: "Reset time",
         todayTokens: "Tokens today", lifetimeTokens: "Lifetime tokens", currentTaskTokens: "Current task tokens",
