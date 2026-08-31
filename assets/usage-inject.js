@@ -16,14 +16,22 @@
     const rect = node?.getBoundingClientRect?.();
     return Boolean(rect && rect.width > 0 && rect.height > 0);
   };
-  const TASK_METRIC_IDS = new Set(["currentTaskTokens", "lastTurnTokens"]);
-  const TASK_METRIC_FALLBACKS = [
-    { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 --", value: "--", defaultVisible: false },
-    { id: "lastTurnTokens", label: "上次对话消耗 Token", display: "上次 --", value: "--", defaultVisible: false },
+  const SESSION_METRIC_IDS = new Set(["currentStatus", "autoResume", "currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions"]);
+  const SESSION_METRIC_FALLBACKS = [
+    { id: "currentTaskTokens", label: "当前会话累计 Token", display: "会话 --", value: "--", defaultVisible: true },
+    { id: "lastTurnTokens", label: "上次回答消耗 Token", display: "上次回答 --", value: "--", defaultVisible: false },
+    { id: "cacheHitRate", label: "缓存命中率", display: "缓存 --", value: "--", defaultVisible: false },
+    { id: "contextCompactions", label: "自动压缩上下文次数", display: "压缩 --", value: "--", defaultVisible: false },
+    { id: "currentStatus", label: "当前状态", display: "状态 --", value: "--", statusCode: null, defaultVisible: false },
+    { id: "autoResume", label: "额度恢复续跑", display: "续跑 --", value: "--", defaultVisible: false },
   ];
   const DEFAULT_METRIC_SELECTIONS = Object.freeze({
-    official: Object.freeze(["secondaryRemaining", "currentTaskTokens"]),
+    session: Object.freeze(["currentTaskTokens"]),
+    official: Object.freeze(["secondaryRemaining"]),
   });
+  const AUTO_RESUME_DEFAULT_MESSAGE = "继续";
+  const MAX_AUTO_RESUME_MESSAGE_LENGTH = 500;
+  const THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const CUSTOM_PROVIDER_DEFAULTS = Object.freeze({
     id: "custom", label: "API Key", baseUrl: "",
     usagePath: "", statusPath: "", authHeader: "Authorization", authScheme: "Bearer",
@@ -78,6 +86,13 @@
     if (node && node.textContent !== text) node.textContent = text;
   };
   const finiteNumber = (value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+  const normalizeAutoResumeMessage = (value) => {
+    if (typeof value !== "string") return AUTO_RESUME_DEFAULT_MESSAGE;
+    const message = value.trim();
+    return message && message.length <= MAX_AUTO_RESUME_MESSAGE_LENGTH && !/[\u0000-\u001f\u007f]/.test(message)
+      ? message
+      : AUTO_RESUME_DEFAULT_MESSAGE;
+  };
   const validStatus = (value) => ["loading", "ready", "stale", "unavailable", "error", "rate-limited"].includes(value) ? value : "unavailable";
   const normalizeMetric = (item) => {
     if (!item || typeof item !== "object" || typeof item.id !== "string") return null;
@@ -89,6 +104,7 @@
       display: typeof item.display === "string" ? item.display.slice(0, 48) : "--",
       detail: typeof item.detail === "string" ? item.detail.slice(0, 96) : null,
       value: typeof item.value === "string" ? item.value.slice(0, 48) : null,
+      statusCode: ["running", "completed", "quota-paused", "paused"].includes(item.statusCode) ? item.statusCode : null,
       resetsAt: finiteNumber(item.resetsAt) && Number(item.resetsAt) > 0 ? Number(item.resetsAt) : null,
       defaultVisible: Boolean(item.defaultVisible),
     };
@@ -99,7 +115,7 @@
     return {
       id,
       label: typeof source.label === "string" ? source.label.slice(0, 24) : id,
-      accountType: ["api-key", "api-account"].includes(source.accountType) ? source.accountType : "subscription",
+      accountType: ["api-key", "api-account", "session", "forecast"].includes(source.accountType) ? source.accountType : "subscription",
       status: validStatus(source.status),
       error: typeof source.error === "string" ? source.error.slice(0, 160) : null,
       fetchedAt: finiteNumber(source.fetchedAt) ? Number(source.fetchedAt) : null,
@@ -142,7 +158,17 @@
     }
     return {
       schemaVersion: finiteNumber(source.schemaVersion) ? Number(source.schemaVersion) : 1,
+      currentThreadId: THREAD_ID_PATTERN.test(String(source.currentThreadId || ""))
+        ? String(source.currentThreadId).toLowerCase()
+        : null,
       nextRefreshAt: finiteNumber(source.nextRefreshAt) ? Number(source.nextRefreshAt) : null,
+      autoResume: source.autoResume && typeof source.autoResume === "object"
+        ? {
+            enabled: source.autoResume.enabled === true,
+            status: ["idle", "waiting", "sending", "sent"].includes(source.autoResume.status) ? source.autoResume.status : "idle",
+            resetAt: finiteNumber(source.autoResume.resetAt) ? Number(source.autoResume.resetAt) : null,
+          }
+        : { enabled: false, status: "idle", resetAt: null },
       sources,
     };
   };
@@ -205,6 +231,26 @@
     const pad = (value) => String(value).padStart(2, "0");
     return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
   };
+  const normalizeAutoResumeThreads = (value) => {
+    const normalized = {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+    for (const [threadId, config] of Object.entries(value).slice(0, 128)) {
+      const id = String(threadId).toLowerCase();
+      if (!THREAD_ID_PATTERN.test(id) || !config || typeof config !== "object" || Array.isArray(config)) continue;
+      normalized[id] = {
+        enabled: config.enabled === true,
+        message: normalizeAutoResumeMessage(config.message),
+      };
+    }
+    return normalized;
+  };
+  const autoResumeForThread = (settings, threadId) => {
+    const config = threadId ? settings.autoResumeThreads?.[threadId] : null;
+    return {
+      enabled: config?.enabled === true,
+      message: normalizeAutoResumeMessage(config?.message),
+    };
+  };
   const loadSettings = () => {
     try {
       const persisted = window[PERSISTED_SETTINGS_KEY];
@@ -212,8 +258,12 @@
         ? persisted
         : JSON.parse(localStorage.getItem(SETTINGS_KEY) || localStorage.getItem(PREVIOUS_SETTINGS_KEY) || "null");
       const metrics = value?.metrics && typeof value.metrics === "object" ? value.metrics : {};
+      const hasSettings = Boolean(value && typeof value === "object" && !Array.isArray(value));
       return {
         metrics: Object.fromEntries(Object.entries(metrics).map(([id, ids]) => [id, Array.isArray(ids) ? ids.map((item) => item === "dayTokens" ? "todayTokens" : item).filter((item) => typeof item === "string").slice(0, 12) : []])),
+        metricOrder: Array.isArray(value?.metricOrder)
+          ? [...new Set(value.metricOrder.filter((item) => typeof item === "string" && item.includes(":")))].slice(0, 64)
+          : [],
         apiKeyMetricsVersion: Number(value?.apiKeyMetricsVersion) || 0,
         officialMetricsVersion: Number(value?.officialMetricsVersion) || 0,
         unifiedMetricsVersion: Number(value?.unifiedMetricsVersion) || 0,
@@ -221,11 +271,24 @@
         countdownVisualization: Boolean(value?.countdownVisualization),
         englishUi: Boolean(value?.englishUi),
         updateNotifications: Boolean(value?.updateNotifications),
+        autoResume: Boolean(value?.autoResume),
+        autoResumeThreads: normalizeAutoResumeThreads(value?.autoResumeThreads),
+        showApiColumns: hasSettings
+          ? (Object.prototype.hasOwnProperty.call(value, "showApiColumns") ? Boolean(value.showApiColumns) : true)
+          : false,
+        showResetForecast: Object.prototype.hasOwnProperty.call(value || {}, "showResetForecast")
+          ? Boolean(value.showResetForecast)
+          : true,
+        autoResumeMessage: normalizeAutoResumeMessage(value?.autoResumeMessage),
       };
     } catch {
       return {
-        metrics: {}, apiKeyMetricsVersion: 0, officialMetricsVersion: 0, unifiedMetricsVersion: 0,
-        minimalMode: false, countdownVisualization: false, englishUi: false, updateNotifications: false,
+        metrics: {}, metricOrder: [], apiKeyMetricsVersion: 0, officialMetricsVersion: 0, unifiedMetricsVersion: 0,
+        minimalMode: false, countdownVisualization: false, englishUi: false, updateNotifications: false, autoResume: false,
+        showApiColumns: false,
+        showResetForecast: true,
+        autoResumeThreads: {},
+        autoResumeMessage: AUTO_RESUME_DEFAULT_MESSAGE,
       };
     }
   };
@@ -244,6 +307,38 @@
       ? settings.metrics[source.id].filter((id) => available.has(id))
       : (DEFAULT_METRIC_SELECTIONS[source.id] || []).filter((id) => available.has(id));
     return ids.map((id) => available.get(id)).filter(Boolean);
+  };
+  const metricSelectionKey = (sourceId, metricId) => `${sourceId}:${metricId}`;
+  const selectionPreferenceKeys = (sources, settings) => {
+    const keys = [];
+    const representedSources = new Set();
+    for (const source of sources) {
+      representedSources.add(source.id);
+      const hasSavedSelection = Object.prototype.hasOwnProperty.call(settings.metrics, source.id);
+      const ids = hasSavedSelection && Array.isArray(settings.metrics[source.id])
+        ? settings.metrics[source.id]
+        : (DEFAULT_METRIC_SELECTIONS[source.id] || []);
+      keys.push(...ids.map((id) => metricSelectionKey(source.id, id)));
+    }
+    for (const [sourceId, ids] of Object.entries(settings.metrics)) {
+      if (representedSources.has(sourceId) || !Array.isArray(ids)) continue;
+      keys.push(...ids.map((id) => metricSelectionKey(sourceId, id)));
+    }
+    return [...new Set(keys)];
+  };
+  const orderedSelectedMetrics = (sources, settings) => {
+    const candidates = sources.flatMap((source) => selectedMetrics(source, settings)
+      .map((metric) => ({ source, metric, key: metricSelectionKey(source.id, metric.id) })));
+    const byKey = new Map(candidates.map((item) => [item.key, item]));
+    const ordered = [];
+    for (const key of settings.metricOrder || []) {
+      const candidate = byKey.get(key);
+      if (!candidate) continue;
+      ordered.push(candidate);
+      byKey.delete(key);
+    }
+    ordered.push(...byKey.values());
+    return ordered;
   };
   const metricValue = (metric, prefix) => metric?.value || metric?.display?.replace(prefix, "").trim() || "--";
   const apiKeyMetrics = (source) => {
@@ -314,9 +409,8 @@
     }
     for (const [id, label, compactLabel] of [
       ["todayTokens", "今日 Token", "今日"],
+      ["last7DaysTokens", "近7天 Token", "近7天"],
       ["lifetimeTokens", "累计 Token", "累计"],
-      ["currentTaskTokens", "当前任务累计 Token", "任务"],
-      ["lastTurnTokens", "上次对话消耗 Token", "上次"],
     ]) {
       const metric = metricById.get(id);
       if (!metric) continue;
@@ -329,17 +423,29 @@
     }
     return rows;
   };
+  const sessionMetrics = (source) => {
+    const metricById = new Map(source.metrics.map((item) => [item.id, item]));
+    return SESSION_METRIC_FALLBACKS.map((fallback) => {
+      const metric = metricById.get(fallback.id) || fallback;
+      return {
+        ...metric,
+        defaultVisible: metric.defaultVisible ?? fallback.defaultVisible,
+      };
+    });
+  };
   const selectableSource = (source) => ({
     ...source,
-    metrics: source.accountType === "api-key"
+    metrics: source.accountType === "forecast" ? source.metrics
+      : source.accountType === "api-key"
       ? apiKeyMetrics(source)
-      : source.accountType === "api-account" ? apiAccountMetrics(source) : officialMetrics(source),
+      : source.accountType === "api-account" ? apiAccountMetrics(source)
+        : source.accountType === "session" ? sessionMetrics(source) : officialMetrics(source),
   });
   const markup = `
-    <button class="usage-summary" type="button" aria-label="Codex usage details" aria-expanded="false">
+    <div class="usage-summary" role="button" tabindex="0" aria-label="Codex usage details" aria-expanded="false">
       <span class="usage-refresh-ring" aria-hidden="true" hidden></span>
       <span class="usage-summary-items"><span class="usage-summary-item">Usage --</span></span>
-    </button>
+    </div>
     <div class="usage-popover" role="dialog" aria-label="Usage display settings" hidden>
       <div class="usage-columns"></div>
     </div>`;
@@ -379,6 +485,9 @@
     }
     .usage-summary-items { display: flex; align-items: center; min-width: 0; max-width: 100%; height: 100%; gap: 0; overflow: hidden; line-height: 1; }
     .usage-summary-item { position: relative; display: inline-flex; align-items: center; min-width: 0; height: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .usage-summary-auto-resume { gap: 5px; overflow: visible; }
+    :host([data-minimal="true"]) .usage-summary-auto-resume { gap: 0; }
+    .usage-summary-toggle { flex: 0 0 30px; }
     .usage-summary-item + .usage-summary-item { padding-left: 13px; }
     .usage-summary-item + .usage-summary-item::before {
       content: "";
@@ -446,7 +555,7 @@
       bottom: calc(100% + 8px);
       z-index: 40;
       left: var(--usage-popover-shift, 0px);
-      width: var(--usage-popover-width, min(720px, calc(100vw - 24px)));
+      width: var(--usage-popover-width, min(920px, calc(100vw - 24px)));
       max-height: min(440px, calc(100vh - 72px));
       padding: 10px 11px;
       border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
@@ -462,7 +571,7 @@
     }
     .usage-columns {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(var(--usage-column-count, 4), minmax(230px, 1fr));
       align-items: stretch;
     }
     .usage-column { box-sizing: border-box; display: flex; flex-direction: column; width: 100%; min-width: 0; padding: 0 11px; }
@@ -567,10 +676,6 @@
     .usage-column[data-status="ready"] .usage-status { background: #22c55e; }
     .usage-column[data-status="loading"] .usage-status { background: #facc15; }
     .usage-column[data-status="stale"] .usage-status { background: #fb3f4f; }
-    .usage-column-subsection { display: flex; flex-direction: column; }
-    .usage-column-subsection-title { margin-top: 5px; }
-    .usage-column-subsection[data-status="ready"] .usage-status { background: #22c55e; }
-    .usage-column-subsection[data-status="unavailable"] .usage-status { background: #a1a1aa; }
     .usage-column-rows { display: grid; }
     .usage-detail-row {
       display: grid;
@@ -620,7 +725,7 @@
       width: fit-content;
       max-width: 100%;
       min-height: 36px;
-      margin-top: 0;
+      margin: 0 8px 0 0;
       padding: 4px 0 2px;
       font-weight: 450;
       line-height: 1.35;
@@ -643,6 +748,7 @@
     .usage-mode-switches {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-auto-flow: row;
       align-items: center;
       justify-content: flex-end;
       gap: 6px 10px;
@@ -650,6 +756,7 @@
       min-height: 22px;
       white-space: nowrap;
     }
+    .usage-mode-switches[hidden] { display: none; }
     .usage-mode-toggle {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 24px;
@@ -666,7 +773,8 @@
       text-align: right;
       text-overflow: ellipsis;
     }
-    .usage-mode-toggle input {
+    .usage-mode-toggle input,
+    .usage-inline-toggle input {
       position: absolute;
       width: 1px;
       height: 1px;
@@ -695,9 +803,29 @@
       background: color-mix(in srgb, currentColor 72%, Canvas);
       transition: transform 120ms ease, background-color 120ms ease;
     }
-    .usage-mode-toggle input:checked + .usage-toggle-track { border-color: #86efac; background: #86efac; }
-    .usage-mode-toggle input:checked + .usage-toggle-track::after { background: #166534; transform: translateX(10px); }
-    .usage-mode-toggle input:focus-visible + .usage-toggle-track { outline: 2px solid color-mix(in srgb, #86efac 60%, transparent); outline-offset: 1px; }
+    .usage-mode-toggle input:checked + .usage-toggle-track,
+    .usage-inline-toggle input:checked + .usage-toggle-track { border-color: #86efac; background: #86efac; }
+    .usage-mode-toggle input:checked + .usage-toggle-track::after,
+    .usage-inline-toggle input:checked + .usage-toggle-track::after { background: #166534; transform: translateX(10px); }
+    .usage-mode-toggle input:focus-visible + .usage-toggle-track,
+    .usage-inline-toggle input:focus-visible + .usage-toggle-track { outline: 2px solid color-mix(in srgb, #86efac 60%, transparent); outline-offset: 1px; }
+    .usage-inline-toggle { position: relative; display: block; width: 24px; height: 14px; cursor: pointer; }
+    .usage-inline-toggle .usage-toggle-track { display: block; }
+    .usage-auto-resume-field { display: grid; gap: 3px; min-width: 0; padding: 0 0 5px 19px; }
+    .usage-auto-resume-label { font-size: 9px; font-weight: 650; line-height: 1.2; opacity: .72; }
+    .usage-auto-resume-message {
+      box-sizing: border-box;
+      width: 100%;
+      min-width: 0;
+      height: 28px;
+      padding: 4px 7px;
+      border: 1px solid color-mix(in srgb, currentColor 26%, transparent);
+      border-radius: 5px;
+      color: inherit;
+      background: Canvas;
+      font: inherit;
+    }
+    .usage-auto-resume-message:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 42%, transparent); outline-offset: 1px; }
     .usage-column-meta {
       display: flex;
       justify-content: flex-end;
@@ -709,7 +837,20 @@
       opacity: .55;
       white-space: nowrap;
     }
-    @media (max-width: 680px) {
+    .usage-settings-trigger {
+      min-height: 22px;
+      padding: 0 6px;
+      border: 1px solid currentColor;
+      border-radius: 4px;
+      color: inherit;
+      background: transparent;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .usage-settings-trigger:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+    .usage-settings-trigger:focus-visible { outline: 2px solid color-mix(in srgb, currentColor 42%, transparent); outline-offset: 1px; }
+    @media (max-width: 760px) {
       .usage-popover { padding-inline: 8px; font-size: 10px; }
       .usage-column { padding-inline: 6px; }
       .usage-detail-row { gap: 4px; }
@@ -720,13 +861,19 @@
       .usage-mode-switches { gap: 6px; }
       .usage-mode-toggle { grid-template-columns: minmax(0, 1fr) 22px; gap: 3px; font-size: 8px; }
       .usage-toggle-track { width: 22px; flex-basis: 22px; }
-      .usage-mode-toggle input:checked + .usage-toggle-track::after { transform: translateX(8px); }
+      .usage-inline-toggle { width: 22px; height: 14px; }
+      .usage-mode-toggle input:checked + .usage-toggle-track::after,
+      .usage-inline-toggle input:checked + .usage-toggle-track::after { transform: translateX(8px); }
       .usage-column-meta { font-size: 9px; }
       .usage-config-trigger { padding-inline: 5px; }
     }
     @supports not (color: color-mix(in srgb, red 50%, transparent)) {
       .usage-summary { border-color: rgba(128, 128, 128, .22); background: rgba(128, 128, 128, .06); }
       .usage-popover { border-color: rgba(128, 128, 128, .22); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .usage-toggle-track,
+      .usage-toggle-track::after { transition: none; }
     }
   `;
 
@@ -945,24 +1092,47 @@
     if (!host?.shadowRoot) return;
     const usage = normalizeUsage(value);
     const settings = loadSettings();
+    if (settings.autoResume && usage.currentThreadId && !settings.autoResumeThreads[usage.currentThreadId]) {
+      settings.autoResumeThreads[usage.currentThreadId] = {
+        enabled: true,
+        message: normalizeAutoResumeMessage(settings.autoResumeMessage),
+      };
+      settings.autoResume = false;
+      saveSettings(settings);
+    }
+    const currentAutoResume = autoResumeForThread(settings, usage.currentThreadId);
     const t = createTranslator(settings.englishUi ? "en" : "zh");
     const apiKeySource = Object.values(usage.sources).find((item) => item.accountType === "api-key")
       || normalizeSource({ id: "api-key", label: "API Key", accountType: "api-key", status: "unavailable", error: "未配置 API key" }, "api-key");
     const sources = [
+      usage.sources.session || normalizeSource({ id: "session", label: "本会话", accountType: "session", status: "unavailable" }, "session"),
       usage.sources.official || normalizeSource({ id: "official", label: "官方订阅", accountType: "subscription", status: "unavailable" }, "official"),
       usage.sources["api-account"] || normalizeSource({ id: "api-account", label: "API 账户", accountType: "api-account", status: "unavailable", error: "未配置 API 账户令牌" }, "api-account"),
       { ...apiKeySource, label: "API Key" },
+      usage.sources["reset-forecast"] || normalizeSource({ id: "reset-forecast", label: "重置预测", accountType: "forecast", status: "unavailable", error: "重置预测接口暂不可用" }, "reset-forecast"),
     ].map(selectableSource).map((source) => {
       const localizedStatus = source.status === "loading" ? t("loading") : source.status === "ready" ? t("ready")
         : source.status === "stale" ? t("stale") : source.status === "rate-limited" ? t("rateLimited")
           : source.status === "error" ? t("error") : t("unavailable");
       return {
         ...source,
-        label: source.id === "official" ? t("official")
+        label: source.id === "session" ? t("session")
+          : source.id === "official" ? t("official")
+          : source.id === "reset-forecast" ? t("resetForecast")
           : source.accountType === "api-account" ? t("apiAccount")
             : source.accountType === "api-key" ? t("apiKey") : source.label,
         metrics: source.metrics.map((metric) => {
-          const value = metric.id === "requestStatus" ? localizedStatus
+          const sessionStatusKey = metric.statusCode === "running" ? "sessionStatusRunning"
+            : metric.statusCode === "completed" ? "sessionStatusCompleted"
+              : metric.statusCode === "quota-paused" ? "sessionStatusQuotaPaused"
+                : metric.statusCode === "paused" ? "sessionStatusPaused" : null;
+          const autoResumeValueKey = !currentAutoResume.enabled ? "autoResumeOff"
+            : usage.autoResume.status === "waiting" ? "autoResumeWaitingValue"
+              : usage.autoResume.status === "sending" ? "autoResumeSendingValue"
+                : usage.autoResume.status === "sent" ? "autoResumeSentValue" : "autoResumeOn";
+          const value = metric.id === "autoResume" ? t(autoResumeValueKey)
+            : metric.id === "currentStatus" && sessionStatusKey ? t(sessionStatusKey)
+            : metric.id === "requestStatus" ? localizedStatus
             : metric.id.endsWith("Tokens") ? formatLocalizedTokenUnit(metric.value, t.language)
               : metric.value;
           return {
@@ -974,18 +1144,36 @@
         }),
       };
     });
-    let selected = sources.flatMap((source) => selectedMetrics(source, settings).map((metric) => ({ source, metric })));
-    const selectedLimit = selectedMetricLimit(settings);
     let settingsChanged = false;
+    if (settings.unifiedMetricsVersion < 2) {
+      if (Object.prototype.hasOwnProperty.call(settings.metrics, "official")) {
+        const legacyOfficial = settings.metrics.official;
+        if (!Object.prototype.hasOwnProperty.call(settings.metrics, "session")) {
+          settings.metrics.session = legacyOfficial.filter((id) => SESSION_METRIC_IDS.has(id));
+        }
+        settings.metrics.official = legacyOfficial.filter((id) => !SESSION_METRIC_IDS.has(id));
+      }
+      settings.unifiedMetricsVersion = 2;
+      settingsChanged = true;
+    }
+    const preferenceKeys = selectionPreferenceKeys(sources, settings);
+    const preferenceSet = new Set(preferenceKeys);
+    const normalizedOrder = [
+      ...(settings.metricOrder || []).filter((key) => preferenceSet.has(key)),
+      ...preferenceKeys.filter((key) => !(settings.metricOrder || []).includes(key)),
+    ];
+    if (JSON.stringify(settings.metricOrder) !== JSON.stringify(normalizedOrder)) {
+      settings.metricOrder = normalizedOrder;
+      settingsChanged = true;
+    }
+    let selected = orderedSelectedMetrics(sources, settings);
+    const selectedLimit = selectedMetricLimit(settings);
     if (selected.length > selectedLimit) {
       selected = selected.slice(0, selectedLimit);
+      settings.metricOrder = selected.map((item) => item.key);
       for (const source of sources) {
         settings.metrics[source.id] = selected.filter((item) => item.source.id === source.id).map((item) => item.metric.id);
       }
-      settingsChanged = true;
-    }
-    if (settings.unifiedMetricsVersion < 1) {
-      settings.unifiedMetricsVersion = 1;
       settingsChanged = true;
     }
     if (settingsChanged) saveSettings(settings);
@@ -1007,14 +1195,29 @@
       summaryRoot.replaceChildren(...items.map(({ source, metric }) => {
         const item = document.createElement("span");
         item.className = "usage-summary-item";
-        item.textContent = summaryDisplay(metric);
+        if (metric.id === "autoResume") {
+          item.classList.add("usage-summary-auto-resume");
+          if (!settings.minimalMode) item.append(document.createTextNode(t.compact("autoResume", metric.label)));
+          const toggle = document.createElement("label");
+          toggle.className = "usage-inline-toggle usage-summary-toggle";
+          toggle.dataset.summarySetting = "autoResume";
+          const toggleInput = document.createElement("input");
+          toggleInput.type = "checkbox";
+          toggleInput.dataset.setting = "autoResume";
+          toggleInput.dataset.summarySetting = "autoResume";
+          toggleInput.checked = currentAutoResume.enabled;
+          toggleInput.disabled = !usage.currentThreadId;
+          toggleInput.setAttribute("aria-label", t("autoResume"));
+          const track = document.createElement("span");
+          track.className = "usage-toggle-track";
+          track.setAttribute("aria-hidden", "true");
+          toggle.append(toggleInput, track);
+          item.append(toggle);
+        } else item.textContent = summaryDisplay(metric);
         if (source) {
           item.dataset.source = source.id;
           item.dataset.metric = metric.id;
-          const groupLabel = source.id === "official" && TASK_METRIC_IDS.has(metric.id)
-            ? t("taskSection")
-            : source.label;
-          item.title = `${groupLabel} · ${metric.label}：${metric.value || "--"}`;
+          item.title = `${source.label} · ${metric.label}：${metric.value || "--"}`;
         }
         return item;
       }));
@@ -1022,9 +1225,17 @@
     shadow.querySelector(".usage-summary")?.setAttribute("aria-label", t("displayedItems", { count: selected.length }));
     shadow.querySelector(".usage-popover")?.setAttribute("aria-label", t("displaySettings"));
     const columns = shadow.querySelector(".usage-columns");
-    if (columns && (forceColumns || !shadow.activeElement?.closest?.(".usage-config-form"))) {
+    if (columns && (forceColumns || !shadow.activeElement?.closest?.(".usage-config-form,.usage-auto-resume-field"))) {
+      const visibleSources = sources.filter((source) => {
+        if (["api-account", "api-key"].includes(source.accountType)) return settings.showApiColumns;
+        if (source.accountType === "forecast") return settings.showResetForecast;
+        return true;
+      });
+      host.dataset.apiColumns = String(settings.showApiColumns);
+      host.dataset.columnCount = String(visibleSources.length);
+      columns.style.setProperty("--usage-column-count", String(visibleSources.length));
       const selectedKeys = new Set(selected.map((item) => `${item.source.id}:${item.metric.id}`));
-      columns.replaceChildren(...sources.map((source) => {
+      columns.replaceChildren(...visibleSources.map((source) => {
         const column = document.createElement("section");
         column.className = "usage-column";
         column.dataset.status = source.status;
@@ -1055,7 +1266,8 @@
         const createRows = (metrics) => {
           const rows = document.createElement("div");
           rows.className = "usage-column-rows";
-          rows.replaceChildren(...metrics.map((metric) => {
+          const children = [];
+          for (const metric of metrics) {
             const key = `${source.id}:${metric.id}`;
             const checked = selectedKeys.has(key);
             const row = document.createElement("div");
@@ -1072,6 +1284,48 @@
             label.className = "usage-detail-label";
             label.textContent = metric.label;
             select.append(input, label);
+            if (metric.id === "autoResume") {
+              const statusKey = {
+                waiting: "autoResumeWaiting",
+                sending: "autoResumeSending",
+                sent: "autoResumeSent",
+              }[usage.autoResume.status] || "autoResumeIdle";
+              const toggle = document.createElement("label");
+              toggle.className = "usage-inline-toggle";
+              toggle.title = t(statusKey);
+              const toggleInput = document.createElement("input");
+              toggleInput.type = "checkbox";
+              toggleInput.dataset.setting = "autoResume";
+              toggleInput.checked = currentAutoResume.enabled;
+              toggleInput.disabled = !usage.currentThreadId;
+              toggleInput.title = t(statusKey);
+              toggleInput.setAttribute("aria-label", t("autoResume"));
+              const track = document.createElement("span");
+              track.className = "usage-toggle-track";
+              track.setAttribute("aria-hidden", "true");
+              toggle.append(toggleInput, track);
+              row.append(select, toggle);
+              children.push(row);
+
+              const field = document.createElement("label");
+              field.className = "usage-auto-resume-field";
+              const fieldLabel = document.createElement("span");
+              fieldLabel.className = "usage-auto-resume-label";
+              fieldLabel.textContent = t("autoResumeMessage");
+              const messageInput = document.createElement("input");
+              messageInput.type = "text";
+              messageInput.className = "usage-auto-resume-message";
+              messageInput.dataset.settingText = "autoResumeMessage";
+              messageInput.maxLength = MAX_AUTO_RESUME_MESSAGE_LENGTH;
+              messageInput.value = currentAutoResume.message;
+              messageInput.disabled = !usage.currentThreadId;
+              messageInput.placeholder = AUTO_RESUME_DEFAULT_MESSAGE;
+              messageInput.autocomplete = "off";
+              messageInput.setAttribute("aria-label", t("autoResumeMessage"));
+              field.append(fieldLabel, messageInput);
+              children.push(field);
+              continue;
+            }
             const metricValueNode = document.createElement("span");
             metricValueNode.className = "usage-detail-value";
             const valueText = metric.value || "--";
@@ -1084,40 +1338,17 @@
             } else metricValueNode.textContent = valueText;
             metricValueNode.title = metricValueNode.textContent;
             row.append(select, metricValueNode);
-            return row;
-          }));
+            children.push(row);
+          }
+          rows.replaceChildren(...children);
           return rows;
         };
-        const taskMetrics = source.id === "official"
-          ? TASK_METRIC_FALLBACKS.map((fallback) => source.metrics.find((metric) => metric.id === fallback.id) || fallback)
-          : [];
-        const primaryMetrics = source.id === "official"
-          ? source.metrics.filter((metric) => !TASK_METRIC_IDS.has(metric.id))
-          : source.metrics;
         if (configurationOpen) {
           column.append(title, createConfigurationForm(source, t));
           return column;
         }
-        column.append(title, createRows(primaryMetrics));
-        if (taskMetrics.length) {
-          const taskSection = document.createElement("section");
-          taskSection.className = "usage-column-subsection";
-          const taskReady = taskMetrics.some((metric) => metric.value && metric.value !== "--");
-          taskSection.dataset.status = taskReady ? "ready" : "unavailable";
-          const taskTitle = document.createElement("div");
-          taskTitle.className = "usage-column-title usage-column-subsection-title";
-          const taskStatus = document.createElement("span");
-          taskStatus.className = "usage-status";
-          taskStatus.title = taskReady ? t("taskReady") : t("taskUnavailable");
-          taskStatus.setAttribute("aria-label", taskReady ? t("ready") : t("unavailable"));
-          const taskHeading = document.createElement("span");
-          taskHeading.className = "usage-column-heading";
-          taskHeading.textContent = t("taskSection");
-          taskTitle.append(taskStatus, taskHeading);
-          taskSection.append(taskTitle, createRows(taskMetrics));
-          column.append(taskSection);
-        }
-        if (source.accountType === "api-key") {
+        column.append(title, createRows(source.metrics));
+        if (source.id === "official") {
           const footer = document.createElement("div");
           footer.className = "usage-column-footer";
           const switches = document.createElement("div");
@@ -1127,6 +1358,8 @@
             ["countdownVisualization", t("countdownVisualization")],
             ["englishUi", t("englishUi")],
             ["updateNotifications", t("updateNotifications")],
+            ["showApiColumns", t("showApiColumns")],
+            ["showResetForecast", t("showResetForecast")],
           ]) {
             const toggle = document.createElement("label");
             toggle.className = "usage-mode-toggle";
@@ -1143,8 +1376,15 @@
             toggle.append(toggleLabel, toggleInput, track);
             switches.append(toggle);
           }
+          switches.hidden = host.dataset.settingsOpen !== "true";
           const meta = document.createElement("div");
           meta.className = "usage-column-meta";
+          const settingsTrigger = document.createElement("button");
+          settingsTrigger.type = "button";
+          settingsTrigger.className = "usage-settings-trigger";
+          settingsTrigger.dataset.toggleSettings = "true";
+          settingsTrigger.textContent = t("settings");
+          settingsTrigger.setAttribute("aria-expanded", String(host.dataset.settingsOpen === "true"));
           const maximum = document.createElement("span");
           maximum.textContent = settings.minimalMode
             ? t("minimalMaximum", { count: MAX_MINIMAL_SELECTED_METRICS })
@@ -1155,7 +1395,7 @@
           const countdown = document.createElement("span");
           countdown.className = "usage-refresh-countdown";
           countdown.textContent = t("refreshIn", { seconds: "--" });
-          meta.append(maximum, separator, countdown);
+          meta.append(settingsTrigger, maximum, separator, countdown);
           footer.append(switches, meta);
           column.append(footer);
 
@@ -1203,15 +1443,31 @@
       host.setAttribute("data-codex-usage-ui", "monitor");
       host.attachShadow({ mode: "open" }).innerHTML = `<style>${css}</style>${markup}`;
       const summary = host.shadowRoot.querySelector(".usage-summary");
-      summary?.addEventListener("click", () => {
+      const toggleSummary = () => {
         const open = host.dataset.open !== "true";
         host.dataset.open = String(open);
         summary.setAttribute("aria-expanded", String(open));
         const popover = host.shadowRoot.querySelector(".usage-popover");
         if (popover) popover.hidden = !open;
         if (open) render(host, window[STATE_KEY]?.usage || window[USAGE_KEY]);
+      };
+      summary?.addEventListener("click", (event) => {
+        if (event.target?.closest?.("[data-summary-setting]")) return;
+        toggleSummary();
+      });
+      summary?.addEventListener("keydown", (event) => {
+        if (event.target !== summary || !["Enter", " "].includes(event.key)) return;
+        event.preventDefault();
+        toggleSummary();
       });
       host.shadowRoot.addEventListener("click", (event) => {
+        const settingsTrigger = event.target?.closest?.("[data-toggle-settings]");
+        if (settingsTrigger) {
+          host.dataset.settingsOpen = String(host.dataset.settingsOpen !== "true");
+          render(host, window[STATE_KEY]?.usage || window[USAGE_KEY], true);
+          host.shadowRoot.querySelector("[data-toggle-settings]")?.focus();
+          return;
+        }
         const trigger = event.target?.closest?.("[data-configure-source]");
         if (trigger) {
           const state = window[STATE_KEY];
@@ -1307,12 +1563,32 @@
       });
       host.shadowRoot.addEventListener("change", (event) => {
         const input = event.target;
-        if (!(input instanceof HTMLInputElement) || input.type !== "checkbox") return;
+        if (!(input instanceof HTMLInputElement)) return;
+        if (input.dataset.settingText === "autoResumeMessage") {
+          const settings = loadSettings();
+          const usage = normalizeUsage(window[STATE_KEY]?.usage || window[USAGE_KEY]);
+          if (!usage.currentThreadId) return;
+          const current = autoResumeForThread(settings, usage.currentThreadId);
+          const message = normalizeAutoResumeMessage(input.value);
+          settings.autoResumeThreads[usage.currentThreadId] = { enabled: current.enabled, message };
+          input.value = message;
+          saveSettings(settings);
+          return;
+        }
+        if (input.type !== "checkbox") return;
         const state = window[STATE_KEY];
         const usage = normalizeUsage(state?.usage || window[USAGE_KEY]);
-        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications"].includes(input.dataset.setting)) {
+        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume", "showApiColumns", "showResetForecast"].includes(input.dataset.setting)) {
           const settings = loadSettings();
-          settings[input.dataset.setting] = input.checked;
+          if (input.dataset.setting === "autoResume") {
+            if (!usage.currentThreadId) return;
+            const current = autoResumeForThread(settings, usage.currentThreadId);
+            settings.autoResumeThreads[usage.currentThreadId] = { enabled: input.checked, message: current.message };
+            settings.autoResume = false;
+          } else settings[input.dataset.setting] = input.checked;
+          if (input.dataset.setting === "showApiColumns" && !input.checked && state?.configuration) {
+            state.configuration.openSourceId = null;
+          }
           saveSettings(settings);
           render(host, usage);
           return;
@@ -1335,6 +1611,9 @@
           ? [...new Set([...current, input.dataset.metric])]
           : current.filter((id) => id !== input.dataset.metric);
         settings.metrics[source.id] = next;
+        const key = metricSelectionKey(source.id, input.dataset.metric);
+        settings.metricOrder = (settings.metricOrder || []).filter((item) => item !== key);
+        if (input.checked) settings.metricOrder.push(key);
         saveSettings(settings);
         render(host, usage);
       });
@@ -1342,6 +1621,9 @@
     const portal = document.body || placement.composer.parentElement;
     const moved = host.parentElement !== portal;
     if (moved) portal.appendChild(host);
+    const currentSettings = loadSettings();
+    host.dataset.apiColumns = String(currentSettings.showApiColumns);
+    host.dataset.columnCount = String(2 + (currentSettings.showApiColumns ? 2 : 0) + (currentSettings.showResetForecast ? 1 : 0));
     const position = configurePosition(host, placement.composer, HOST_ID);
     host.dataset.placementStrategy = placement.strategy;
     host.dataset.status = position.ok ? "ready" : "degraded";

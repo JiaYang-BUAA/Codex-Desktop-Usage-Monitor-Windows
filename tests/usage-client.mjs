@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   ApiAccountUsageClient,
   ApiUsageClient,
+  ResetForecastClient,
   LocalCodexTokenTracker,
   accountLogIdentity,
   loadApiProviderConfig,
@@ -14,13 +15,21 @@ import {
   normalizeApiAccountView,
   normalizeCctqUsageView,
   normalizeCredentialBaseUrl,
+  normalizeResetForecastView,
   normalizeUsageView,
   conversationTokenDelta,
   officialModelProvidersFromAccount,
   parseAppServerLine,
+  parseLocalContextCompactionEvent,
+  parseLocalQuotaExceededEvent,
+  parseLocalTaskCompleteEvent,
+  parseLocalTurnAbortedEvent,
   parseLocalTokenContextEvent,
   parseLocalTokenUsageEvent,
+  parseUsageLimitResetAt,
+  sessionTokenDelta,
   toOfficialUsageSource,
+  toSessionUsageSource,
   validateApiProviderConfig,
 } from "../scripts/usage-client.mjs";
 import { localTokenNextScanDelay } from "../scripts/usage/scheduling.mjs";
@@ -33,6 +42,52 @@ assert.deepEqual(parseAppServerLine('{"id":1,"result":{}}'), { id: 1, result: {}
 assert.equal(parseAppServerLine("  "), null);
 assert.throws(() => parseAppServerLine("[]"), /JSON object/);
 assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
+
+const quotaObservedAt = new Date(2026, 7, 30, 14, 0, 0).getTime();
+assert.equal(
+  parseUsageLimitResetAt("You've hit your usage limit. You can try again at Aug 30th, 2026 2:14 AM.", quotaObservedAt),
+  new Date(2026, 7, 30, 2, 14, 0).getTime(),
+);
+assert.equal(
+  parseUsageLimitResetAt("You can try again at 3:21 PM.", quotaObservedAt),
+  new Date(2026, 7, 30, 15, 21, 0).getTime(),
+);
+assert.equal(
+  parseUsageLimitResetAt("You can try again at 3:21 PM.", new Date(2026, 7, 30, 16, 0, 0).getTime()),
+  new Date(2026, 7, 31, 15, 21, 0).getTime(),
+);
+const quotaEvent = parseLocalQuotaExceededEvent(JSON.stringify({
+  timestamp: new Date(quotaObservedAt).toISOString(),
+  type: "event_msg",
+  payload: {
+    type: "task_complete",
+    turn_id: "019fb3b1-2638-7bb0-9a90-ec83b5bca0f3",
+    error: { message: "You can try again at 3:21 PM.", codex_error_info: "usage_limit_exceeded" },
+  },
+}));
+assert.equal(quotaEvent.turnId, "019fb3b1-2638-7bb0-9a90-ec83b5bca0f3");
+assert.equal(quotaEvent.resetAt, new Date(2026, 7, 30, 15, 21, 0).getTime());
+assert.match(quotaEvent.eventId, /^[0-9a-f]{32}$/);
+assert.equal(parseLocalQuotaExceededEvent(JSON.stringify({ type: "event_msg", payload: { type: "task_complete", error: { codex_error_info: "other" } } })), null);
+assert.deepEqual(parseLocalTaskCompleteEvent(JSON.stringify({
+  timestamp: new Date(quotaObservedAt).toISOString(),
+  type: "event_msg",
+  payload: { type: "task_complete", turn_id: "019fb3b1-2638-7bb0-9a90-ec83b5bca0f3", error: null },
+})), {
+  timestamp: quotaObservedAt,
+  turnId: "019fb3b1-2638-7bb0-9a90-ec83b5bca0f3",
+  errorInfo: null,
+  errorMessage: null,
+});
+assert.deepEqual(parseLocalTurnAbortedEvent(JSON.stringify({
+  timestamp: new Date(quotaObservedAt).toISOString(),
+  type: "event_msg",
+  payload: { type: "turn_aborted", turn_id: "019fb3b1-2638-7bb0-9a90-ec83b5bca0f3", reason: "interrupted" },
+})), {
+  timestamp: quotaObservedAt,
+  turnId: "019fb3b1-2638-7bb0-9a90-ec83b5bca0f3",
+  reason: "interrupted",
+});
 
 for (const accountType of ["chatgpt", "chatgptAuthTokens", "personalAccessToken"]) {
   assert.deepEqual(officialModelProvidersFromAccount(
@@ -66,6 +121,7 @@ const rateLimits = {
 const tokenUsage = {
   summary: { lifetimeTokens: 1250000 },
   dailyUsageBuckets: [
+    { startDate: "2026-07-15", tokens: 999999 },
     { startDate: "2026-07-21", tokens: 9000 },
     { startDate: "2026-07-22", tokens: 18400 },
   ],
@@ -78,6 +134,7 @@ assert.deepEqual(view.windows, [
   { label: "7天", remainingPercent: 42, windowDurationMins: 10080, resetsAt: 1785200000, limitId: "codex" },
 ]);
 assert.equal(view.todayTokens, 18400);
+assert.equal(view.last7DaysTokens, 27400);
 assert.equal(view.lifetimeTokens, 1250000);
 const official = toOfficialUsageSource(view, now.getTime(), 45000);
 const primaryResetDate = new Date(view.windows[0].resetsAt * 1000);
@@ -97,6 +154,7 @@ assert.ok(!official.metrics.some((item) => item.id === "secondaryReset"));
 assert.equal(official.metrics.find((item) => item.id === "primaryReset").value, expectedPrimaryReset);
 assert.match(official.metrics.find((item) => item.id === "primaryReset").value, /^\d{2}-\d{2} \d{2}:\d{2}$/);
 assert.equal(official.metrics.find((item) => item.id === "todayTokens").value, "2万");
+assert.equal(official.metrics.find((item) => item.id === "last7DaysTokens").value, "3万");
 assert.equal(official.metrics.find((item) => item.id === "lifetimeTokens").value, "125万");
 assert.equal(official.nextRefreshAt - official.fetchedAt, 45000);
 const largeOfficial = toOfficialUsageSource({ ...view, todayTokens: 123456789, lifetimeTokens: 100000000 }, now.getTime());
@@ -108,6 +166,7 @@ const missingToday = normalizeUsageView(rateLimits, {
   dailyUsageBuckets: [{ startDate: "2026-07-15", tokens: 169875 }],
 }, now);
 assert.equal(missingToday.todayTokens, null);
+assert.equal(missingToday.last7DaysTokens, null);
 assert.equal(missingToday.tokenUsageAvailable, true);
 assert.equal(missingToday.latestUsageDate, "2026-07-15");
 assert.match(missingToday.error, /最新数据截至 2026-07-15/);
@@ -117,6 +176,7 @@ const explicitZeroToday = normalizeUsageView(rateLimits, {
   dailyUsageBuckets: [{ startDate: "2026-07-22", tokens: 0 }],
 }, now);
 assert.equal(explicitZeroToday.todayTokens, 0);
+assert.equal(explicitZeroToday.last7DaysTokens, 0);
 assert.equal(toOfficialUsageSource(explicitZeroToday, now.getTime()).metrics.find((item) => item.id === "todayTokens").value, "0");
 
 const tokenEventLine = JSON.stringify({
@@ -137,8 +197,19 @@ const tokenEventLine = JSON.stringify({
 });
 assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.tokens, 50);
 assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.totalTokens, 150);
+assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.totalInputTokens, 120);
+assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-22")?.totalCachedInputTokens, 80);
 assert.equal(parseLocalTokenUsageEvent(tokenEventLine, "2026-07-21"), null);
 assert.equal(parseLocalTokenUsageEvent('{"payload":{"type":"user_message","text":"token_count"}}'), null);
+assert.deepEqual(parseLocalContextCompactionEvent(JSON.stringify({
+  timestamp: "2026-07-22T04:00:00.500Z",
+  type: "compacted",
+  payload: { window_number: 3, replacement_history: [] },
+})), {
+  timestamp: Date.parse("2026-07-22T04:00:00.500Z"),
+  windowNumber: 3,
+});
+assert.equal(parseLocalContextCompactionEvent('{"type":"event_msg","payload":{"type":"context_compacted"}}'), null);
 assert.deepEqual(parseLocalTokenContextEvent(JSON.stringify({
   timestamp: "2026-07-22T04:00:00.000Z",
   type: "turn_context",
@@ -183,6 +254,10 @@ assert.equal(conversationTokenDelta(0, null), 0);
 assert.equal(conversationTokenDelta(0, 0), 0);
 assert.equal(conversationTokenDelta(20, 50), 0);
 assert.equal(conversationTokenDelta(-1, 0), null);
+assert.equal(sessionTokenDelta(150, 100), 50);
+assert.equal(sessionTokenDelta(20, 50), 20);
+assert.equal(sessionTokenDelta(20, null), 20);
+assert.equal(sessionTokenDelta(-1, 0), null);
 
 function localDateString(value) {
   const date = new Date(value);
@@ -243,6 +318,67 @@ function tokenCount(timestamp, totalTokens, lastTokens = totalTokens) {
   });
 }
 
+function tokenCountWithCache(timestamp, totalTokens, lastTokens, inputTokens, cachedInputTokens, lastInputTokens, lastCachedInputTokens) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          total_tokens: totalTokens,
+          input_tokens: inputTokens,
+          cached_input_tokens: cachedInputTokens,
+        },
+        last_token_usage: {
+          total_tokens: lastTokens,
+          input_tokens: lastInputTokens,
+          cached_input_tokens: lastCachedInputTokens,
+        },
+      },
+    },
+  });
+}
+
+function taskComplete(timestamp, turnId, error = null) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: turnId, error },
+  });
+}
+
+function turnAborted(timestamp, turnId) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
+    type: "event_msg",
+    payload: { type: "turn_aborted", turn_id: turnId, reason: "interrupted" },
+  });
+}
+
+function contextCompacted(timestamp, windowNumber) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
+    type: "compacted",
+    payload: { window_number: windowNumber, replacement_history: [] },
+  });
+}
+
+function quotaExceeded(timestamp, turnId) {
+  return JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(),
+    type: "event_msg",
+    payload: {
+      type: "task_complete",
+      turn_id: turnId,
+      error: {
+        message: "You've hit your usage limit. You can try again at Aug 31st, 2026 3:21 PM.",
+        codex_error_info: "usage_limit_exceeded",
+      },
+    },
+  });
+}
+
 const providerTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-provider-token-test-"));
 try {
   const sessionRoot = path.join(providerTrackerRoot, "sessions");
@@ -266,6 +402,7 @@ try {
     turnContext(at(5), uuidAt(at(5), 13)),
     providerSettings(at(5), "openai"),
     tokenCount(at(6), 30, 20),
+    contextCompacted(at(6.5), 1),
     turnContext(at(7), uuidAt(at(7), 14)),
     providerSettings(at(7), "custom"),
     tokenCount(at(8), 50, 20),
@@ -276,7 +413,9 @@ try {
     tokenCount(at(12), 20, 20),
     tokenCount(at(14), 27, 7),
     tokenCount(at(15), 33, 6),
+    contextCompacted(at(15.5), 2),
     tokenCount(at(16), 33, 99),
+    taskComplete(at(16.5), uuidAt(at(11), 16)),
     "",
   ].join("\n"), "utf8");
   writeFileSync(counterPath, `${JSON.stringify({
@@ -295,13 +434,34 @@ try {
   assert.equal((await tracker.refresh()).todayTokens, 0);
   tracker.setOfficialModelProviders(["openai"]);
   const firstView = await tracker.refresh();
-  assert.equal(firstView.todayTokens, 53);
-  assert.equal(firstView.currentTaskTokens, 33);
+  assert.equal(firstView.todayTokens, 73);
+  assert.equal(firstView.currentTaskTokens, 103);
   assert.equal(firstView.lastTurnTokens, 33);
+  assert.equal(firstView.currentStatus, "completed");
+  assert.equal(firstView.contextCompactions, 2);
+  const blockedTurnId = uuidAt(at(17), 17);
+  appendFileSync(sessionPath, `${quotaExceeded(at(17), blockedTurnId)}\n`, "utf8");
+  const blockedView = await tracker.refresh();
+  assert.equal(blockedView.quotaExceeded.turnId, blockedTurnId);
+  assert.equal(blockedView.quotaExceeded.observedLive, true);
+  assert.match(blockedView.quotaExceeded.eventId, /^[0-9a-f]{32}$/);
+  assert.equal(blockedView.currentStatus, "quota-paused");
+  appendFileSync(sessionPath, `${turnContext(at(18), uuidAt(at(18), 18))}\n`, "utf8");
+  const resumedView = await tracker.refresh();
+  assert.equal(resumedView.quotaExceeded, null);
+  assert.equal(resumedView.currentStatus, "running");
+  appendFileSync(sessionPath, `${tokenCount(at(19), 40, 7)}\n`, "utf8");
+  const activeTurnView = await tracker.refresh();
+  assert.equal(activeTurnView.currentTaskTokens, 110);
+  assert.equal(activeTurnView.lastTurnTokens, 33);
+  assert.equal(activeTurnView.currentStatus, "running");
+  appendFileSync(sessionPath, `${turnAborted(at(20), uuidAt(at(18), 18))}\n`, "utf8");
+  const pausedView = await tracker.refresh();
+  assert.equal(pausedView.currentStatus, "paused");
   const persisted = JSON.parse(readFileSync(counterPath, "utf8"));
-  assert.equal(persisted.schemaVersion, 7);
+  assert.equal(persisted.schemaVersion, 8);
   assert.equal(persisted.mode, "official-conversation-raw");
-  assert.equal(persisted.todayTokens, 53);
+  assert.equal(persisted.todayTokens, 80);
   assert.ok(!persisted.seenEvents.includes("legacy:event"));
   assert.equal(persisted.seenEvents.filter((identity) => identity.endsWith(":total:0")).length, 1);
 
@@ -313,12 +473,73 @@ try {
   });
   restartedTracker.setCurrentThreadId(threadId);
   const restartedView = await restartedTracker.refresh();
-  assert.equal(restartedView.todayTokens, 53);
-  assert.equal(restartedView.currentTaskTokens, 33);
+  assert.equal(restartedView.todayTokens, 80);
+  assert.equal(restartedView.currentTaskTokens, 110);
   assert.equal(restartedView.lastTurnTokens, 33);
-  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).todayTokens, 53);
+  assert.equal(restartedView.currentStatus, "paused");
+  assert.equal(restartedView.contextCompactions, 2);
+  assert.equal(JSON.parse(readFileSync(counterPath, "utf8")).todayTokens, 80);
 } finally {
   rmSync(providerTrackerRoot, { recursive: true, force: true });
+}
+
+const quotaTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-quota-event-test-"));
+try {
+  const sessionRoot = path.join(quotaTrackerRoot, "sessions");
+  mkdirSync(sessionRoot, { recursive: true });
+  const trackerNow = localNoonTimestamp();
+  const liveThreadId = uuidAt(trackerNow - 2_000, 20);
+  const liveTurnId = uuidAt(trackerNow - 1_500, 21);
+  writeFileSync(path.join(sessionRoot, `rollout-live-${liveThreadId}.jsonl`), [
+    sessionMeta(trackerNow - 2_000, liveThreadId, "openai"),
+    turnContext(trackerNow - 1_500, liveTurnId),
+    quotaExceeded(trackerNow - 1_000, liveTurnId),
+    "",
+  ].join("\n"), "utf8");
+  const liveTracker = new LocalCodexTokenTracker({ sessionRoot, counterPath: path.join(quotaTrackerRoot, "live-counter.json"), now: () => trackerNow });
+  liveTracker.setCurrentThreadId(liveThreadId);
+  assert.equal((await liveTracker.refresh()).quotaExceeded.observedLive, true);
+
+  const historicalThreadId = uuidAt(trackerNow - 180_000, 22);
+  const historicalTurnId = uuidAt(trackerNow - 179_000, 23);
+  writeFileSync(path.join(sessionRoot, `rollout-historical-${historicalThreadId}.jsonl`), [
+    sessionMeta(trackerNow - 180_000, historicalThreadId, "openai"),
+    turnContext(trackerNow - 179_000, historicalTurnId),
+    quotaExceeded(trackerNow - 120_000, historicalTurnId),
+    "",
+  ].join("\n"), "utf8");
+  const historicalTracker = new LocalCodexTokenTracker({ sessionRoot, counterPath: path.join(quotaTrackerRoot, "historical-counter.json"), now: () => trackerNow });
+  historicalTracker.setCurrentThreadId(historicalThreadId);
+  assert.equal((await historicalTracker.refresh()).quotaExceeded.observedLive, false);
+} finally {
+  rmSync(quotaTrackerRoot, { recursive: true, force: true });
+}
+
+const cacheTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-cache-hit-test-"));
+try {
+  const sessionRoot = path.join(cacheTrackerRoot, "sessions");
+  mkdirSync(sessionRoot, { recursive: true });
+  const trackerNow = localNoonTimestamp();
+  const threadId = uuidAt(trackerNow - 10_000, 24);
+  const turnId = uuidAt(trackerNow - 9_000, 25);
+  const sessionPath = path.join(sessionRoot, `rollout-cache-${threadId}.jsonl`);
+  writeFileSync(sessionPath, [
+    sessionMeta(trackerNow - 10_000, threadId, "openai"),
+    turnContext(trackerNow - 9_000, turnId),
+    tokenCountWithCache(trackerNow - 8_000, 100, 100, 80, 40, 80, 40),
+    tokenCountWithCache(trackerNow - 7_000, 150, 50, 120, 70, 40, 30),
+    tokenCountWithCache(trackerNow - 6_000, 140, 20, 112, 62, 16, 8),
+    tokenCountWithCache(trackerNow - 5_000, 160, 20, 128, 70, 16, 8),
+    "",
+  ].join("\n"), "utf8");
+  const tracker = new LocalCodexTokenTracker({ sessionRoot, counterPath: path.join(cacheTrackerRoot, "counter.json"), now: () => trackerNow });
+  tracker.setCurrentThreadId(threadId);
+  const cacheView = await tracker.refresh();
+  assert.equal(cacheView.currentTaskTokens, 190);
+  assert.ok(Math.abs(cacheView.cacheHitRate - ((86 / 152) * 100)) < 1e-9);
+  assert.equal(toSessionUsageSource(cacheView, trackerNow).metrics.find((item) => item.id === "cacheHitRate").value, "56.6%");
+} finally {
+  rmSync(cacheTrackerRoot, { recursive: true, force: true });
 }
 
 const lifetimeTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-official-lifetime-test-"));
@@ -344,8 +565,11 @@ try {
   });
   tracker.setCurrentThreadId(threadId);
   assert.equal((await tracker.refresh()).lifetimeTokens, null);
+  assert.equal(tracker.view.last7DaysTokens, null);
   assert.equal(tracker.setOfficialLifetimeTokens(1000, trackerNow), true);
+  assert.equal(tracker.setOfficialLast7DaysTokens(700, trackerNow), true);
   assert.equal(tracker.view.lifetimeTokens, 1000);
+  assert.equal(tracker.view.last7DaysTokens, 700);
 
   appendFileSync(sessionPath, [
     turnContext(trackerNow + 1000, uuidAt(trackerNow + 1000, 20)),
@@ -354,12 +578,17 @@ try {
   ].join("\n"), "utf8");
   trackerNow += 2500;
   assert.equal((await tracker.refresh()).lifetimeTokens, 1030);
+  assert.equal(tracker.view.last7DaysTokens, 730);
   assert.equal(tracker.setOfficialLifetimeTokens(1000, trackerNow), false);
+  assert.equal(tracker.setOfficialLast7DaysTokens(700, trackerNow), false);
   assert.equal(tracker.view.lifetimeTokens, 1030);
+  assert.equal(tracker.view.last7DaysTokens, 730);
 
   trackerNow += 500;
   assert.equal(tracker.setOfficialLifetimeTokens(1015, trackerNow), true);
+  assert.equal(tracker.setOfficialLast7DaysTokens(715, trackerNow), true);
   assert.equal(tracker.view.lifetimeTokens, 1015);
+  assert.equal(tracker.view.last7DaysTokens, 715);
   appendFileSync(sessionPath, [
     turnContext(trackerNow + 1000, uuidAt(trackerNow + 1000, 21)),
     tokenCount(trackerNow + 2000, 140, 10),
@@ -367,6 +596,7 @@ try {
   ].join("\n"), "utf8");
   trackerNow += 2500;
   assert.equal((await tracker.refresh()).lifetimeTokens, 1025);
+  assert.equal(tracker.view.last7DaysTokens, 725);
 
   const restartedTracker = new LocalCodexTokenTracker({
     sessionRoot,
@@ -376,12 +606,17 @@ try {
   });
   restartedTracker.setCurrentThreadId(threadId);
   assert.equal((await restartedTracker.refresh()).lifetimeTokens, 1025);
+  assert.equal(restartedTracker.view.last7DaysTokens, 725);
   assert.equal(restartedTracker.setOfficialLifetimeTokens(1020, trackerNow + 1000), true);
+  assert.equal(restartedTracker.setOfficialLast7DaysTokens(720, trackerNow + 1000), true);
   assert.equal((await restartedTracker.refresh()).lifetimeTokens, 1020);
+  assert.equal(restartedTracker.view.last7DaysTokens, 720);
   const persisted = JSON.parse(readFileSync(counterPath, "utf8"));
-  assert.equal(persisted.schemaVersion, 7);
+  assert.equal(persisted.schemaVersion, 8);
   assert.equal(persisted.officialLifetime.baseTokens, 1020);
   assert.equal(persisted.officialLifetime.pendingTokens, 0);
+  assert.equal(persisted.officialLast7Days.baseTokens, 720);
+  assert.equal(persisted.officialLast7Days.pendingTokens, 0);
 } finally {
   rmSync(lifetimeTrackerRoot, { recursive: true, force: true });
 }
@@ -482,18 +717,33 @@ const delayedOfficial = mergeOfficialLocalUsage(missingToday, {
   status: "ready",
   dailyDate: trackerDateKey,
   todayTokens: 90,
+  last7DaysTokens: 910000,
   lifetimeTokens: 1300000,
   currentThreadId: mergeThreadId,
   currentTaskTokens: 190,
   lastTurnTokens: 40,
+  currentStatus: "completed",
+  cacheHitRate: 75.25,
+  contextCompactions: 3,
 }, trackerDate);
 assert.equal(delayedOfficial.todayTokens, 90);
+assert.equal(delayedOfficial.last7DaysTokens, 910000);
 assert.equal(delayedOfficial.lifetimeTokens, 1300000);
 assert.equal(delayedOfficial.todayTokenScope, "local-official-conversations");
 const delayedSource = toOfficialUsageSource(delayedOfficial, trackerDate.getTime());
 assert.equal(delayedSource.metrics.find((item) => item.id === "todayTokens").value, "90");
-assert.equal(delayedSource.metrics.find((item) => item.id === "currentTaskTokens").value, "190");
-assert.equal(delayedSource.metrics.find((item) => item.id === "lastTurnTokens").value, "40");
+assert.ok(!delayedSource.metrics.some((item) => ["currentTaskTokens", "lastTurnTokens", "contextCompactions"].includes(item.id)));
+const delayedSessionSource = toSessionUsageSource(delayedOfficial, trackerDate.getTime());
+assert.equal(delayedSessionSource.label, "本会话");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "currentStatus").value, "执行完成");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "currentStatus").statusCode, "completed");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "autoResume").value, "--");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "currentTaskTokens").label, "当前会话累计 Token");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "currentTaskTokens").value, "190");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "lastTurnTokens").label, "上次回答消耗 Token");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "lastTurnTokens").value, "40");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "cacheHitRate").value, "75.3%");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "contextCompactions").value, "3");
 const localZeroOverridesOfficialBucket = mergeOfficialLocalUsage({ ...view, todayTokens: 120 }, {
   dailyDate: trackerDateKey,
   todayTokens: 0,
@@ -514,9 +764,9 @@ assert.equal(sevenDayOnly.metrics.find((item) => item.id === "secondaryRemaining
 assert.notEqual(sevenDayOnly.metrics.find((item) => item.id === "primaryReset").value, "--");
 const noOfficialWindows = toOfficialUsageSource({ ...view, windows: [] }, now.getTime());
 assert.equal(noOfficialWindows.metrics.find((item) => item.id === "primaryReset").value, "--");
-const noTaskUsage = toOfficialUsageSource({ ...view, currentThreadId: null, currentTaskTokens: null, lastTurnTokens: null }, now.getTime());
-assert.equal(noTaskUsage.metrics.find((item) => item.id === "currentTaskTokens").value, "--");
-assert.equal(noTaskUsage.metrics.find((item) => item.id === "lastTurnTokens").value, "--");
+const noSessionUsage = toSessionUsageSource({ ...view, currentThreadId: null, currentStatus: null, currentTaskTokens: null, lastTurnTokens: null, cacheHitRate: null, contextCompactions: null }, now.getTime());
+assert.equal(noSessionUsage.status, "unavailable");
+assert.deepEqual(noSessionUsage.metrics.map((item) => item.value), ["--", "--", "--", "--", "--", "--"]);
 
 const cctq = normalizeCctqUsageView({
   data: { total_granted: 7500000, total_used: 2500000, unlimited_quota: false, expires_at: 0 },
@@ -899,4 +1149,33 @@ assert.deepEqual(merged.primary, { usedPercent: 40, windowDurationMins: 300, res
 assert.deepEqual(merged.secondary, rateLimits.rateLimits.secondary);
 assert.equal(normalizeUsageView(null, null, now).status, "unavailable");
 
-console.log("PASS: official usage, API account aggregation, generic API mapping, provider validation, CCTQ compatibility, and sparse updates.");
+const forecastPayload = {
+  schemaVersion: "public-v1",
+  dataHealth: { overall: "ok", stale: false },
+  viewModel: { probability12h: 0.335, probability24h: 0.558, probability48h: 0.72, probability72h: 0.852 },
+};
+const forecastView = normalizeResetForecastView(forecastPayload, { now: 1000 });
+assert.equal(forecastView.accountType, "forecast");
+assert.equal(forecastView.status, "ready");
+assert.deepEqual(forecastView.metrics.map((item) => item.value), ["33.5%", "55.8%", "72.0%", "85.2%"]);
+assert.equal(normalizeResetForecastView({ schemaVersion: "bad" }, { previous: forecastView, now: 2000 }).status, "stale");
+let forecastRequests = 0;
+const forecastUpdates = [];
+const forecastClient = new ResetForecastClient({
+  managed: true,
+  onUpdate: (value) => forecastUpdates.push(value),
+  fetchImpl: async (_url, options) => {
+    forecastRequests += 1;
+    assert.equal(options.method, "GET");
+    assert.equal(options.redirect, "error");
+    return new Response(JSON.stringify(forecastPayload), { status: 200, headers: { "content-type": "application/json" } });
+  },
+});
+await forecastClient.start();
+assert.equal(forecastRequests, 1);
+assert.equal(forecastUpdates.at(-1).status, "ready");
+await forecastClient.refresh();
+assert.equal(forecastRequests, 1);
+await forecastClient.stop();
+
+console.log("PASS: official usage, reset forecast, API account aggregation, generic API mapping, provider validation, CCTQ compatibility, and sparse updates.");

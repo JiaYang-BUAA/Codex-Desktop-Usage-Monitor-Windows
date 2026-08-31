@@ -22,17 +22,24 @@ import {
 } from "./usage/scheduling.mjs";
 
 const DEFAULT_REFRESH_MS = 60000;
-const LOCAL_TOKEN_COUNTER_SCHEMA_VERSION = 7;
+const LOCAL_TOKEN_COUNTER_SCHEMA_VERSION = 8;
 const LOCAL_TOKEN_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 const TOKEN_COUNT_MARKER = Buffer.from('"token_count"', "utf8");
 const TURN_CONTEXT_MARKER = Buffer.from('"turn_context"', "utf8");
 const THREAD_SETTINGS_MARKER = Buffer.from('"thread_settings_applied"', "utf8");
 const SESSION_META_MARKER = Buffer.from('"session_meta"', "utf8");
+const CONTEXT_COMPACTED_MARKER = Buffer.from('"type":"compacted"', "utf8");
+const TASK_COMPLETE_MARKER = Buffer.from('"task_complete"', "utf8");
+const TURN_ABORTED_MARKER = Buffer.from('"turn_aborted"', "utf8");
+const SESSION_STATUS_VALUES = new Set(["running", "completed", "quota-paused", "paused"]);
+const LOCAL_QUOTA_LIVE_WINDOW_MS = 60_000;
 const OFFICIAL_MODEL_PROVIDER_ID = "openai";
 const REQUEST_TIMEOUT_MS = 12000;
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const RATE_LIMIT_BASE_BACKOFF_MS = 60000;
 const RATE_LIMIT_MAX_BACKOFF_MS = 300000;
+export const RESET_FORECAST_URL = "https://codex.gussuriworks.com/api/current?locale=zh";
+export const RESET_FORECAST_REFRESH_MS = 5 * 60 * 1000;
 const CCTQ_DEFAULT_BASE_URL = "https://www.cctq.ai";
 const CCTQ_ACCOUNT_PAGE_SIZE = 1000;
 const CCTQ_ACCOUNT_MAX_PAGES = 100;
@@ -283,10 +290,14 @@ export function conversationTokenDelta(current, previous) {
   return current >= previous ? current - previous : 0;
 }
 
-function turnTokenDelta(current, previous) {
+export function sessionTokenDelta(current, previous) {
   if (!Number.isSafeInteger(current) || current < 0) return null;
   if (!Number.isSafeInteger(previous) || previous < 0 || current < previous) return current;
   return current - previous;
+}
+
+function turnTokenDelta(current, previous) {
+  return sessionTokenDelta(current, previous);
 }
 
 function uuidV7Timestamp(value) {
@@ -342,6 +353,86 @@ export function parseLocalTokenContextEvent(line) {
   return null;
 }
 
+export function parseLocalContextCompactionEvent(line) {
+  const text = String(line ?? "");
+  if (!text.includes('"type":"compacted"')) return null;
+  let item;
+  try { item = JSON.parse(text); } catch { return null; }
+  if (item?.type !== "compacted") return null;
+  const windowNumber = Number(item?.payload?.window_number ?? item?.payload?.windowNumber);
+  if (!Number.isSafeInteger(windowNumber) || windowNumber < 1) return null;
+  const timestamp = Date.parse(String(item?.timestamp ?? ""));
+  return {
+    timestamp: Number.isFinite(timestamp) ? timestamp : null,
+    windowNumber,
+  };
+}
+
+export function parseUsageLimitResetAt(message, observedAt = Date.now()) {
+  const text = String(message ?? "");
+  const match = text.match(/try again at\s+(.+?)(?:\.(?:\s|$)|$)/i);
+  if (!match) return null;
+  const value = match[1].trim().replace(/(\d+)(?:st|nd|rd|th)\b/gi, "$1");
+  const timeOnly = value.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (timeOnly) {
+    const date = new Date(observedAt);
+    if (!Number.isFinite(date.getTime())) return null;
+    let hour = Number(timeOnly[1]) % 12;
+    if (timeOnly[3].toUpperCase() === "PM") hour += 12;
+    date.setHours(hour, Number(timeOnly[2]), 0, 0);
+    if (date.getTime() <= Number(observedAt)) date.setDate(date.getDate() + 1);
+    return date.getTime();
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function parseLocalQuotaExceededEvent(line) {
+  const complete = parseLocalTaskCompleteEvent(line);
+  if (!complete || complete.errorInfo !== "usage_limit_exceeded") return null;
+  const resetAt = parseUsageLimitResetAt(complete.errorMessage, complete.timestamp);
+  return {
+    timestamp: complete.timestamp,
+    turnId: complete.turnId,
+    resetAt,
+    eventId: createHash("sha256").update(`${complete.turnId || "unknown"}:${complete.timestamp}:${resetAt || 0}`).digest("hex").slice(0, 32),
+  };
+}
+
+export function parseLocalTaskCompleteEvent(line) {
+  const text = String(line ?? "");
+  if (!text.includes('"task_complete"')) return null;
+  let item;
+  try { item = JSON.parse(text); } catch { return null; }
+  const payload = item?.payload;
+  if (item?.type !== "event_msg" || payload?.type !== "task_complete") return null;
+  const timestamp = Date.parse(String(item?.timestamp ?? ""));
+  if (!Number.isFinite(timestamp)) return null;
+  const turnId = normalizeLocalId(payload?.turn_id ?? payload?.turnId);
+  return {
+    timestamp,
+    turnId,
+    errorInfo: typeof payload?.error?.codex_error_info === "string" ? payload.error.codex_error_info : null,
+    errorMessage: typeof payload?.error?.message === "string" ? payload.error.message : null,
+  };
+}
+
+export function parseLocalTurnAbortedEvent(line) {
+  const text = String(line ?? "");
+  if (!text.includes('"turn_aborted"')) return null;
+  let item;
+  try { item = JSON.parse(text); } catch { return null; }
+  const payload = item?.payload;
+  if (item?.type !== "event_msg" || payload?.type !== "turn_aborted") return null;
+  const timestamp = Date.parse(String(item?.timestamp ?? ""));
+  if (!Number.isFinite(timestamp)) return null;
+  return {
+    timestamp,
+    turnId: normalizeLocalId(payload?.turn_id ?? payload?.turnId),
+    reason: typeof payload?.reason === "string" ? payload.reason.slice(0, 64) : null,
+  };
+}
+
 export function parseLocalTokenUsageEvent(line, expectedDate = null) {
   const text = String(line ?? "");
   if (!text.includes('"token_count"')) return null;
@@ -358,11 +449,19 @@ export function parseLocalTokenUsageEvent(line, expectedDate = null) {
   if (tokens === null) return null;
   const total = payload?.info?.total_token_usage ?? payload?.tokenUsage?.total ?? null;
   const totalTokens = readTokenField(total, "totalTokens", "total_tokens");
+  const totalInputTokens = readTokenField(total, "inputTokens", "input_tokens");
+  const totalCachedInputTokens = readTokenField(total, "cachedInputTokens", "cached_input_tokens");
+  const inputTokens = readTokenField(last, "inputTokens", "input_tokens");
+  const cachedInputTokens = readTokenField(last, "cachedInputTokens", "cached_input_tokens");
   return {
     date,
     timestamp,
     tokens,
     totalTokens,
+    totalInputTokens,
+    totalCachedInputTokens,
+    inputTokens,
+    cachedInputTokens,
     identity: createHash("sha256").update(text).digest("hex").slice(0, 32),
   };
 }
@@ -392,11 +491,15 @@ function loadLocalTokenCounter(counterPath, date) {
     officialLifetimeCheckpointAt: null,
     officialLifetimePendingTokens: 0,
     officialLifetimeSeenEvents: [],
+    officialLast7DaysTokens: null,
+    officialLast7DaysCheckpointAt: null,
+    officialLast7DaysPendingTokens: 0,
+    officialLast7DaysSeenEvents: [],
   };
   if (!counterPath || !existsSync(counterPath)) return empty;
   try {
     const value = JSON.parse(readFileSync(counterPath, "utf8"));
-    if (![6, LOCAL_TOKEN_COUNTER_SCHEMA_VERSION].includes(value?.schemaVersion)) return empty;
+    if (![6, 7, LOCAL_TOKEN_COUNTER_SCHEMA_VERSION].includes(value?.schemaVersion)) return empty;
     const sameDate = value?.dailyDate === date;
     const todayTokens = sameDate && Number.isSafeInteger(value?.todayTokens) && value.todayTokens >= 0
       ? value.todayTokens
@@ -404,9 +507,13 @@ function loadLocalTokenCounter(counterPath, date) {
     const seenEvents = sameDate && Array.isArray(value?.seenEvents)
       ? value.seenEvents.filter((item) => typeof item === "string" && item.length > 0 && item.length <= 160)
       : [];
-    const lifetime = value?.schemaVersion === LOCAL_TOKEN_COUNTER_SCHEMA_VERSION
+    const lifetime = value?.schemaVersion >= 7
       && value?.officialLifetime && typeof value.officialLifetime === "object"
       ? value.officialLifetime
+      : null;
+    const last7Days = value?.schemaVersion === LOCAL_TOKEN_COUNTER_SCHEMA_VERSION
+      && value?.officialLast7Days && typeof value.officialLast7Days === "object"
+      ? value.officialLast7Days
       : null;
     const officialLifetimeTokens = Number.isSafeInteger(lifetime?.baseTokens) && lifetime.baseTokens >= 0
       ? lifetime.baseTokens
@@ -424,6 +531,22 @@ function loadLocalTokenCounter(counterPath, date) {
     const officialLifetimeSeenEvents = officialLifetimeTokens !== null && Array.isArray(lifetime?.seenEvents)
       ? lifetime.seenEvents.filter((item) => typeof item === "string" && item.length > 0 && item.length <= 160)
       : [];
+    const officialLast7DaysTokens = Number.isSafeInteger(last7Days?.baseTokens) && last7Days.baseTokens >= 0
+      ? last7Days.baseTokens
+      : null;
+    const officialLast7DaysCheckpointAt = officialLast7DaysTokens !== null
+      && Number.isFinite(Number(last7Days?.checkpointAt))
+      && Number(last7Days.checkpointAt) >= 0
+      ? Number(last7Days.checkpointAt)
+      : null;
+    const officialLast7DaysPendingTokens = officialLast7DaysTokens !== null
+      && Number.isSafeInteger(last7Days?.pendingTokens)
+      && last7Days.pendingTokens >= 0
+      ? last7Days.pendingTokens
+      : 0;
+    const officialLast7DaysSeenEvents = officialLast7DaysTokens !== null && Array.isArray(last7Days?.seenEvents)
+      ? last7Days.seenEvents.filter((item) => typeof item === "string" && item.length > 0 && item.length <= 160)
+      : [];
     return {
       todayTokens,
       seenEvents,
@@ -431,13 +554,17 @@ function loadLocalTokenCounter(counterPath, date) {
       officialLifetimeCheckpointAt,
       officialLifetimePendingTokens,
       officialLifetimeSeenEvents,
+      officialLast7DaysTokens,
+      officialLast7DaysCheckpointAt,
+      officialLast7DaysPendingTokens,
+      officialLast7DaysSeenEvents,
     };
   } catch {
     return empty;
   }
 }
 
-function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, officialLifetime, now) {
+function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, officialLifetime, officialLast7Days, now) {
   if (!counterPath || !Number.isSafeInteger(todayTokens) || todayTokens < 0) return;
   mkdirSync(path.dirname(counterPath), { recursive: true });
   const temporaryPath = `${counterPath}.${process.pid}.tmp`;
@@ -454,6 +581,14 @@ function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, offic
           checkpointAt: officialLifetime.checkpointAt,
           pendingTokens: officialLifetime.pendingTokens,
           seenEvents: [...officialLifetime.seenEvents].sort(),
+        },
+    officialLast7Days: officialLast7Days?.baseTokens === null || officialLast7Days?.baseTokens === undefined
+      ? null
+      : {
+          baseTokens: officialLast7Days.baseTokens,
+          checkpointAt: officialLast7Days.checkpointAt,
+          pendingTokens: officialLast7Days.pendingTokens,
+          seenEvents: [...officialLast7Days.seenEvents].sort(),
         },
     updatedAt: new Date(now).toISOString(),
   }, null, 2)}\n`, "utf8");
@@ -513,7 +648,10 @@ function readAppendedUsageLines(filePath, fileState, onLine) {
         if (line.indexOf(TOKEN_COUNT_MARKER) >= 0
           || line.indexOf(TURN_CONTEXT_MARKER) >= 0
           || line.indexOf(THREAD_SETTINGS_MARKER) >= 0
-          || line.indexOf(SESSION_META_MARKER) >= 0) {
+          || line.indexOf(SESSION_META_MARKER) >= 0
+          || line.indexOf(CONTEXT_COMPACTED_MARKER) >= 0
+          || line.indexOf(TASK_COMPLETE_MARKER) >= 0
+          || line.indexOf(TURN_ABORTED_MARKER) >= 0) {
           onLine(line.toString("utf8"));
         }
         lineStart = index + 1;
@@ -566,15 +704,24 @@ export class LocalCodexTokenTracker {
     this.officialLifetimeCheckpointAt = null;
     this.officialLifetimePendingTokens = 0;
     this.officialLifetimeSeenEvents = new Set();
+    this.officialLast7DaysTokens = null;
+    this.officialLast7DaysCheckpointAt = null;
+    this.officialLast7DaysPendingTokens = 0;
+    this.officialLast7DaysSeenEvents = new Set();
     this.counterDirty = false;
     this.view = {
       status: "loading",
       dailyDate: null,
       todayTokens: null,
+      last7DaysTokens: null,
       lifetimeTokens: null,
       currentThreadId: null,
       currentTaskTokens: null,
       lastTurnTokens: null,
+      currentStatus: null,
+      cacheHitRate: null,
+      contextCompactions: null,
+      quotaExceeded: null,
       fetchedAt: null,
       error: null,
     };
@@ -589,6 +736,10 @@ export class LocalCodexTokenTracker {
     this.officialLifetimeCheckpointAt = saved.officialLifetimeCheckpointAt;
     this.officialLifetimePendingTokens = saved.officialLifetimePendingTokens;
     this.officialLifetimeSeenEvents = new Set(saved.officialLifetimeSeenEvents);
+    this.officialLast7DaysTokens = saved.officialLast7DaysTokens;
+    this.officialLast7DaysCheckpointAt = saved.officialLast7DaysCheckpointAt;
+    this.officialLast7DaysPendingTokens = saved.officialLast7DaysPendingTokens;
+    this.officialLast7DaysSeenEvents = new Set(saved.officialLast7DaysSeenEvents);
     this.counterDirty = false;
     this.fileStates.clear();
     this.threadLatest.clear();
@@ -608,6 +759,12 @@ export class LocalCodexTokenTracker {
     return Number.isSafeInteger(total) ? total : this.officialLifetimeTokens;
   }
 
+  currentLast7DaysTokens() {
+    if (!Number.isSafeInteger(this.officialLast7DaysTokens) || this.officialLast7DaysTokens < 0) return null;
+    const total = this.officialLast7DaysTokens + this.officialLast7DaysPendingTokens;
+    return Number.isSafeInteger(total) ? total : this.officialLast7DaysTokens;
+  }
+
   saveCounter(now = this.now()) {
     if (this.dailyDate === null) this.resetDate(now);
     saveLocalTokenCounter(
@@ -621,6 +778,12 @@ export class LocalCodexTokenTracker {
         pendingTokens: this.officialLifetimePendingTokens,
         seenEvents: this.officialLifetimeSeenEvents,
       },
+      {
+        baseTokens: this.officialLast7DaysTokens,
+        checkpointAt: this.officialLast7DaysCheckpointAt,
+        pendingTokens: this.officialLast7DaysPendingTokens,
+        seenEvents: this.officialLast7DaysSeenEvents,
+      },
       now,
     );
     this.counterDirty = false;
@@ -630,10 +793,15 @@ export class LocalCodexTokenTracker {
     const unchanged = this.view.status === view.status
       && this.view.dailyDate === view.dailyDate
       && this.view.todayTokens === view.todayTokens
+      && this.view.last7DaysTokens === view.last7DaysTokens
       && this.view.lifetimeTokens === view.lifetimeTokens
       && this.view.currentThreadId === view.currentThreadId
       && this.view.currentTaskTokens === view.currentTaskTokens
       && this.view.lastTurnTokens === view.lastTurnTokens
+      && this.view.currentStatus === view.currentStatus
+      && this.view.cacheHitRate === view.cacheHitRate
+      && this.view.contextCompactions === view.contextCompactions
+      && this.view.quotaExceeded?.eventId === view.quotaExceeded?.eventId
       && this.view.error === view.error;
     this.view = view;
     if (!unchanged) this.onUpdate(view);
@@ -654,6 +822,26 @@ export class LocalCodexTokenTracker {
     this.emit({
       ...this.view,
       lifetimeTokens: normalized,
+      fetchedAt: timestamp,
+    });
+    return true;
+  }
+
+  setOfficialLast7DaysTokens(value, observedAt = this.now()) {
+    const normalized = Number(value);
+    if (!Number.isSafeInteger(normalized) || normalized < 0) return false;
+    const timestamp = Number.isFinite(Number(observedAt)) ? Number(observedAt) : this.now();
+    if (this.dailyDate === null) this.resetDate(timestamp);
+    if (normalized === this.officialLast7DaysTokens) return false;
+    this.officialLast7DaysTokens = normalized;
+    this.officialLast7DaysCheckpointAt = timestamp;
+    this.officialLast7DaysPendingTokens = 0;
+    this.officialLast7DaysSeenEvents.clear();
+    this.counterDirty = true;
+    this.saveCounter(timestamp);
+    this.emit({
+      ...this.view,
+      last7DaysTokens: normalized,
       fetchedAt: timestamp,
     });
     return true;
@@ -697,9 +885,9 @@ export class LocalCodexTokenTracker {
       const date = localDateKey(now);
       if (date !== this.dailyDate) this.resetDate(now);
       const dayStart = localStartOfDay(now);
-      const scanStart = Number.isFinite(this.officialLifetimeCheckpointAt)
-        ? Math.min(dayStart, this.officialLifetimeCheckpointAt)
-        : dayStart;
+      const checkpoints = [this.officialLifetimeCheckpointAt, this.officialLast7DaysCheckpointAt]
+        .filter((value) => Number.isFinite(value));
+      const scanStart = checkpoints.length ? Math.min(dayStart, ...checkpoints) : dayStart;
       const files = discoverRecentSessionFiles(this.sessionRoot, scanStart, this.currentThreadId);
       let activityDetected = false;
       for (const filePath of files) {
@@ -711,12 +899,22 @@ export class LocalCodexTokenTracker {
           currentProvider: null,
           currentTurnId: null,
           currentTurnTokens: 0,
+          lastCompletedTurnTokens: null,
+          currentStatus: null,
+          sessionTokens: null,
+          sessionInputTokens: null,
+          sessionCachedInputTokens: null,
+          contextCompactions: 0,
           lastTotalTokens: null,
+          lastTotalInputTokens: null,
+          lastTotalCachedInputTokens: null,
           totalEpoch: 0,
           fileMetaSeen: false,
           forked: false,
           forkReady: true,
           forkSessionTimestamp: null,
+          quotaExceeded: null,
+          initialized: false,
         };
         try {
           const appendedBytes = readAppendedUsageLines(filePath, state, (line) => {
@@ -737,10 +935,22 @@ export class LocalCodexTokenTracker {
               } else if (context.kind === "settings") {
                 state.currentProvider = context.modelProvider || state.fallbackProvider;
               } else if (context.kind === "turn") {
+                if (state.quotaExceeded && Number(context.timestamp) > Number(state.quotaExceeded.timestamp)) {
+                  state.quotaExceeded = null;
+                  if (state.threadId) {
+                    const previous = this.threadLatest.get(state.threadId) || {};
+                    this.threadLatest.set(state.threadId, {
+                      ...previous,
+                      timestamp: Math.max(Number(previous.timestamp) || 0, Number(context.timestamp) || 0),
+                      quotaExceeded: null,
+                    });
+                  }
+                }
                 if (context.turnId !== state.currentTurnId) {
                   state.currentTurnId = context.turnId;
                   state.currentTurnTokens = 0;
                 }
+                state.currentStatus = "running";
                 if (state.forked && !state.forkReady) {
                   const turnTimestamp = uuidV7Timestamp(context.turnId) ?? context.timestamp;
                   if (Number.isFinite(turnTimestamp)
@@ -749,30 +959,116 @@ export class LocalCodexTokenTracker {
                     state.forkReady = true;
                   }
                 }
+                if (state.threadId) {
+                  const previous = this.threadLatest.get(state.threadId) || {};
+                  if (!Number.isFinite(Number(previous.timestamp)) || Number(context.timestamp) >= Number(previous.timestamp)) {
+                    this.threadLatest.set(state.threadId, {
+                      ...previous,
+                      timestamp: Number(context.timestamp),
+                      turnId: context.turnId,
+                      currentStatus: state.currentStatus,
+                      quotaExceeded: state.quotaExceeded,
+                    });
+                  }
+                }
+              }
+              return;
+            }
+            const turnAborted = parseLocalTurnAbortedEvent(line);
+            if (turnAborted) {
+              state.currentStatus = "paused";
+              if (state.threadId) {
+                const previous = this.threadLatest.get(state.threadId) || {};
+                if (!Number.isFinite(Number(previous.timestamp)) || turnAborted.timestamp >= Number(previous.timestamp)) {
+                  this.threadLatest.set(state.threadId, {
+                    ...previous,
+                    timestamp: turnAborted.timestamp,
+                    turnId: turnAborted.turnId || state.currentTurnId,
+                    currentStatus: state.currentStatus,
+                  });
+                }
+              }
+              return;
+            }
+            const taskComplete = parseLocalTaskCompleteEvent(line);
+            if (taskComplete) {
+              const quotaExceeded = parseLocalQuotaExceededEvent(line);
+              state.quotaExceeded = quotaExceeded
+                ? {
+                    ...quotaExceeded,
+                    observedLive: state.initialized || quotaExceeded.timestamp >= now - LOCAL_QUOTA_LIVE_WINDOW_MS,
+                  }
+                : null;
+              state.currentStatus = quotaExceeded ? "quota-paused" : "completed";
+              if (!taskComplete.turnId || taskComplete.turnId === state.currentTurnId) {
+                state.lastCompletedTurnTokens = state.currentTurnTokens;
+              }
+              if (state.threadId) {
+                const previous = this.threadLatest.get(state.threadId) || {};
+                this.threadLatest.set(state.threadId, {
+                  ...previous,
+                  timestamp: Math.max(Number(previous.timestamp) || 0, taskComplete.timestamp),
+                  tokens: state.lastCompletedTurnTokens,
+                  turnId: taskComplete.turnId || state.currentTurnId,
+                  currentStatus: state.currentStatus,
+                  quotaExceeded: state.quotaExceeded,
+                });
+              }
+              return;
+            }
+            const compaction = parseLocalContextCompactionEvent(line);
+            if (compaction) {
+              state.contextCompactions = Math.max(state.contextCompactions, compaction.windowNumber);
+              if (state.threadId) {
+                const previous = this.threadLatest.get(state.threadId) || {};
+                this.threadLatest.set(state.threadId, {
+                  ...previous,
+                  timestamp: Math.max(Number(previous.timestamp) || 0, Number(compaction.timestamp) || 0),
+                  contextCompactions: state.contextCompactions,
+                });
               }
               return;
             }
             const event = parseLocalTokenUsageEvent(line);
             if (!event) return;
             const previousTotalTokens = state.lastTotalTokens;
+            const totalChanged = event.totalTokens === null || event.totalTokens !== previousTotalTokens;
             if (event.totalTokens !== null
               && Number.isSafeInteger(previousTotalTokens)
               && event.totalTokens < previousTotalTokens) {
               state.totalEpoch += 1;
             }
             if (event.totalTokens !== null) state.lastTotalTokens = event.totalTokens;
-            const delta = conversationTokenDelta(event.totalTokens, previousTotalTokens);
-            const currentTurnDelta = turnTokenDelta(event.totalTokens, previousTotalTokens);
-            if (state.currentTurnId && Number.isSafeInteger(currentTurnDelta) && currentTurnDelta > 0) {
-              const nextCurrentTurnTokens = state.currentTurnTokens + currentTurnDelta;
+            const delta = totalChanged ? event.tokens : 0;
+            if (totalChanged) {
+              const nextSessionTokens = (state.sessionTokens ?? 0) + event.tokens;
+              if (Number.isSafeInteger(nextSessionTokens)) state.sessionTokens = nextSessionTokens;
+            }
+            if (event.totalInputTokens !== null) state.lastTotalInputTokens = event.totalInputTokens;
+            if (event.totalCachedInputTokens !== null) state.lastTotalCachedInputTokens = event.totalCachedInputTokens;
+            if (totalChanged && Number.isSafeInteger(event.inputTokens)) {
+              const nextSessionInputTokens = (state.sessionInputTokens ?? 0) + event.inputTokens;
+              if (Number.isSafeInteger(nextSessionInputTokens)) state.sessionInputTokens = nextSessionInputTokens;
+            }
+            if (totalChanged && Number.isSafeInteger(event.cachedInputTokens)) {
+              const nextSessionCachedInputTokens = (state.sessionCachedInputTokens ?? 0) + event.cachedInputTokens;
+              if (Number.isSafeInteger(nextSessionCachedInputTokens)) state.sessionCachedInputTokens = nextSessionCachedInputTokens;
+            }
+            if (state.currentTurnId && totalChanged && event.tokens > 0) {
+              const nextCurrentTurnTokens = state.currentTurnTokens + event.tokens;
               if (Number.isSafeInteger(nextCurrentTurnTokens)) state.currentTurnTokens = nextCurrentTurnTokens;
             }
-            const latestTurnTokens = state.currentTurnId ? state.currentTurnTokens : event.tokens;
             if (state.threadId && (!this.threadLatest.has(state.threadId) || event.timestamp >= this.threadLatest.get(state.threadId).timestamp)) {
               this.threadLatest.set(state.threadId, {
                 ...event,
-                tokens: latestTurnTokens,
+                sessionTokens: state.sessionTokens,
+                sessionInputTokens: state.sessionInputTokens,
+                sessionCachedInputTokens: state.sessionCachedInputTokens,
+                tokens: state.lastCompletedTurnTokens,
                 turnId: state.currentTurnId,
+                currentStatus: state.currentStatus,
+                contextCompactions: state.contextCompactions,
+                quotaExceeded: state.quotaExceeded,
               });
             }
             if (!this.classificationReady) return;
@@ -795,6 +1091,18 @@ export class LocalCodexTokenTracker {
                 this.counterDirty = true;
               }
             }
+            if (officialUsage
+              && Number.isSafeInteger(this.officialLast7DaysTokens)
+              && Number.isFinite(this.officialLast7DaysCheckpointAt)
+              && event.timestamp > this.officialLast7DaysCheckpointAt
+              && !this.officialLast7DaysSeenEvents.has(identity)) {
+              const nextPendingTokens = this.officialLast7DaysPendingTokens + delta;
+              if (Number.isSafeInteger(nextPendingTokens)) {
+                this.officialLast7DaysPendingTokens = nextPendingTokens;
+                this.officialLast7DaysSeenEvents.add(identity);
+                this.counterDirty = true;
+              }
+            }
             if (event.date !== this.dailyDate || this.seenEvents.has(identity)) return;
             this.seenEvents.add(identity);
             this.counterDirty = true;
@@ -802,14 +1110,20 @@ export class LocalCodexTokenTracker {
             const nextTodayTokens = this.todayTokens + delta;
             if (Number.isSafeInteger(nextTodayTokens)) this.todayTokens = nextTodayTokens;
           });
+          state.initialized = true;
           if (appendedBytes > 0) activityDetected = true;
           this.fileStates.set(filePath, state);
         } catch {}
       }
       const todayTokens = this.currentTokens();
       if (activityDetected) this.lastActivityAt = now;
+      const last7DaysTokens = this.currentLast7DaysTokens();
       const lifetimeTokens = this.currentLifetimeTokens();
       const currentTask = this.currentThreadId ? this.threadLatest.get(this.currentThreadId) || null : null;
+      const cacheHitRate = Number.isSafeInteger(currentTask?.sessionInputTokens) && currentTask.sessionInputTokens > 0
+        && Number.isSafeInteger(currentTask?.sessionCachedInputTokens) && currentTask.sessionCachedInputTokens >= 0
+        ? Math.min(100, (currentTask.sessionCachedInputTokens / currentTask.sessionInputTokens) * 100)
+        : null;
       if (this.counterDirty) {
         this.saveCounter(now);
       }
@@ -818,10 +1132,15 @@ export class LocalCodexTokenTracker {
         status: available ? "ready" : todayTokens > 0 ? "stale" : "unavailable",
         dailyDate: this.dailyDate,
         todayTokens: available || todayTokens > 0 ? todayTokens : null,
+        last7DaysTokens,
         lifetimeTokens,
         currentThreadId: this.currentThreadId,
-        currentTaskTokens: currentTask?.totalTokens ?? null,
+        currentTaskTokens: currentTask?.sessionTokens ?? currentTask?.totalTokens ?? null,
         lastTurnTokens: currentTask?.tokens ?? null,
+        currentStatus: SESSION_STATUS_VALUES.has(currentTask?.currentStatus) ? currentTask.currentStatus : null,
+        cacheHitRate,
+        contextCompactions: currentTask?.contextCompactions ?? (this.currentThreadId ? 0 : null),
+        quotaExceeded: currentTask?.quotaExceeded ?? null,
         fetchedAt: now,
         error: available ? null : "未找到本机 Codex 任务记录",
       });
@@ -880,6 +1199,16 @@ export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = 
   const todayKey = localDateKey(now);
   const todayBucket = buckets?.find((item) => item?.startDate === todayKey);
   const todayTokens = todayBucket ? Math.max(0, Number(todayBucket.tokens) || 0) : null;
+  const bucketByDate = new Map((buckets || [])
+    .filter((item) => typeof item?.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.startDate))
+    .map((item) => [item.startDate, item]));
+  const last7DaysBuckets = Array.from({ length: 7 }, (_, offset) => {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - offset);
+    return bucketByDate.get(localDateKey(date)) || null;
+  }).filter(Boolean);
+  const last7DaysTokens = last7DaysBuckets.length
+    ? last7DaysBuckets.reduce((total, item) => total + Math.max(0, Number(item.tokens) || 0), 0)
+    : null;
   const latestUsageDate = buckets
     ?.map((item) => typeof item?.startDate === "string" ? item.startDate : null)
     .filter((value) => value && /^\d{4}-\d{2}-\d{2}$/.test(value))
@@ -896,6 +1225,7 @@ export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = 
     status: windows.length || todayTokens !== null ? "ready" : "unavailable",
     windows: windows.slice(0, 2).map(({ position, ...item }) => item),
     todayTokens,
+    last7DaysTokens,
     tokenUsageAvailable,
     latestUsageDate,
     lifetimeTokens,
@@ -934,6 +1264,21 @@ export function mergeOfficialLocalUsage(officialView, localView, now = new Date(
     currentThreadId: typeof localView?.currentThreadId === "string" ? localView.currentThreadId : null,
     currentTaskTokens: Number.isSafeInteger(localView?.currentTaskTokens) && localView.currentTaskTokens >= 0 ? localView.currentTaskTokens : null,
     lastTurnTokens: Number.isSafeInteger(localView?.lastTurnTokens) && localView.lastTurnTokens >= 0 ? localView.lastTurnTokens : null,
+    currentStatus: SESSION_STATUS_VALUES.has(localView?.currentStatus) ? localView.currentStatus : null,
+    cacheHitRate: localView?.cacheHitRate !== null && localView?.cacheHitRate !== undefined
+      && Number.isFinite(Number(localView.cacheHitRate))
+      ? Math.max(0, Math.min(100, Number(localView.cacheHitRate)))
+      : null,
+    contextCompactions: Number.isSafeInteger(localView?.contextCompactions) && localView.contextCompactions >= 0 ? localView.contextCompactions : null,
+    quotaExceeded: localView?.quotaExceeded && typeof localView.quotaExceeded === "object"
+      ? {
+          eventId: String(localView.quotaExceeded.eventId || "").slice(0, 32),
+          turnId: typeof localView.quotaExceeded.turnId === "string" ? localView.quotaExceeded.turnId : null,
+          timestamp: Number(localView.quotaExceeded.timestamp) || null,
+          resetAt: Number(localView.quotaExceeded.resetAt) || null,
+          observedLive: localView.quotaExceeded.observedLive === true,
+        }
+      : null,
   };
   const localToday = localView?.dailyDate === todayKey
     && Number.isSafeInteger(localView?.todayTokens)
@@ -944,10 +1289,15 @@ export function mergeOfficialLocalUsage(officialView, localView, now = new Date(
     && localView.lifetimeTokens >= 0
     ? localView.lifetimeTokens
     : null;
+  const localLast7Days = Number.isSafeInteger(localView?.last7DaysTokens)
+    && localView.last7DaysTokens >= 0
+    ? localView.last7DaysTokens
+    : null;
   return {
     ...officialView,
     ...taskUsage,
     todayTokens: localToday,
+    last7DaysTokens: localLast7Days ?? officialView?.last7DaysTokens ?? null,
     lifetimeTokens: localLifetime ?? officialView?.lifetimeTokens ?? null,
     tokenUsageAvailable: true,
     todayTokenScope: localToday === null ? null : "local-official-conversations",
@@ -1038,6 +1388,17 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
       defaultVisible: true,
     });
   }
+  if (view?.last7DaysTokens !== null && view?.last7DaysTokens !== undefined) {
+    const last7DaysValue = formatMetricTokens(view.last7DaysTokens);
+    metrics.push({
+      id: "last7DaysTokens",
+      label: "近7天 Token",
+      display: `近7天 ${last7DaysValue}`,
+      detail: `近7天 Token：${last7DaysValue}`,
+      value: last7DaysValue,
+      defaultVisible: false,
+    });
+  }
   if (view?.lifetimeTokens !== null && view?.lifetimeTokens !== undefined) {
     metrics.push({
       id: "lifetimeTokens",
@@ -1048,30 +1409,6 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
       defaultVisible: false,
     });
   }
-  const currentTaskValue = view?.currentTaskTokens === null || view?.currentTaskTokens === undefined
-    ? "--"
-    : formatMetricTokens(view.currentTaskTokens);
-  const lastTurnValue = view?.lastTurnTokens === null || view?.lastTurnTokens === undefined
-    ? "--"
-    : formatMetricTokens(view.lastTurnTokens);
-  metrics.push(
-    {
-      id: "currentTaskTokens",
-      label: "当前任务累计 Token",
-      display: `任务 ${currentTaskValue}`,
-      detail: `当前任务累计 Token：${currentTaskValue}`,
-      value: currentTaskValue,
-      defaultVisible: false,
-    },
-    {
-      id: "lastTurnTokens",
-      label: "上次对话消耗 Token",
-      display: `上次 ${lastTurnValue}`,
-      detail: `上次对话消耗 Token：${lastTurnValue}`,
-      value: lastTurnValue,
-      defaultVisible: false,
-    },
-  );
   return {
     id: "official",
     label: "官方订阅",
@@ -1081,6 +1418,88 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
     fetchedAt: view?.fetchedAt || null,
     nextRefreshAt: view?.fetchedAt ? Number(view.fetchedAt) + refreshMs : null,
     metrics,
+  };
+}
+
+export function toSessionUsageSource(view, now = Date.now(), refreshMs = DEFAULT_REFRESH_MS) {
+  const statusCode = SESSION_STATUS_VALUES.has(view?.currentStatus) ? view.currentStatus : null;
+  const statusValue = statusCode === "running" ? "正在执行"
+    : statusCode === "completed" ? "执行完成"
+      : statusCode === "quota-paused" ? "额度用尽暂停"
+        : statusCode === "paused" ? "主动暂停" : "--";
+  const currentSessionValue = view?.currentTaskTokens === null || view?.currentTaskTokens === undefined
+    ? "--"
+    : formatMetricTokens(view.currentTaskTokens);
+  const lastAnswerValue = view?.lastTurnTokens === null || view?.lastTurnTokens === undefined
+    ? "--"
+    : formatMetricTokens(view.lastTurnTokens);
+  const cacheHitValue = view?.cacheHitRate !== null && view?.cacheHitRate !== undefined
+    && Number.isFinite(Number(view.cacheHitRate))
+    ? `${Number(Number(view.cacheHitRate).toFixed(1))}%`
+    : "--";
+  const compactionValue = view?.contextCompactions === null || view?.contextCompactions === undefined
+    ? "--"
+    : String(Math.max(0, Math.round(Number(view.contextCompactions))));
+  const ready = typeof view?.currentThreadId === "string" && view.currentThreadId.length > 0;
+  return {
+    id: "session",
+    label: "本会话",
+    accountType: "session",
+    status: ready ? "ready" : "unavailable",
+    error: ready ? null : "未识别当前会话",
+    fetchedAt: view?.fetchedAt || now,
+    nextRefreshAt: Number(view?.fetchedAt || now) + refreshMs,
+    metrics: [
+      {
+        id: "currentTaskTokens",
+        label: "当前会话累计 Token",
+        display: `会话 ${currentSessionValue}`,
+        detail: `当前会话累计 Token：${currentSessionValue}`,
+        value: currentSessionValue,
+        defaultVisible: true,
+      },
+      {
+        id: "lastTurnTokens",
+        label: "上次回答消耗 Token",
+        display: `上次回答 ${lastAnswerValue}`,
+        detail: `上次回答消耗 Token：${lastAnswerValue}`,
+        value: lastAnswerValue,
+        defaultVisible: false,
+      },
+      {
+        id: "cacheHitRate",
+        label: "缓存命中率",
+        display: `缓存 ${cacheHitValue}`,
+        detail: `缓存命中率：${cacheHitValue}`,
+        value: cacheHitValue,
+        defaultVisible: false,
+      },
+      {
+        id: "contextCompactions",
+        label: "自动压缩上下文次数",
+        display: `压缩 ${compactionValue}`,
+        detail: `自动压缩上下文次数：${compactionValue}`,
+        value: compactionValue,
+        defaultVisible: false,
+      },
+      {
+        id: "currentStatus",
+        label: "当前状态",
+        display: `状态 ${statusValue}`,
+        detail: `当前状态：${statusValue}`,
+        value: statusValue,
+        statusCode,
+        defaultVisible: false,
+      },
+      {
+        id: "autoResume",
+        label: "额度恢复续跑",
+        display: "续跑 --",
+        detail: "额度恢复续跑：--",
+        value: "--",
+        defaultVisible: false,
+      },
+    ],
   };
 }
 
@@ -1719,16 +2138,143 @@ export class ApiAccountUsageClient {
   }
 }
 
+const resetForecastMetric = (id, label, hours, probability = null) => {
+  const valid = Number.isFinite(Number(probability)) && Number(probability) >= 0 && Number(probability) <= 1;
+  const value = valid ? `${(Number(probability) * 100).toFixed(1)}%` : "--";
+  return {
+    id,
+    label,
+    value,
+    display: `${hours}h ${value}`,
+    detail: "社区统计预测，并非 OpenAI 官方数据",
+    defaultVisible: false,
+  };
+};
+
+export function normalizeResetForecastView(payload, { now = Date.now(), refreshMs = RESET_FORECAST_REFRESH_MS, previous = null } = {}) {
+  const viewModel = payload?.viewModel;
+  const valid = payload?.schemaVersion === "public-v1" && viewModel && typeof viewModel === "object";
+  const probabilities = valid
+    ? [viewModel.probability12h, viewModel.probability24h, viewModel.probability48h, viewModel.probability72h]
+    : [];
+  const probabilitiesValid = probabilities.length === 4
+    && probabilities.every((value) => Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1);
+  if (!valid || !probabilitiesValid) {
+    if (previous?.metrics?.length) {
+      return { ...previous, status: "stale", error: "重置预测接口暂不可用，显示上次数据", nextRefreshAt: now + refreshMs };
+    }
+    return {
+      id: "reset-forecast",
+      label: "重置预测",
+      accountType: "forecast",
+      status: "unavailable",
+      error: "重置预测接口暂不可用",
+      fetchedAt: null,
+      nextRefreshAt: now + refreshMs,
+      metrics: [
+        resetForecastMetric("probability12h", "12小时内", 12),
+        resetForecastMetric("probability24h", "24小时内", 24),
+        resetForecastMetric("probability48h", "48小时内", 48),
+        resetForecastMetric("probability72h", "72小时内", 72),
+      ],
+    };
+  }
+  const stale = payload?.dataHealth?.stale === true || payload?.dataHealth?.overall === "stale";
+  return {
+    id: "reset-forecast",
+    label: "重置预测",
+    accountType: "forecast",
+    status: stale ? "stale" : "ready",
+    error: stale ? "社区预测数据已过期" : null,
+    fetchedAt: now,
+    nextRefreshAt: now + refreshMs,
+    metrics: [
+      resetForecastMetric("probability12h", "12小时内", 12, probabilities[0]),
+      resetForecastMetric("probability24h", "24小时内", 24, probabilities[1]),
+      resetForecastMetric("probability48h", "48小时内", 48, probabilities[2]),
+      resetForecastMetric("probability72h", "72小时内", 72, probabilities[3]),
+    ],
+  };
+}
+
+export class ResetForecastClient {
+  constructor({ fetchImpl = globalThis.fetch, refreshMs = RESET_FORECAST_REFRESH_MS, managed = false, onUpdate = () => {} } = {}) {
+    this.fetchImpl = fetchImpl;
+    this.refreshMs = refreshMs;
+    this.managed = managed;
+    this.onUpdate = onUpdate;
+    this.view = normalizeResetForecastView(null, { refreshMs });
+    this.timer = null;
+    this.refreshing = null;
+    this.stopped = true;
+  }
+
+  emit(view) {
+    this.view = view;
+    this.onUpdate(view);
+  }
+
+  async refresh({ force = false } = {}) {
+    if (this.refreshing) return this.refreshing;
+    if (!force && Number(this.view.nextRefreshAt) > Date.now()) return this.view;
+    this.refreshing = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      timeout.unref?.();
+      try {
+        const response = await this.fetchImpl(RESET_FORECAST_URL, {
+          method: "GET",
+          headers: { Accept: "application/json" },
+          redirect: "error",
+          signal: controller.signal,
+        });
+        if (!response?.ok) throw new Error(`HTTP ${response?.status || 0}`);
+        const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
+        if (contentType && !contentType.includes("application/json")) throw new Error("响应不是 JSON");
+        const payload = JSON.parse(await readLimitedResponseText(response, "重置预测接口"));
+        const next = normalizeResetForecastView(payload, { refreshMs: this.refreshMs, previous: this.view });
+        if (next.status === "unavailable") throw new Error(next.error);
+        this.emit(next);
+      } catch {
+        this.emit(normalizeResetForecastView(null, { refreshMs: this.refreshMs, previous: this.view }));
+      } finally {
+        clearTimeout(timeout);
+        this.refreshing = null;
+      }
+      return this.view;
+    })();
+    return this.refreshing;
+  }
+
+  async start() {
+    if (!this.stopped) return this.view;
+    this.stopped = false;
+    await this.refresh({ force: true });
+    if (!this.managed) {
+      this.timer = setInterval(() => this.refresh().catch(() => {}), this.refreshMs);
+      this.timer.unref?.();
+    }
+    return this.view;
+  }
+
+  async stop() {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+}
+
 export class CombinedUsageClient {
-  constructor({ command = resolveCodexExecutable(), provider = loadApiProviderConfig(), refreshMs = DEFAULT_REFRESH_MS, onUpdate = () => {} } = {}) {
+  constructor({ command = resolveCodexExecutable(), provider = loadApiProviderConfig(), refreshMs = DEFAULT_REFRESH_MS, forecastFetch = globalThis.fetch, onUpdate = () => {} } = {}) {
     this.onUpdate = onUpdate;
     this.refreshMs = refreshMs;
     this.timer = null;
     this.nextRefreshAt = null;
-    this.officialView = { status: "loading", windows: [], todayTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
-    this.localOfficialView = { status: "loading", dailyDate: null, todayTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
+    this.officialView = { status: "loading", windows: [], todayTokens: null, last7DaysTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
+    this.localOfficialView = { status: "loading", dailyDate: null, todayTokens: null, last7DaysTokens: null, lifetimeTokens: null, cacheHitRate: null, fetchedAt: null, error: null };
     this.accountView = normalizeApiAccountView(null, [], { refreshMs });
     this.apiView = normalizeApiUsageView(null, null, provider);
+    this.forecastView = normalizeResetForecastView(null, { refreshMs: RESET_FORECAST_REFRESH_MS });
     this.localOfficial = new LocalCodexTokenTracker({ onUpdate: (view) => { this.localOfficialView = view; this.emit(); } });
     this.official = new UsageClient({
       command,
@@ -1739,6 +2285,9 @@ export class CombinedUsageClient {
         if (Number.isSafeInteger(view?.lifetimeTokens) && view.lifetimeTokens >= 0) {
           this.localOfficial.setOfficialLifetimeTokens(view.lifetimeTokens, view.fetchedAt);
         }
+        if (Number.isSafeInteger(view?.last7DaysTokens) && view.last7DaysTokens >= 0) {
+          this.localOfficial.setOfficialLast7DaysTokens(view.last7DaysTokens, view.fetchedAt);
+        }
         if (view?.officialModelProvidersResolved) {
           this.localOfficial.setOfficialModelProviders(view?.officialModelProviders);
         }
@@ -1747,6 +2296,7 @@ export class CombinedUsageClient {
     });
     this.account = new ApiAccountUsageClient({ refreshMs, managed: true, onUpdate: (view) => { this.accountView = view; this.emit(); } });
     this.api = new ApiUsageClient({ provider, refreshMs, managed: true, onUpdate: (view) => { this.apiView = view; this.emit(); } });
+    this.forecast = new ResetForecastClient({ fetchImpl: forecastFetch, managed: true, onUpdate: (view) => { this.forecastView = view; this.emit(); } });
   }
 
   emit() {
@@ -1756,9 +2306,11 @@ export class CombinedUsageClient {
       schemaVersion: 2,
       nextRefreshAt: this.nextRefreshAt,
       sources: {
+        session: toSessionUsageSource(officialView, Date.now(), this.refreshMs),
         official: toOfficialUsageSource(officialView, Date.now(), this.refreshMs),
         "api-account": this.accountView,
         [this.apiView.id]: this.apiView,
+        "reset-forecast": this.forecastView,
       },
     });
   }
@@ -1768,12 +2320,12 @@ export class CombinedUsageClient {
   }
 
   async start() {
-    await Promise.all([this.official.start(), this.localOfficial.start(), this.account.start(), this.api.start()]);
+    await Promise.all([this.official.start(), this.localOfficial.start(), this.account.start(), this.api.start(), this.forecast.start()]);
     this.nextRefreshAt = Date.now() + this.refreshMs;
     this.timer = setInterval(() => {
       this.nextRefreshAt = Date.now() + this.refreshMs;
       this.emit();
-      Promise.all([this.official.refresh(), this.account.refresh(), this.api.refresh()]).catch(() => {});
+      Promise.all([this.official.refresh(), this.account.refresh(), this.api.refresh(), this.forecast.refresh()]).catch(() => {});
     }, this.refreshMs);
     this.timer.unref?.();
     this.emit();
@@ -1782,7 +2334,7 @@ export class CombinedUsageClient {
   async stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    await Promise.all([this.official.stop(), this.localOfficial.stop(), this.account.stop(), this.api.stop()]);
+    await Promise.all([this.official.stop(), this.localOfficial.stop(), this.account.stop(), this.api.stop(), this.forecast.stop()]);
   }
 }
 
@@ -1850,7 +2402,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "2.1.5" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.0" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");
@@ -1963,6 +2515,7 @@ export class UsageClient {
       status: "loading",
       windows: [],
       todayTokens: null,
+      last7DaysTokens: null,
       lifetimeTokens: null,
       officialModelProviders: [],
       officialModelProvidersResolved: false,

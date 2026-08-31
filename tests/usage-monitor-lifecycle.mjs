@@ -65,21 +65,36 @@ window.Element.prototype.getBoundingClientRect = function getBoundingClientRect(
     if (/权限/.test(text)) return { x: 141, y: 164, width: 28, height: 28 };
     if (/5\.6/.test(text)) return { x: 622, y: 164, width: 105, height: 28 };
     if (/听写/.test(text)) return { x: 728, y: 164, width: 28, height: 28 };
-    if (/发送/.test(text)) return { x: 764, y: 164, width: 28, height: 28 };
+    if (/(?:发送|停止)/.test(text)) return { x: 764, y: 164, width: 28, height: 28 };
     return { x: 0, y: 0, width: 0, height: 0 };
   })();
   return { ...value, right: value.x + value.width, bottom: value.y + value.height };
 };
 
 const now = Date.now();
+const currentThreadId = "019fb3b1-2638-7bb0-9a90-ec83b5bca0f2";
+const otherThreadId = "019fb3b1-2638-7bb0-9a90-ec83b5bca0f4";
 const primaryResetsAt = new Date(2026, 6, 24, 12, 0).getTime() / 1000;
 const secondaryResetsAt = new Date(2026, 6, 30, 7, 0).getTime() / 1000;
 const usage = {
   schemaVersion: 2,
+  currentThreadId,
   nextRefreshAt: now + 60000,
+  autoResume: { enabled: false, status: "idle", resetAt: null },
   todayTokens: 128000,
   lifetimeTokens: 12000000,
   sources: {
+    session: {
+      id: "session", label: "本会话", accountType: "session", status: "ready", nextRefreshAt: now + 60000,
+      metrics: [
+        { id: "currentStatus", label: "当前状态", display: "状态 正在执行", value: "正在执行", statusCode: "running", defaultVisible: false },
+        { id: "autoResume", label: "额度恢复续跑", display: "续跑 --", value: "--", defaultVisible: false },
+        { id: "currentTaskTokens", label: "当前会话累计 Token", display: "会话 3822万", value: "3822万", defaultVisible: true },
+        { id: "lastTurnTokens", label: "上次回答消耗 Token", display: "上次回答 8万", value: "8万", defaultVisible: false },
+        { id: "cacheHitRate", label: "缓存命中率", display: "缓存 95.3%", value: "95.3%", defaultVisible: false },
+        { id: "contextCompactions", label: "自动压缩上下文次数", display: "压缩 3", value: "3", defaultVisible: false },
+      ],
+    },
     official: {
       id: "official", label: "官方订阅", accountType: "subscription", status: "ready", nextRefreshAt: now + 60000,
       metrics: [
@@ -87,9 +102,8 @@ const usage = {
         { id: "secondaryRemaining", label: "7天剩余", display: "7天 44%", value: "44%", resetsAt: secondaryResetsAt, defaultVisible: false },
         { id: "primaryReset", label: "5小时重置", display: "重置 07-24 12:00", value: "07-24 12:00", defaultVisible: false },
         { id: "todayTokens", label: "今日 token", display: "今日 128k", value: "128,000", defaultVisible: true },
+        { id: "last7DaysTokens", label: "近7天 Token", display: "近7天 240万", value: "240万", defaultVisible: false },
         { id: "lifetimeTokens", label: "累计 token", display: "累计 12m", value: "12,000,000", defaultVisible: false },
-        { id: "currentTaskTokens", label: "当前任务累计 Token", display: "任务 3822万", value: "3822万", defaultVisible: false },
-        { id: "lastTurnTokens", label: "上次对话消耗 Token", display: "上次 8万", value: "8万", defaultVisible: false },
       ],
     },
     "api-account": {
@@ -115,17 +129,28 @@ const usage = {
         { id: "expiresAt", label: "到期时间", value: "永久", display: "到期 永久" },
       ],
     },
+    "reset-forecast": {
+      id: "reset-forecast", label: "重置预测", accountType: "forecast", status: "ready", nextRefreshAt: now + 300000,
+      metrics: [
+        { id: "probability12h", label: "12小时内", value: "33.5%", display: "12h 33.5%" },
+        { id: "probability24h", label: "24小时内", value: "55.8%", display: "24h 55.8%" },
+        { id: "probability48h", label: "48小时内", value: "72.0%", display: "48h 72.0%" },
+        { id: "probability72h", label: "72小时内", value: "85.2%", display: "72h 85.2%" },
+      ],
+    },
   },
 };
 
 window.localStorage.setItem("codex-usage-monitor-settings-v1", JSON.stringify({
   metrics: {
-    official: ["primaryRemaining", "secondaryRemaining"],
+    official: ["primaryRemaining", "currentTaskTokens"],
     "api-account": ["balance"],
     acme: ["usedAmount", "quotaLimit"],
   },
   minimalMode: false,
   countdownVisualization: false,
+  autoResume: false,
+  unifiedMetricsVersion: 1,
 }));
 window.__CODEX_USAGE_MONITOR_CONFIGURATION__ = {
   account: { configured: true, baseUrl: "https://www.cctq.ai", userId: "10530", baselineConfigured: true, initialTokens: "123456" },
@@ -201,8 +226,8 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /:host\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--usage-top/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column\s*\{[\s\S]*?box-sizing:\s*border-box;[\s\S]*?width:\s*100%;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-column \+ \.usage-column\s*\{[^}]*border-left/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-subsection-title\s*\{\s*margin-top:\s*5px;/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-subsection\[data-status="ready"\] \.usage-status\s*\{\s*background:\s*#22c55e;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-columns\s*\{[\s\S]*?grid-template-columns:\s*repeat\(var\(--usage-column-count, 4\), minmax\(230px, 1fr\)\);/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?overflow-x:\s*hidden;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-detail-label\s*\{[\s\S]*?color:\s*inherit;[\s\S]*?font-weight:\s*650;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-detail-select input\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?width:\s*13px;[\s\S]*?height:\s*13px;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-popover-footer/);
@@ -213,49 +238,61 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-summary-item\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*height:\s*100%;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /data-density="packed"[^}]+\.usage-summary-item:nth-child\(2\)\s*\{\s*padding-left:\s*0;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /data-density="packed"[^}]+\.usage-summary-item:nth-child\(2\)::before\s*\{\s*display:\s*none;/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-switches\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);[\s\S]*?width:\s*100%;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-switches\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);[\s\S]*?grid-auto-flow:\s*row;[\s\S]*?width:\s*100%;/);
+  assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-toggle-api/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-toggle\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) 24px;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-inline-toggle\s*\{[^}]*width:\s*24px;[^}]*height:\s*14px;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-toggle input:checked \+ \.usage-toggle-track,\s*\.usage-inline-toggle input:checked \+ \.usage-toggle-track\s*\{[^}]*border-color:\s*#86efac;[^}]*background:\s*#86efac;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-toggle input:checked \+ \.usage-toggle-track::after,\s*\.usage-inline-toggle input:checked \+ \.usage-toggle-track::after\s*\{[^}]*background:\s*#166534;[^}]*transform:\s*translateX\(10px\);/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-settings-trigger\s*\{[^}]*border:\s*1px solid currentColor;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /@media \(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?\.usage-toggle-track::after\s*\{\s*transition:\s*none;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring\s*\{[\s\S]*?top:\s*0;[\s\S]*?width:\s*13px;[\s\S]*?border:\s*1\.5px solid currentColor;[\s\S]*?background:\s*transparent;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring::before\s*\{[\s\S]*?top:\s*-3px;[\s\S]*?width:\s*3px;[\s\S]*?height:\s*3px;[\s\S]*?background:\s*currentColor/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-refresh-ring::after\s*\{[\s\S]*?width:\s*1\.5px;[\s\S]*?height:\s*calc\(50% \+ \.5px\);[\s\S]*?background:\s*#22c55e;[\s\S]*?transform:\s*rotate\(var\(--usage-refresh-progress\)\);[\s\S]*?transform-origin:\s*50% 100%;/);
 
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 5);
   assert.notEqual(host.dataset.density, "normal");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["5时75%", "7天44%", "余额¥20", "已用¥5", "限额不限"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["会话3822万", "5时75%", "余额¥20", "已用¥5", "限额不限"]);
 
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
   const columns = [...host.shadowRoot.querySelectorAll(".usage-column")];
-  assert.equal(columns.length, 3);
-  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["官方订阅", "API 账户", "API Key"]);
-  assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "loading", "error"]);
-  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [7, 8, 4]);
-  const taskSection = columns[0].querySelector(".usage-column-subsection");
-  assert.ok(taskSection);
-  assert.equal(taskSection.querySelector(".usage-column-heading").textContent, "本次任务相关");
-  assert.equal(taskSection.querySelector(".usage-status").getAttribute("aria-label"), "正常");
-  assert.equal(columns[0].querySelector(":scope > .usage-column-rows").querySelectorAll(".usage-detail-row").length, 5);
-  assert.equal(taskSection.querySelectorAll(".usage-detail-row").length, 2);
-  assert.equal(columns[0].querySelector('[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5小时剩余");
-  assert.equal(columns[0].querySelector('[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "7天剩余");
-  assert.equal(columns[0].querySelector('[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "07-24 12:00重置 · 75%");
-  assert.equal(columns[0].querySelector('[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "07-30 07:00重置 · 44%");
-  assert.equal(columns[0].querySelector('[data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "13万");
-  assert.equal(columns[0].querySelector('[data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "1200万");
+  assert.equal(columns.length, 5);
+  assert.equal(host.dataset.columnCount, "5");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1150px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-372px");
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "API 账户", "API Key", "重置预测"]);
+  assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "ready", "loading", "error", "ready"]);
+  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [6, 6, 8, 4, 4]);
+  assert.deepEqual([...columns[0].querySelectorAll('input[data-source="session"][data-metric]')].map((input) => input.dataset.metric), ["currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions", "currentStatus", "autoResume"]);
+  assert.equal(columns[0].querySelector('[data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "当前状态");
+  assert.equal(columns[0].querySelector('[data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "正在执行");
+  assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "当前会话累计 Token");
   assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3822万");
+  assert.equal(columns[0].querySelector('[data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "上次回答消耗 Token");
   assert.equal(columns[0].querySelector('[data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "8万");
-  assert.equal(columns[0].querySelector('[data-metric="requestStatus"]'), null);
+  assert.equal(columns[0].querySelector('[data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "缓存命中率");
+  assert.equal(columns[0].querySelector('[data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "95.3%");
+  assert.equal(columns[0].querySelector('[data-metric="contextCompactions"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "自动压缩上下文次数");
+  assert.equal(columns[0].querySelector('[data-metric="contextCompactions"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3");
+  assert.equal(columns[1].querySelector('[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5小时剩余");
+  assert.equal(columns[1].querySelector('[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "7天剩余");
+  assert.equal(columns[1].querySelector('[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "07-24 12:00重置 · 75%");
+  assert.equal(columns[1].querySelector('[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "07-30 07:00重置 · 44%");
+  assert.equal(columns[1].querySelector('[data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "13万");
+  assert.equal(columns[1].querySelector('[data-metric="last7DaysTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "240万");
+  assert.equal(columns[1].querySelector('[data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "1200万");
+  assert.equal(columns[1].querySelector('[data-metric="requestStatus"]'), null);
   const usageWithoutTaskMetrics = structuredClone(usage);
-  usageWithoutTaskMetrics.sources.official.metrics = usageWithoutTaskMetrics.sources.official.metrics
-    .filter((metric) => !["currentTaskTokens", "lastTurnTokens"].includes(metric.id));
+  usageWithoutTaskMetrics.sources.session.status = "unavailable";
+  usageWithoutTaskMetrics.sources.session.metrics = [];
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usageWithoutTaskMetrics), true);
-  const unavailableTaskSection = host.shadowRoot.querySelector('.usage-column-subsection[data-status="unavailable"]');
-  assert.ok(unavailableTaskSection);
-  assert.equal(unavailableTaskSection.querySelector(".usage-status").getAttribute("aria-label"), "暂无数据");
-  assert.deepEqual([...unavailableTaskSection.querySelectorAll(".usage-detail-value")].map((item) => item.textContent), ["--", "--"]);
+  const unavailableSessionColumn = host.shadowRoot.querySelector('.usage-column[data-status="unavailable"]');
+  assert.ok(unavailableSessionColumn);
+  assert.equal(unavailableSessionColumn.querySelector(".usage-status").getAttribute("aria-label"), "暂无数据");
+  assert.deepEqual([...unavailableSessionColumn.querySelectorAll(".usage-detail-value")].map((item) => item.textContent), ["--", "--", "--", "--", "--"]);
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
-  assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "请求中", "请求失败"]);
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "正常", "请求中", "请求失败", "正常"]);
   const limitedUsage = structuredClone(usage);
   limitedUsage.sources.acme.status = "rate-limited";
   limitedUsage.sources.acme.error = "Acme API 请求受限（HTTP 429），稍后自动重试";
@@ -263,21 +300,63 @@ try {
   assert.equal(host.shadowRoot.querySelector('.usage-column[data-status="rate-limited"] .usage-status').getAttribute("aria-label"), "请求受限");
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
-  assert.equal(host.shadowRoot.querySelectorAll('input[type="checkbox"]:checked').length, 5);
-  assert.deepEqual([...columns[2].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v2.1.5", "—— Designed by +羊 and Codex"]);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
+  assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.0", "—— Designed by +羊 and Codex"]);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
   assert.equal(columns[0].querySelector(".usage-column-meta"), null);
-  assert.equal(columns[1].querySelector(".usage-column-meta"), null);
-  assert.equal(columns[2].querySelector(".usage-column-meta span:first-child").textContent, "最多显示 8 项");
+  assert.equal(columns[1].querySelector(".usage-column-meta span:first-of-type").textContent, "最多显示 8 项");
+  assert.equal(columns[4].querySelector(".usage-column-meta"), null);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-meta\s*\{[\s\S]*?justify-content:\s*flex-end;/);
   assert.match(host.shadowRoot.querySelector(".usage-refresh-countdown").textContent, /^刷新 \d+秒后$/);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "English UI", "自动更新"]);
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 4);
+  assert.equal(host.shadowRoot.querySelector(".usage-mode-switches").hidden, true);
+  assert.equal(host.shadowRoot.querySelector("[data-toggle-settings]").textContent, "设置");
+  host.shadowRoot.querySelector("[data-toggle-settings]").click();
+  assert.equal(host.shadowRoot.querySelector(".usage-mode-switches").hidden, false);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "English UI", "自动更新", "API 栏", "重置预测栏"]);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 6);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 6);
+  assert.equal(host.shadowRoot.querySelector(".usage-mode-toggle-api"), null);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').title, "自动续跑已启用");
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').closest(".usage-column").querySelector(".usage-column-heading").textContent, "本会话");
+  assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "继续");
+  assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').closest(".usage-auto-resume-field").querySelector(".usage-auto-resume-label").textContent, "续跑发送内容");
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-column:nth-child(2) .usage-mode-toggle input[type="checkbox"]').length, 6);
+  const autoResumeMetric = host.shadowRoot.querySelector('input[data-source="session"][data-metric="autoResume"]');
+  assert.equal(autoResumeMetric.checked, false);
+  assert.equal(autoResumeMetric.closest(".usage-detail-row").nextElementSibling.className, "usage-auto-resume-field");
+  autoResumeMetric.click();
+  let summaryResume = host.shadowRoot.querySelector('.usage-summary-item[data-metric="autoResume"]');
+  assert.equal(summaryResume.textContent, "续跑");
+  assert.equal(summaryResume.querySelector('input[data-summary-setting="autoResume"]').checked, false);
+  summaryResume.querySelector('input[data-summary-setting="autoResume"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).autoResumeThreads[currentThreadId].enabled, true);
+  assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
+  assert.equal(host.shadowRoot.querySelector('.usage-detail-row input[data-setting="autoResume"]').checked, true);
+  summaryResume = host.shadowRoot.querySelector('.usage-summary-item[data-metric="autoResume"]');
+  summaryResume.querySelector('input[data-summary-setting="autoResume"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).autoResumeThreads[currentThreadId].enabled, false);
+  assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
+  host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
+  summaryResume = host.shadowRoot.querySelector('.usage-summary-item[data-metric="autoResume"]');
+  assert.equal(summaryResume.textContent, "");
+  assert.ok(summaryResume.querySelector('input[data-summary-setting="autoResume"]'));
+  host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
+  assert.equal(host.shadowRoot.querySelector('.usage-summary-item[data-metric="autoResume"]').textContent, "续跑");
+  host.shadowRoot.querySelector('input[data-source="session"][data-metric="autoResume"]').click();
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').firstElementChild.className, "usage-mode-switches");
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').lastElementChild.className, "usage-column-meta");
-  assert.equal(columns[2].querySelector(".usage-column-footer").nextElementSibling, columns[2].querySelector(".usage-column-brand"));
+  assert.equal(columns[1].querySelector(".usage-column-footer").nextElementSibling, columns[1].querySelector(".usage-column-brand"));
+  host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置预测"]);
+  assert.equal(host.shadowRoot.querySelector(".usage-columns").style.getPropertyValue("--usage-column-count"), "3");
+  assert.equal(host.shadowRoot.querySelector('.usage-column[data-status="ready"] + .usage-column .usage-column-footer') !== null, true);
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showApiColumns, false);
+  host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showApiColumns, true);
   assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-config-trigger")].map((button) => button.textContent), ["配置", "配置"]);
   host.shadowRoot.querySelector('[data-configure-source="api-account"]').click();
   let accountForm = host.shadowRoot.querySelector('[data-config-source="api-account"]');
@@ -323,8 +402,8 @@ try {
   host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).minimalMode, true);
   assert.equal(host.dataset.density, "normal");
-  assert.equal(host.shadowRoot.querySelector(".usage-column-meta span:first-child").textContent, "极简最多 14 项");
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["75%", "44%", "¥20", "¥5", "不限"]);
+  assert.equal(host.shadowRoot.querySelector(".usage-column-meta span:first-of-type").textContent, "极简最多 14 项");
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.textContent), ["3822万", "75%", "¥20", "¥5", "不限"]);
   const minimalExtraSelectors = [
     'input[data-source="official"][data-metric="todayTokens"]',
     'input[data-source="official"][data-metric="lifetimeTokens"]',
@@ -381,6 +460,30 @@ try {
   window.Date.now = realDateNow;
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
 
+  const resumeMessageInput = host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]');
+  resumeMessageInput.value = "请继续完成当前任务";
+  resumeMessageInput.dispatchEvent(new window.Event("change", { bubbles: true }));
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).autoResumeThreads[currentThreadId].message, "请继续完成当前任务");
+  host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).autoResumeThreads[currentThreadId].enabled, true);
+
+  const otherUsage = structuredClone(usage);
+  otherUsage.currentThreadId = otherThreadId;
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(otherUsage), true);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false);
+  host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+  const otherMessageInput = host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]');
+  otherMessageInput.value = "继续 B";
+  otherMessageInput.dispatchEvent(new window.Event("change", { bubbles: true }));
+  const independentSettings = JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2"));
+  assert.equal(independentSettings.autoResumeThreads[currentThreadId].enabled, true);
+  assert.equal(independentSettings.autoResumeThreads[currentThreadId].message, "请继续完成当前任务");
+  assert.equal(independentSettings.autoResumeThreads[otherThreadId].enabled, true);
+  assert.equal(independentSettings.autoResumeThreads[otherThreadId].message, "继续 B");
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, true);
+  assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "请继续完成当前任务");
+
   const densityToggle = host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]');
   assert.equal(densityToggle.checked, true);
   densityToggle.click();
@@ -408,6 +511,19 @@ try {
   }
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 8);
   assert.equal(host.dataset.density, "packed");
+  assert.deepEqual(
+    [...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => `${item.dataset.source}:${item.dataset.metric}`),
+    [
+      "session:currentTaskTokens",
+      "official:primaryRemaining",
+      "acme:usedAmount",
+      "acme:quotaLimit",
+      "api-account:balance",
+      "api-account:totalTokens",
+      "api-account:todayTokens",
+      "acme:expiresAt",
+    ],
+  );
   const ninth = host.shadowRoot.querySelector('[data-source="api-account"][data-metric="lastModel"]');
   assert.equal(ninth.disabled, true);
   ninth.checked = true;
@@ -421,25 +537,45 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="api-account"][data-metric="lastModel"]').disabled, false);
 
   const saved = JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2"));
-  assert.equal(saved.unifiedMetricsVersion, 1);
+  assert.equal(saved.unifiedMetricsVersion, 2);
   assert.equal(saved.source, undefined);
   assert.deepEqual(saved.metrics["api-account"], ["totalTokens", "todayTokens"]);
+  assert.deepEqual(saved.metricOrder, [
+    "session:currentTaskTokens",
+    "official:primaryRemaining",
+    "acme:usedAmount",
+    "acme:quotaLimit",
+    "api-account:totalTokens",
+    "api-account:todayTokens",
+    "acme:expiresAt",
+  ]);
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
   assert.match(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().strategy, /composer|editable/);
 
   host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
   assert.deepEqual(
     [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-heading").textContent),
-    ["Official Subscription", "API Account", "API Key"],
+    ["Session", "Official Subscription", "API Account", "API Key", "Reset Forecast"],
   );
-  assert.equal(host.shadowRoot.querySelector(".usage-column-subsection-title .usage-column-heading").textContent, "Current Task");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5-hour remaining");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "resets 07-24 12:00 · 75%");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "resets 07-30 07:00 · 44%");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "128K");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "12M");
-  assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "38.22M");
-  assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "80K");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Current session tokens");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Current status");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "Running");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="autoResume"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Resume after reset");
+  assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').closest(".usage-auto-resume-field").querySelector(".usage-auto-resume-label").textContent, "Resume message");
+  assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "请继续完成当前任务");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "38.22M");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Last answer tokens");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Cache hit rate");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="last7DaysTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Tokens in last 7 days");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="last7DaysTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "2.4M");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "80K");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="contextCompactions"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Automatic context compactions");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="contextCompactions"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3");
   assert.equal(host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "40K");
   assert.equal(host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="totalTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "360K");
   host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
@@ -491,6 +627,10 @@ try {
   assert.equal(window.eval(payload).installed, true);
   host = window.document.getElementById("codex-usage-monitor");
   host.shadowRoot.querySelector(".usage-summary").click();
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置预测"]);
+  host.shadowRoot.querySelector("[data-toggle-settings]").click();
+  host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
   host.shadowRoot.querySelector('[data-configure-source="acme"]').click();
   const beginnerForm = host.shadowRoot.querySelector('[data-config-source="acme"]');
   assert.equal(beginnerForm.querySelector('[data-config-field="preset"]'), null);
@@ -510,11 +650,11 @@ try {
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.deepEqual(
     [...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.dataset.metric),
-    ["secondaryRemaining", "currentTaskTokens"],
+    ["currentTaskTokens", "secondaryRemaining"],
   );
   assert.deepEqual(
-    [...host.shadowRoot.querySelectorAll('input[data-source="official"]:checked')].map((item) => item.dataset.metric),
-    ["secondaryRemaining", "currentTaskTokens"],
+    [...host.shadowRoot.querySelectorAll('input[data-source="session"]:checked, input[data-source="official"]:checked')].map((item) => `${item.dataset.source}:${item.dataset.metric}`),
+    ["session:currentTaskTokens", "official:secondaryRemaining"],
   );
   assert.equal(host.shadowRoot.querySelectorAll('input[data-source="api-account"]:checked, input[data-source="acme"]:checked').length, 0);
   assert.ok(persistedPayloads.length >= 1);
@@ -527,18 +667,19 @@ try {
     metrics: { official: ["lifetimeTokens"] },
     apiKeyMetricsVersion: 0,
     officialMetricsVersion: 0,
-    unifiedMetricsVersion: 1,
+    unifiedMetricsVersion: 2,
     minimalMode: true,
     countdownVisualization: false,
     englishUi: false,
     updateNotifications: false,
+    autoResume: false,
   };
   window.__CODEX_USAGE_MONITOR__ = usage;
   assert.equal(window.eval(payload).installed, true);
   host = window.document.getElementById("codex-usage-monitor");
   assert.deepEqual(
     [...host.shadowRoot.querySelectorAll(".usage-summary-item")].map((item) => item.dataset.metric),
-    ["lifetimeTokens"],
+    ["currentTaskTokens", "lifetimeTokens"],
   );
   assert.equal(host.dataset.minimal, "true");
   host.shadowRoot.querySelector('input[data-source="official"][data-metric="secondaryRemaining"]').click();

@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 import { CombinedUsageClient } from "./usage-client.mjs";
 import { createUiSettingsStore, MAX_UI_SETTINGS_BYTES } from "./ui-settings.mjs";
 import { createAutoUpdater } from "./auto-updater.mjs";
+import { AutoResumeController, createAutoResumeStateStore } from "./auto-resume.mjs";
+import { sendContinueThroughDesktop } from "./desktop-request.mjs";
 import { isMainCodexRendererTarget, syncCurrentThread } from "./current-thread.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -420,18 +422,45 @@ async function runOnce(options) {
 async function runWatch(options) {
   const sessions = new Map();
   const settingsStore = await createUiSettingsStore();
+  const autoResumeStore = await createAutoResumeStateStore();
   const autoUpdater = createAutoUpdater({ root, port: options.port, settingsStore });
+  let usageClient = null;
+  let latestBaseUsage = null;
   let latestUsage = null;
   let stopping = false;
   let targetsMissingSince = null;
   let usageStartPromise = Promise.resolve();
-  const usageClient = new CombinedUsageClient({
+  const publishUsage = () => {
+    if (!latestBaseUsage) return;
+    latestUsage = { ...latestBaseUsage, autoResume: { ...autoResumeController.status } };
+    for (const entry of sessions.values()) {
+      updateMonitor(entry.session, latestUsage, settingsStore).catch((error) => console.error(`[usage-monitor] update failed: ${error.message}`));
+    }
+  };
+  const autoResumeController = new AutoResumeController({
+    store: autoResumeStore,
+    onStatusChange: publishUsage,
+    sendContinue: async (pending) => {
+      let lastReason = "codex-desktop-unavailable";
+      for (const entry of sessions.values()) {
+        if (entry.session.closed) continue;
+        const result = await sendContinueThroughDesktop(entry.session, {
+          threadId: pending.threadId,
+          eventId: pending.eventId,
+          message: pending.message,
+        });
+        if (result?.ok) return result;
+        lastReason = result?.reason || "desktop-send-failed";
+      }
+      return { ok: false, reason: lastReason };
+    },
+  });
+  usageClient = new CombinedUsageClient({
     refreshMs: 60000,
     onUpdate: (usage) => {
-      latestUsage = usage;
-      for (const entry of sessions.values()) {
-        updateMonitor(entry.session, usage, settingsStore).catch((error) => console.error(`[usage-monitor] update failed: ${error.message}`));
-      }
+      latestBaseUsage = usage;
+      publishUsage();
+      autoResumeController.observeUsage(usage).catch((error) => console.error(`[usage-monitor] auto-resume failed: ${error.message}`));
     },
   });
 
@@ -453,10 +482,14 @@ async function runWatch(options) {
           .then(() => syncCurrentThread(session, usageClient))
           .catch((error) => console.error(`[usage-monitor] renderer reload failed: ${error.message}`));
       });
-      await registerSettingsBinding(session, settingsStore, (value) => autoUpdater.settingsChanged(value));
+      await registerSettingsBinding(session, settingsStore, (value) => {
+        autoUpdater.settingsChanged(value);
+        return autoResumeController.settingsChanged(value);
+      });
       await registerConfigurationBinding(session, options.port);
       await applyMonitor(session, latestUsage, settingsStore);
       autoUpdater.settingsChanged(settingsStore.current);
+      await autoResumeController.settingsChanged(settingsStore.current);
       await syncCurrentThread(session, usageClient);
     } catch (error) {
       if (sessions.get(target.id)?.session === session) sessions.delete(target.id);
@@ -470,6 +503,7 @@ async function runWatch(options) {
     stopping = true;
     await usageStartPromise.catch(() => {});
     autoUpdater.stop();
+    await autoResumeController.stop().catch(() => {});
     await usageClient.stop().catch(() => {});
     await settingsStore.flush().catch(() => {});
     await closeSessions(sessions);

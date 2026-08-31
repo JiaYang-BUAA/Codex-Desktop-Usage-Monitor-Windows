@@ -1,14 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { AUTO_RESUME_MESSAGE, normalizeAutoResumeMessage } from "./auto-resume.mjs";
 
-export const UI_SETTINGS_SCHEMA_VERSION = 1;
+export const UI_SETTINGS_SCHEMA_VERSION = 2;
 export const UI_SETTINGS_FILE_NAME = "ui-settings.json";
 export const MAX_UI_SETTINGS_BYTES = 64 * 1024;
 
 const SOURCE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
 const METRIC_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
+const THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VERSION_FIELDS = ["apiKeyMetricsVersion", "officialMetricsVersion", "unifiedMetricsVersion"];
-const BOOLEAN_FIELDS = ["minimalMode", "countdownVisualization", "englishUi", "updateNotifications"];
+const BOOLEAN_FIELDS = ["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume"];
 
 const safeVersion = (value) => Number.isSafeInteger(Number(value)) && Number(value) >= 0
   ? Math.min(1000, Number(value))
@@ -25,9 +27,38 @@ export function normalizeUiSettings(value) {
         .slice(0, 14);
     }
   }
-  const normalized = { schemaVersion: UI_SETTINGS_SCHEMA_VERSION, metrics };
+  const metricOrder = Array.isArray(value.metricOrder)
+    ? [...new Set(value.metricOrder.filter((key) => {
+        if (typeof key !== "string" || key.length > 82) return false;
+        const separator = key.indexOf(":");
+        if (separator <= 0 || separator !== key.lastIndexOf(":")) return false;
+        return SOURCE_ID_PATTERN.test(key.slice(0, separator)) && METRIC_ID_PATTERN.test(key.slice(separator + 1));
+      }))].slice(0, 64)
+    : [];
+  const normalized = { schemaVersion: UI_SETTINGS_SCHEMA_VERSION, metrics, metricOrder };
   for (const field of VERSION_FIELDS) normalized[field] = safeVersion(value[field]);
   for (const field of BOOLEAN_FIELDS) normalized[field] = Boolean(value[field]);
+  // Preserve the optional API-column layout for existing settings files. A genuinely
+  // new installation has no settings object and the renderer starts with the
+  // optional API columns hidden until the user enables them.
+  normalized.showApiColumns = Object.prototype.hasOwnProperty.call(value, "showApiColumns")
+    ? Boolean(value.showApiColumns)
+    : true;
+  normalized.showResetForecast = Object.prototype.hasOwnProperty.call(value, "showResetForecast")
+    ? Boolean(value.showResetForecast)
+    : true;
+  normalized.autoResumeMessage = normalizeAutoResumeMessage(value.autoResumeMessage, AUTO_RESUME_MESSAGE);
+  normalized.autoResumeThreads = {};
+  if (value.autoResumeThreads && typeof value.autoResumeThreads === "object" && !Array.isArray(value.autoResumeThreads)) {
+    for (const [threadId, config] of Object.entries(value.autoResumeThreads).slice(0, 128)) {
+      const normalizedThreadId = String(threadId).toLowerCase();
+      if (!THREAD_ID_PATTERN.test(normalizedThreadId) || !config || typeof config !== "object" || Array.isArray(config)) continue;
+      normalized.autoResumeThreads[normalizedThreadId] = {
+        enabled: config.enabled === true,
+        message: normalizeAutoResumeMessage(config.message, AUTO_RESUME_MESSAGE),
+      };
+    }
+  }
   return normalized;
 }
 
