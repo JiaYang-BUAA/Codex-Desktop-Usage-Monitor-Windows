@@ -131,6 +131,11 @@ const usage = {
     },
     "reset-forecast": {
       id: "reset-forecast", label: "重置概率预测（仅供参考）", accountType: "forecast", status: "ready", nextRefreshAt: now + 300000,
+      latestActivity: {
+        text: "Codex 使用额度已面向所有付费套餐重置。",
+        createdAt: now - 3600000,
+        sourceUrl: "https://x.com/thsottiaux/status/2094588317245509959",
+      },
       metrics: [
         { id: "probability12h", label: "12小时内", value: "33.5%", display: "12h 33.5%" },
         { id: "probability24h", label: "24小时内", value: "55.8%", display: "24h 55.8%" },
@@ -267,6 +272,13 @@ try {
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "API 账户", "API Key", "重置概率预测（仅供参考）"]);
   assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "ready", "loading", "error", "ready"]);
   assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [6, 6, 8, 4, 4]);
+  const tiboActivity = columns[4].querySelector(".usage-tibo-activity");
+  assert.equal(tiboActivity.querySelector(".usage-tibo-activity-label").textContent, "Tibo 最新动态");
+  assert.equal(tiboActivity.querySelector(".usage-tibo-activity-text").textContent, "Codex 使用额度已面向所有付费套餐重置。");
+  assert.equal(tiboActivity.querySelector(".usage-tibo-activity-link").textContent, "打开 X");
+  assert.equal(tiboActivity.querySelector(".usage-tibo-activity-link").href, "https://x.com/thsottiaux/status/2094588317245509959");
+  assert.match(tiboActivity.querySelector(".usage-tibo-activity-time").textContent, /^发布于 \d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-tibo-activity-text\s*\{[\s\S]*?-webkit-line-clamp:\s*3;/);
   assert.deepEqual([...columns[0].querySelectorAll('input[data-source="session"][data-metric]')].map((input) => input.dataset.metric), ["currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions", "currentStatus", "autoResume"]);
   assert.equal(columns[0].querySelector('[data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "当前状态");
   assert.equal(columns[0].querySelector('[data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "正在执行");
@@ -304,7 +316,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.1", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.2", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -579,6 +591,8 @@ try {
     [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-heading").textContent),
     ["Session", "Official Subscription", "API Account", "API Key", "Reset Probability (FYI)"],
   );
+  assert.equal(host.shadowRoot.querySelector(".usage-tibo-activity-label").textContent, "Latest from Tibo");
+  assert.equal(host.shadowRoot.querySelector(".usage-tibo-activity-link").textContent, "Open X");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5-hour remaining");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "resets 07-24 12:00 · 75%");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="secondaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "resets 07-30 07:00 · 44%");

@@ -109,6 +109,16 @@
       defaultVisible: Boolean(item.defaultVisible),
     };
   };
+  const normalizeLatestActivity = (value) => {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    if (!source) return null;
+    const text = typeof source.text === "string" ? source.text.replace(/\s+/g, " ").trim().slice(0, 500) : "";
+    const createdAt = finiteNumber(source.createdAt) ? Number(source.createdAt) : null;
+    const sourceUrl = typeof source.sourceUrl === "string" && /^https:\/\/(?:www\.)?x\.com\/thsottiaux\/status\/\d{6,24}$/i.test(source.sourceUrl)
+      ? source.sourceUrl
+      : null;
+    return text && createdAt && sourceUrl ? { text, createdAt, sourceUrl } : null;
+  };
   const normalizeSource = (item, fallbackId) => {
     const source = item && typeof item === "object" ? item : {};
     const id = typeof source.id === "string" ? source.id : fallbackId;
@@ -122,6 +132,7 @@
       nextRefreshAt: finiteNumber(source.nextRefreshAt)
         ? Number(source.nextRefreshAt)
         : finiteNumber(source.fetchedAt) ? Number(source.fetchedAt) + REFRESH_INTERVAL_MS : null,
+      latestActivity: normalizeLatestActivity(source.latestActivity),
       metrics: (Array.isArray(source.metrics) ? source.metrics : []).map(normalizeMetric).filter(Boolean).slice(0, 16),
     };
   };
@@ -230,6 +241,13 @@
     if (!Number.isFinite(date.getTime())) return "重置时间未知";
     const pad = (value) => String(value).padStart(2, "0");
     return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  };
+  const formatActivityTime = (timestamp, language) => {
+    const date = new Date(Number(timestamp));
+    if (!Number.isFinite(date.getTime())) return "--";
+    const pad = (value) => String(value).padStart(2, "0");
+    const value = `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return language === "en" ? value : value;
   };
   const normalizeAutoResumeThreads = (value) => {
     const normalized = {};
@@ -717,6 +735,28 @@
     .usage-detail-label { min-width: 0; color: inherit; font-weight: 650; }
     .usage-detail-value { max-width: 138px; overflow: hidden; color: inherit; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .usage-detail-reset { font-weight: 500; opacity: .58; }
+    .usage-tibo-activity {
+      min-width: 0;
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+    }
+    .usage-tibo-activity-head { display: flex; align-items: center; justify-content: space-between; gap: 5px; min-width: 0; }
+    .usage-tibo-activity-label { min-width: 0; overflow: hidden; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+    .usage-tibo-activity-link { flex: 0 0 auto; color: inherit; font-size: 9px; font-weight: 600; opacity: .62; text-underline-offset: 2px; }
+    .usage-tibo-activity-text {
+      display: -webkit-box;
+      margin-top: 4px;
+      overflow: hidden;
+      font-size: 10px;
+      font-weight: 500;
+      line-height: 1.38;
+      opacity: .78;
+      overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+    }
+    .usage-tibo-activity-time { display: block; margin-top: 3px; overflow: hidden; font-size: 9px; opacity: .5; text-overflow: ellipsis; white-space: nowrap; }
     .usage-column-brand {
       display: flex;
       flex-direction: column;
@@ -1348,6 +1388,32 @@
           return column;
         }
         column.append(title, createRows(source.metrics));
+        if (source.accountType === "forecast" && source.latestActivity) {
+          const activity = document.createElement("article");
+          activity.className = "usage-tibo-activity";
+          const activityHead = document.createElement("div");
+          activityHead.className = "usage-tibo-activity-head";
+          const activityLabel = document.createElement("span");
+          activityLabel.className = "usage-tibo-activity-label";
+          activityLabel.textContent = t("latestFromTibo");
+          const activityLink = document.createElement("a");
+          activityLink.className = "usage-tibo-activity-link";
+          activityLink.href = source.latestActivity.sourceUrl;
+          activityLink.target = "_blank";
+          activityLink.rel = "noreferrer";
+          activityLink.textContent = t("openX");
+          const activityText = document.createElement("div");
+          activityText.className = "usage-tibo-activity-text";
+          activityText.textContent = source.latestActivity.text;
+          activityText.title = source.latestActivity.text;
+          const activityTime = document.createElement("time");
+          activityTime.className = "usage-tibo-activity-time";
+          activityTime.dateTime = new Date(source.latestActivity.createdAt).toISOString();
+          activityTime.textContent = t("publishedAt", { value: formatActivityTime(source.latestActivity.createdAt, t.language) });
+          activityHead.append(activityLabel, activityLink);
+          activity.append(activityHead, activityText, activityTime);
+          column.append(activity);
+        }
         if (source.id === "official") {
           const footer = document.createElement("div");
           footer.className = "usage-column-footer";

@@ -40,6 +40,7 @@ const RATE_LIMIT_BASE_BACKOFF_MS = 60000;
 const RATE_LIMIT_MAX_BACKOFF_MS = 300000;
 export const RESET_FORECAST_URL = "https://codex.gussuriworks.com/api/current?locale=zh";
 export const RESET_FORECAST_REFRESH_MS = 5 * 60 * 1000;
+export const TIBO_ACTIVITY_REFRESH_MS = RESET_FORECAST_REFRESH_MS;
 const CCTQ_DEFAULT_BASE_URL = "https://www.cctq.ai";
 const CCTQ_ACCOUNT_PAGE_SIZE = 1000;
 const CCTQ_ACCOUNT_MAX_PAGES = 100;
@@ -2151,7 +2152,31 @@ const resetForecastMetric = (id, label, hours, probability = null) => {
   };
 };
 
-export function normalizeResetForecastView(payload, { now = Date.now(), refreshMs = RESET_FORECAST_REFRESH_MS, previous = null } = {}) {
+const normalizeTiboActivity = (value, { now, refreshMs, previous = null }) => {
+  if (previous && Number(previous.nextRefreshAt) > now) return previous;
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const text = String(source?.text || "").replace(/\s+/g, " ").trim().slice(0, 500);
+  const createdAt = Date.parse(String(source?.createdAt || ""));
+  const sourceUrl = String(source?.sourceUrl || "").trim();
+  const validUrl = /^https:\/\/(?:www\.)?x\.com\/thsottiaux\/status\/\d{6,24}$/i.test(sourceUrl);
+  if (!text || !Number.isFinite(createdAt) || !validUrl) {
+    return previous ? { ...previous, nextRefreshAt: now + refreshMs } : null;
+  }
+  return {
+    text,
+    createdAt,
+    sourceUrl,
+    fetchedAt: now,
+    nextRefreshAt: now + refreshMs,
+  };
+};
+
+export function normalizeResetForecastView(payload, {
+  now = Date.now(),
+  refreshMs = RESET_FORECAST_REFRESH_MS,
+  tiboRefreshMs = TIBO_ACTIVITY_REFRESH_MS,
+  previous = null,
+} = {}) {
   const viewModel = payload?.viewModel;
   const valid = payload?.schemaVersion === "public-v1" && viewModel && typeof viewModel === "object";
   const probabilities = valid
@@ -2188,6 +2213,11 @@ export function normalizeResetForecastView(payload, { now = Date.now(), refreshM
     error: stale ? "社区预测数据已过期" : null,
     fetchedAt: now,
     nextRefreshAt: now + refreshMs,
+    latestActivity: normalizeTiboActivity(payload?.latestTiboActivity, {
+      now,
+      refreshMs: tiboRefreshMs,
+      previous: previous?.latestActivity,
+    }),
     metrics: [
       resetForecastMetric("probability12h", "12小时内", 12, probabilities[0]),
       resetForecastMetric("probability24h", "24小时内", 24, probabilities[1]),
@@ -2198,12 +2228,21 @@ export function normalizeResetForecastView(payload, { now = Date.now(), refreshM
 }
 
 export class ResetForecastClient {
-  constructor({ fetchImpl = globalThis.fetch, refreshMs = RESET_FORECAST_REFRESH_MS, managed = false, onUpdate = () => {} } = {}) {
+  constructor({
+    fetchImpl = globalThis.fetch,
+    refreshMs = RESET_FORECAST_REFRESH_MS,
+    tiboRefreshMs = TIBO_ACTIVITY_REFRESH_MS,
+    managed = false,
+    onUpdate = () => {},
+    now = Date.now,
+  } = {}) {
     this.fetchImpl = fetchImpl;
     this.refreshMs = refreshMs;
+    this.tiboRefreshMs = tiboRefreshMs;
     this.managed = managed;
     this.onUpdate = onUpdate;
-    this.view = normalizeResetForecastView(null, { refreshMs });
+    this.now = now;
+    this.view = normalizeResetForecastView(null, { now: this.now(), refreshMs, tiboRefreshMs });
     this.timer = null;
     this.refreshing = null;
     this.stopped = true;
@@ -2216,7 +2255,7 @@ export class ResetForecastClient {
 
   async refresh({ force = false } = {}) {
     if (this.refreshing) return this.refreshing;
-    if (!force && Number(this.view.nextRefreshAt) > Date.now()) return this.view;
+    if (!force && Number(this.view.nextRefreshAt) > this.now()) return this.view;
     this.refreshing = (async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -2232,11 +2271,21 @@ export class ResetForecastClient {
         const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
         if (contentType && !contentType.includes("application/json")) throw new Error("响应不是 JSON");
         const payload = JSON.parse(await readLimitedResponseText(response, "重置概率预测接口"));
-        const next = normalizeResetForecastView(payload, { refreshMs: this.refreshMs, previous: this.view });
+        const next = normalizeResetForecastView(payload, {
+          now: this.now(),
+          refreshMs: this.refreshMs,
+          tiboRefreshMs: this.tiboRefreshMs,
+          previous: this.view,
+        });
         if (next.status === "unavailable") throw new Error(next.error);
         this.emit(next);
       } catch {
-        this.emit(normalizeResetForecastView(null, { refreshMs: this.refreshMs, previous: this.view }));
+        this.emit(normalizeResetForecastView(null, {
+          now: this.now(),
+          refreshMs: this.refreshMs,
+          tiboRefreshMs: this.tiboRefreshMs,
+          previous: this.view,
+        }));
       } finally {
         clearTimeout(timeout);
         this.refreshing = null;
@@ -2402,7 +2451,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.1" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.2" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");

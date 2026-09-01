@@ -85,7 +85,7 @@ API 账户和 API Key 标题后各有一个“配置”按钮。API Key 已有�
 | 数据源 | 作用 | 需要准备 |
 | --- | --- | --- |
 | 官方订阅 | 显示 5 小时/7 天周期、重置时间、今日/近7天/累计 Token。 | 无需额外凭据。 |
-| 重置概率预测（仅供参考） | 显示开源项目 [gussuri/codex-reset-observatory](https://github.com/gussuri/codex-reset-observatory) 汇总的未来 12/24/48/72 小时社区概率；不是 OpenAI 官方数据，也不参与自动续跑。 | 无需凭据，可在设置中隐藏。 |
+| 重置概率预测（仅供参考） | 显示开源项目 [gussuri/codex-reset-observatory](https://github.com/gussuri/codex-reset-observatory) 汇总的未来 12/24/48/72 小时社区概率，并在栏底缩略展示 Tibo（[`@thsottiaux`](https://x.com/thsottiaux)）最新 X 动态。不是 OpenAI 官方数据，也不参与自动续跑。 | 无需凭据，可在设置中隐藏。 |
 | API 账户 | 显示第三方账户余额、累计额度、请求日志和 Token 账本。 | Base URL、数字用户 ID、账户访问令牌、累计 Token 基准。 |
 | API Key | 显示某个 API Key 的额度、限额、到期时间和请求状态。 | API Key；首次配置时还需服务地址和用量接口路径。 |
 
@@ -98,6 +98,8 @@ API 账户和 API Key 标题后各有一个“配置”按钮。API Key 已有�
 重置概率预测来自 MIT License 开源项目 [Codex Reset Observatory](https://github.com/gussuri/codex-reset-observatory) 的公共接口。上游项目综合历史重置、状态与社区信号估算概率；本项目只读取并展示其 12/24/48/72 小时结果，不训练预测模型，也不把预测结果用于自动续跑。
 
 监视器每 5 分钟向固定 HTTPS 地址 `https://codex.gussuriworks.com/api/current?locale=zh` 发起一次无凭据 GET 请求。请求不包含 Codex 登录信息、任务 ID、对话内容、Token 统计、API Key 或账户令牌。上游返回 `stale=true` 时显示红灯并保留最近数据；这表示社区预测数据过期，不代表官方订阅额度异常。
+
+同一公共响应中的 `latestTiboActivity` 用于显示 Tibo 在 X 上的最新公开动态。监视器不会另行登录或抓取 X，缩略卡片与概率数据同步每 5 分钟采纳一次新内容，只显示三行正文摘要、发布时间和经过限定的 `x.com/thsottiaux/status/...` 原帖链接。该字段由第三方项目整理，仍属于非官方信息。
 
 ### 3.3 API 账户
 

@@ -8,13 +8,13 @@
 | --- | --- | --- |
 | 本会话 | 当前正在查看的 Codex 会话日志。 | 无需额外凭据。 |
 | 官方订阅 | Codex Desktop 本机 app-server 返回账户周期与 Token 汇总；任务事件来自本机 `token_count`。 | 无需额外凭据。 |
-| 重置概率预测（仅供参考） | 开源项目 [gussuri/codex-reset-observatory](https://github.com/gussuri/codex-reset-observatory) 公共接口返回的 12/24/48/72 小时社区统计概率。 | 无需凭据；非 OpenAI 官方数据。 |
+| 重置概率预测（仅供参考） | 开源项目 [gussuri/codex-reset-observatory](https://github.com/gussuri/codex-reset-observatory) 公共接口返回的 12/24/48/72 小时社区统计概率，以及 Tibo（`@thsottiaux`）最新 X 动态。 | 无需凭据；非 OpenAI 官方数据。 |
 | API 账户 | 第三方服务商的账户信息与请求日志接口。 | 账户访问令牌、数字用户 ID、Base URL。 |
 | API Key | 第三方服务商为某个 Key 提供的额度或用量接口，由 Provider 映射响应字段。 | 对应 API Key。 |
 
 API 账户与 API Key 是两种不同的数据来源：前者面向整个用户账户和请求日志，后者面向单个 Key 的额度信息。服务商的接口字段可能不同，可让 Codex 根据公开文档或脱敏响应适配。
 
-“重置概率预测”每 5 分钟读取一次上游固定 HTTPS 公共接口，只发送无凭据 GET 请求，不上传本机用量、任务标识、对话内容或任何凭据。预测结果只用于显示，不参与自动续跑；上游将数据标记为过期时，该栏显示红灯并保留最近概率。
+“重置概率预测”每 5 分钟读取一次上游固定 HTTPS 公共接口，只发送无凭据 GET 请求，不上传本机用量、任务标识、对话内容或任何凭据。预测结果只用于显示，不参与自动续跑；上游将数据标记为过期时，该栏显示红灯并保留最近概率。同一响应的 `latestTiboActivity` 与概率数据同步每 5 分钟采纳一次，栏底只展示三行正文摘要、发布时间和限定为 `x.com/thsottiaux/status/...` 的原帖链接；监视器不登录或单独抓取 X。
 
 ## 2. 官方订阅
 

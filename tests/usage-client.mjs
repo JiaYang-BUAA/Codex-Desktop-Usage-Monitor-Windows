@@ -6,6 +6,7 @@ import {
   ApiAccountUsageClient,
   ApiUsageClient,
   ResetForecastClient,
+  TIBO_ACTIVITY_REFRESH_MS,
   LocalCodexTokenTracker,
   accountLogIdentity,
   loadApiProviderConfig,
@@ -1153,11 +1154,31 @@ const forecastPayload = {
   schemaVersion: "public-v1",
   dataHealth: { overall: "ok", stale: false },
   viewModel: { probability12h: 0.335, probability24h: 0.558, probability48h: 0.72, probability72h: 0.852 },
+  latestTiboActivity: {
+    text: "Codex usage has been reset for all paid plans.",
+    createdAt: "2026-09-01T08:49:05+08:00",
+    sourceUrl: "https://x.com/thsottiaux/status/2094588317245509959",
+  },
 };
 const forecastView = normalizeResetForecastView(forecastPayload, { now: 1000 });
 assert.equal(forecastView.accountType, "forecast");
 assert.equal(forecastView.status, "ready");
 assert.deepEqual(forecastView.metrics.map((item) => item.value), ["33.5%", "55.8%", "72.0%", "85.2%"]);
+assert.equal(forecastView.latestActivity.text, "Codex usage has been reset for all paid plans.");
+assert.equal(forecastView.latestActivity.sourceUrl, "https://x.com/thsottiaux/status/2094588317245509959");
+assert.equal(forecastView.latestActivity.nextRefreshAt, 1000 + TIBO_ACTIVITY_REFRESH_MS);
+const changedTiboPayload = {
+  ...forecastPayload,
+  latestTiboActivity: {
+    ...forecastPayload.latestTiboActivity,
+    text: "A newer Tibo post.",
+    createdAt: "2026-09-01T09:49:05+08:00",
+    sourceUrl: "https://x.com/thsottiaux/status/2094588317245509960",
+  },
+};
+assert.equal(normalizeResetForecastView(changedTiboPayload, { previous: forecastView, now: 1000 + 2 * 60 * 1000 }).latestActivity.text, forecastView.latestActivity.text);
+assert.equal(normalizeResetForecastView(changedTiboPayload, { previous: forecastView, now: 1000 + TIBO_ACTIVITY_REFRESH_MS }).latestActivity.text, "A newer Tibo post.");
+assert.equal(normalizeResetForecastView({ ...forecastPayload, latestTiboActivity: { ...forecastPayload.latestTiboActivity, sourceUrl: "https://example.com/post" } }, { now: 1000 }).latestActivity, null);
 assert.equal(normalizeResetForecastView({ schemaVersion: "bad" }, { previous: forecastView, now: 2000 }).status, "stale");
 let forecastRequests = 0;
 const forecastUpdates = [];
