@@ -130,7 +130,7 @@ const usage = {
       ],
     },
     "reset-forecast": {
-      id: "reset-forecast", label: "重置预测", accountType: "forecast", status: "ready", nextRefreshAt: now + 300000,
+      id: "reset-forecast", label: "重置概率预测（仅供参考）", accountType: "forecast", status: "ready", nextRefreshAt: now + 300000,
       metrics: [
         { id: "probability12h", label: "12小时内", value: "33.5%", display: "12h 33.5%" },
         { id: "probability24h", label: "24小时内", value: "55.8%", display: "24h 55.8%" },
@@ -223,10 +223,11 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-summary-item \+ \.usage-summary-item::before\s*\{[\s\S]*?top:\s*calc\(50% \+ 1px\);[\s\S]*?background:\s*currentColor;[\s\S]*?translateY\(-50%\)/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /height:\s*14px;[\s\S]*?opacity:\s*\.40;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?background:\s*Canvas;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?width:\s*max-content;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /:host\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--usage-top/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column\s*\{[\s\S]*?box-sizing:\s*border-box;[\s\S]*?width:\s*100%;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-column \+ \.usage-column\s*\{[^}]*border-left/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-columns\s*\{[\s\S]*?grid-template-columns:\s*repeat\(var\(--usage-column-count, 4\), minmax\(230px, 1fr\)\);/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-columns\s*\{[\s\S]*?grid-template-columns:\s*var\(--usage-column-widths, repeat\(var\(--usage-column-count, 4\), minmax\(230px, 1fr\)\)\);/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?overflow-x:\s*hidden;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-detail-label\s*\{[\s\S]*?color:\s*inherit;[\s\S]*?font-weight:\s*650;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-detail-select input\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?width:\s*13px;[\s\S]*?height:\s*13px;/);
@@ -242,6 +243,7 @@ try {
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-toggle-api/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-toggle\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) 24px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-inline-toggle\s*\{[^}]*width:\s*24px;[^}]*height:\s*14px;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-summary-toggle\s*\{\s*flex:\s*0 0 24px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-toggle input:checked \+ \.usage-toggle-track,\s*\.usage-inline-toggle input:checked \+ \.usage-toggle-track\s*\{[^}]*border-color:\s*#86efac;[^}]*background:\s*#86efac;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-mode-toggle input:checked \+ \.usage-toggle-track::after,\s*\.usage-inline-toggle input:checked \+ \.usage-toggle-track::after\s*\{[^}]*background:\s*#166534;[^}]*transform:\s*translateX\(10px\);/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-settings-trigger\s*\{[^}]*border:\s*1px solid currentColor;/);
@@ -259,9 +261,10 @@ try {
   const columns = [...host.shadowRoot.querySelectorAll(".usage-column")];
   assert.equal(columns.length, 5);
   assert.equal(host.dataset.columnCount, "5");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1150px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-372px");
-  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "API 账户", "API Key", "重置预测"]);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 230px 170px 160px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1060px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-298px");
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "API 账户", "API Key", "重置概率预测（仅供参考）"]);
   assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "ready", "loading", "error", "ready"]);
   assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [6, 6, 8, 4, 4]);
   assert.deepEqual([...columns[0].querySelectorAll('input[data-source="session"][data-metric]')].map((input) => input.dataset.metric), ["currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions", "currentStatus", "autoResume"]);
@@ -301,7 +304,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.0", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.1", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -314,7 +317,7 @@ try {
   assert.equal(host.shadowRoot.querySelector("[data-toggle-settings]").textContent, "设置");
   host.shadowRoot.querySelector("[data-toggle-settings]").click();
   assert.equal(host.shadowRoot.querySelector(".usage-mode-switches").hidden, false);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "English UI", "自动更新", "API 栏", "重置预测栏"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "English UI", "自动更新", "API 栏", "重置概率预测栏"]);
   assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 6);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 6);
   assert.equal(host.shadowRoot.querySelector(".usage-mode-toggle-api"), null);
@@ -350,13 +353,32 @@ try {
   assert.equal(host.shadowRoot.querySelector('.usage-column-footer').lastElementChild.className, "usage-column-meta");
   assert.equal(columns[1].querySelector(".usage-column-footer").nextElementSibling, columns[1].querySelector(".usage-column-brand"));
   host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置预测"]);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）"]);
   assert.equal(host.shadowRoot.querySelector(".usage-columns").style.getPropertyValue("--usage-column-count"), "3");
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "660px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-176px");
   assert.equal(host.shadowRoot.querySelector('.usage-column[data-status="ready"] + .usage-column .usage-column-footer') !== null, true);
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showApiColumns, false);
+  host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅"]);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "500px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-16px");
   host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "API 账户", "API Key"]);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 230px 170px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "900px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-138px");
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showApiColumns, true);
+  host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 230px 170px 160px");
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showResetForecast, true);
   assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-config-trigger")].map((button) => button.textContent), ["配置", "配置"]);
   host.shadowRoot.querySelector('[data-configure-source="api-account"]').click();
   let accountForm = host.shadowRoot.querySelector('[data-config-source="api-account"]');
@@ -555,7 +577,7 @@ try {
   host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
   assert.deepEqual(
     [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-heading").textContent),
-    ["Session", "Official Subscription", "API Account", "API Key", "Reset Forecast"],
+    ["Session", "Official Subscription", "API Account", "API Key", "Reset Probability (FYI)"],
   );
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5-hour remaining");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "resets 07-24 12:00 · 75%");
@@ -627,8 +649,10 @@ try {
   assert.equal(window.eval(payload).installed, true);
   host = window.document.getElementById("codex-usage-monitor");
   host.shadowRoot.querySelector(".usage-summary").click();
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置预测"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）"]);
   host.shadowRoot.querySelector("[data-toggle-settings]").click();
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').checked, false);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').checked, true);
   host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
   assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
   host.shadowRoot.querySelector('[data-configure-source="acme"]').click();

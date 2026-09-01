@@ -1,7 +1,7 @@
 (() => {
   const registry = window.__CODEX_USAGE_MONITOR_MODULES__ ||= {};
   registry.constants = Object.freeze({
-    VERSION: "3.0.0",
+    VERSION: "3.0.1",
     STATE_KEY: "__CODEX_USAGE_MONITOR_STATE__",
     USAGE_KEY: "__CODEX_USAGE_MONITOR__",
     HOST_ID: "codex-usage-monitor",

@@ -487,7 +487,7 @@
     .usage-summary-item { position: relative; display: inline-flex; align-items: center; min-width: 0; height: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .usage-summary-auto-resume { gap: 5px; overflow: visible; }
     :host([data-minimal="true"]) .usage-summary-auto-resume { gap: 0; }
-    .usage-summary-toggle { flex: 0 0 30px; }
+    .usage-summary-toggle { flex: 0 0 24px; }
     .usage-summary-item + .usage-summary-item { padding-left: 13px; }
     .usage-summary-item + .usage-summary-item::before {
       content: "";
@@ -555,7 +555,7 @@
       bottom: calc(100% + 8px);
       z-index: 40;
       left: var(--usage-popover-shift, 0px);
-      width: var(--usage-popover-width, min(920px, calc(100vw - 24px)));
+      width: max-content;
       max-height: min(440px, calc(100vh - 72px));
       padding: 10px 11px;
       border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
@@ -571,7 +571,7 @@
     }
     .usage-columns {
       display: grid;
-      grid-template-columns: repeat(var(--usage-column-count, 4), minmax(230px, 1fr));
+      grid-template-columns: var(--usage-column-widths, repeat(var(--usage-column-count, 4), minmax(230px, 1fr)));
       align-items: stretch;
     }
     .usage-column { box-sizing: border-box; display: flex; flex-direction: column; width: 100%; min-width: 0; padding: 0 11px; }
@@ -1109,7 +1109,7 @@
       usage.sources.official || normalizeSource({ id: "official", label: "官方订阅", accountType: "subscription", status: "unavailable" }, "official"),
       usage.sources["api-account"] || normalizeSource({ id: "api-account", label: "API 账户", accountType: "api-account", status: "unavailable", error: "未配置 API 账户令牌" }, "api-account"),
       { ...apiKeySource, label: "API Key" },
-      usage.sources["reset-forecast"] || normalizeSource({ id: "reset-forecast", label: "重置预测", accountType: "forecast", status: "unavailable", error: "重置预测接口暂不可用" }, "reset-forecast"),
+      usage.sources["reset-forecast"] || normalizeSource({ id: "reset-forecast", label: "重置概率预测（仅供参考）", accountType: "forecast", status: "unavailable", error: "重置概率预测接口暂不可用" }, "reset-forecast"),
     ].map(selectableSource).map((source) => {
       const localizedStatus = source.status === "loading" ? t("loading") : source.status === "ready" ? t("ready")
         : source.status === "stale" ? t("stale") : source.status === "rate-limited" ? t("rateLimited")
@@ -1417,6 +1417,12 @@
     }
     updateCountdowns(host, usage);
     host.dataset.rendered = "true";
+    if (host.dataset.open === "true") {
+      requestAnimationFrame(() => {
+        const state = window[STATE_KEY];
+        if (state?.host === host) state.ensure();
+      });
+    }
   };
 
   let preferredComposer = null;

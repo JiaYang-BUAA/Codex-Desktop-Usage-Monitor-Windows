@@ -2161,14 +2161,14 @@ export function normalizeResetForecastView(payload, { now = Date.now(), refreshM
     && probabilities.every((value) => Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1);
   if (!valid || !probabilitiesValid) {
     if (previous?.metrics?.length) {
-      return { ...previous, status: "stale", error: "重置预测接口暂不可用，显示上次数据", nextRefreshAt: now + refreshMs };
+      return { ...previous, status: "stale", error: "重置概率预测接口暂不可用，显示上次数据", nextRefreshAt: now + refreshMs };
     }
     return {
       id: "reset-forecast",
-      label: "重置预测",
+      label: "重置概率预测（仅供参考）",
       accountType: "forecast",
       status: "unavailable",
-      error: "重置预测接口暂不可用",
+      error: "重置概率预测接口暂不可用",
       fetchedAt: null,
       nextRefreshAt: now + refreshMs,
       metrics: [
@@ -2182,7 +2182,7 @@ export function normalizeResetForecastView(payload, { now = Date.now(), refreshM
   const stale = payload?.dataHealth?.stale === true || payload?.dataHealth?.overall === "stale";
   return {
     id: "reset-forecast",
-    label: "重置预测",
+    label: "重置概率预测（仅供参考）",
     accountType: "forecast",
     status: stale ? "stale" : "ready",
     error: stale ? "社区预测数据已过期" : null,
@@ -2231,7 +2231,7 @@ export class ResetForecastClient {
         if (!response?.ok) throw new Error(`HTTP ${response?.status || 0}`);
         const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
         if (contentType && !contentType.includes("application/json")) throw new Error("响应不是 JSON");
-        const payload = JSON.parse(await readLimitedResponseText(response, "重置预测接口"));
+        const payload = JSON.parse(await readLimitedResponseText(response, "重置概率预测接口"));
         const next = normalizeResetForecastView(payload, { refreshMs: this.refreshMs, previous: this.view });
         if (next.status === "unavailable") throw new Error(next.error);
         this.emit(next);
@@ -2402,7 +2402,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.0" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.1" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");
