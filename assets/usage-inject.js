@@ -86,12 +86,12 @@
     if (node && node.textContent !== text) node.textContent = text;
   };
   const finiteNumber = (value) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
-  const normalizeAutoResumeMessage = (value) => {
-    if (typeof value !== "string") return AUTO_RESUME_DEFAULT_MESSAGE;
+  const normalizeAutoResumeMessage = (value, fallback = AUTO_RESUME_DEFAULT_MESSAGE) => {
+    if (typeof value !== "string") return fallback;
     const message = value.trim();
     return message && message.length <= MAX_AUTO_RESUME_MESSAGE_LENGTH && !/[\u0000-\u001f\u007f]/.test(message)
       ? message
-      : AUTO_RESUME_DEFAULT_MESSAGE;
+      : fallback;
   };
   const validStatus = (value) => ["loading", "ready", "stale", "unavailable", "error", "rate-limited"].includes(value) ? value : "unavailable";
   const normalizeMetric = (item) => {
@@ -266,7 +266,7 @@
     const config = threadId ? settings.autoResumeThreads?.[threadId] : null;
     return {
       enabled: config?.enabled === true,
-      message: normalizeAutoResumeMessage(config?.message),
+      message: normalizeAutoResumeMessage(config?.message, normalizeAutoResumeMessage(settings.autoResumeMessage)),
     };
   };
   const loadSettings = () => {
@@ -852,6 +852,7 @@
     .usage-inline-toggle { position: relative; display: block; width: 24px; height: 14px; cursor: pointer; }
     .usage-inline-toggle .usage-toggle-track { display: block; }
     .usage-auto-resume-field { display: grid; gap: 3px; min-width: 0; padding: 0 0 5px 19px; }
+    .usage-global-resume-field { grid-column: 1 / -1; padding: 4px 0 0; }
     .usage-auto-resume-label { font-size: 9px; font-weight: 650; line-height: 1.2; opacity: .72; }
     .usage-auto-resume-message {
       box-sizing: border-box;
@@ -1442,6 +1443,22 @@
             toggle.append(toggleLabel, toggleInput, track);
             switches.append(toggle);
           }
+          const globalResumeField = document.createElement("label");
+          globalResumeField.className = "usage-auto-resume-field usage-global-resume-field";
+          const globalResumeLabel = document.createElement("span");
+          globalResumeLabel.className = "usage-auto-resume-label";
+          globalResumeLabel.textContent = t("globalAutoResumeMessage");
+          const globalResumeInput = document.createElement("input");
+          globalResumeInput.type = "text";
+          globalResumeInput.className = "usage-auto-resume-message";
+          globalResumeInput.dataset.settingText = "globalAutoResumeMessage";
+          globalResumeInput.maxLength = MAX_AUTO_RESUME_MESSAGE_LENGTH;
+          globalResumeInput.value = settings.autoResumeMessage;
+          globalResumeInput.autocomplete = "off";
+          globalResumeInput.setAttribute("aria-label", t("globalAutoResumeMessage"));
+          globalResumeInput.title = t("globalAutoResumeMessageHint");
+          globalResumeField.append(globalResumeLabel, globalResumeInput);
+          switches.append(globalResumeField);
           switches.hidden = host.dataset.settingsOpen !== "true";
           const meta = document.createElement("div");
           meta.className = "usage-column-meta";
@@ -1636,6 +1653,21 @@
       host.shadowRoot.addEventListener("change", (event) => {
         const input = event.target;
         if (!(input instanceof HTMLInputElement)) return;
+        if (input.dataset.settingText === "globalAutoResumeMessage") {
+          const settings = loadSettings();
+          const previousMessage = settings.autoResumeMessage;
+          const message = normalizeAutoResumeMessage(input.value, previousMessage);
+          settings.autoResumeMessage = message;
+          for (const config of Object.values(settings.autoResumeThreads)) {
+            if ([previousMessage, AUTO_RESUME_DEFAULT_MESSAGE, "Continue"].includes(config.message)) {
+              config.message = message;
+            }
+          }
+          input.value = message;
+          saveSettings(settings);
+          render(host, window[STATE_KEY]?.usage || window[USAGE_KEY], true);
+          return;
+        }
         if (input.dataset.settingText === "autoResumeMessage") {
           const settings = loadSettings();
           const usage = normalizeUsage(window[STATE_KEY]?.usage || window[USAGE_KEY]);

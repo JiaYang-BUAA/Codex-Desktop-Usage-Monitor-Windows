@@ -1,5 +1,22 @@
 # Codex Usage Monitor for Windows
 
+- View session tokens, cache usage, and subscription limits inside Codex Desktop.
+- Set a global default for the message sent when a session resumes after its quota resets.
+- Keep custom messages and resume switches separate for each conversation.
+
+## Contents
+
+- [Fork changes: global resume message](#fork-changes-global-resume-message)
+- [Getting started](#1-三步开始使用)
+- [Daily use](#2-日常使用)
+- [Data sources and configuration](#3-数据源与配置)
+- [Updates, installation, and maintenance](#4-更新安装与维护)
+- [Security and privacy](#5-安全与隐私)
+- [Troubleshooting](#6-常见问题与排查)
+- [Development and tests](#7-开发与测试)
+- [FAQ](#8-faq)
+- [Project origins and contributors](#9-项目来源与贡献者)
+
 > In-app usage monitor and status bar for OpenAI Codex Desktop on Windows
 
 [![Windows CI](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml)
@@ -21,6 +38,26 @@ Codex Usage Monitor 把官方订阅周期、当前会话 Token、社区重置概
 - 每 5 分钟显示社区重置概率和 Tibo（[`@thsottiaux`](https://x.com/thsottiaux)）最新 X 动态摘要。
 - 支持普通模式、极简模式、倒计时可视化、中文与 English UI、自动更新和按任务独立的额度恢复续跑。
 - 使用当前 Windows 用户的 DPAPI 加密保存 API 凭据，不把凭据写入源码、页面设置或日志。
+
+## Fork changes: global resume message
+
+Open the monitor bar, select **Settings** in **Official Subscription**, and edit
+**Default resume message (global)**. The value is saved when the field loses focus.
+Messages support up to 500 characters on one line; invalid input keeps the previous value.
+
+New conversations inherit this default. Changing it also updates saved messages
+that match the previous global default or the built-in defaults (`继续` / `Continue`).
+Other custom messages and all per-conversation resume switches are preserved.
+Use **Resume message** in **Session** to customize one conversation.
+
+The default is stored in `autoResumeMessage` in
+`%LOCALAPPDATA%\CodexUsageMonitor\ui-settings.json`, alongside the existing
+per-conversation settings. No personal settings are included in this fork.
+
+Install this fork [from source](#43-从源码安装) to use the customization.
+The release links and automatic updater still follow the upstream project;
+installing an upstream release can replace the customization.
+The original documentation follows below.
 
 ## 1. 三步开始使用
 
@@ -202,7 +239,7 @@ https://codex.gussuriworks.com/api/current?locale=zh
 ### 4.3 从源码安装
 
 ```powershell
-git clone https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows.git
+git clone https://github.com/uayten/Codex-Desktop-Usage-Monitor-Windows.git
 cd Codex-Desktop-Usage-Monitor-Windows
 pwsh -NoProfile -File .\install.ps1
 ```

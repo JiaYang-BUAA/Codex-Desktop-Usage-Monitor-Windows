@@ -518,6 +518,31 @@ try {
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, true);
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "请继续完成当前任务");
 
+  const inheritedThreadId = "019fb3b1-2638-7bb0-9a90-ec83b5bca0f5";
+  const freshThreadId = "019fb3b1-2638-7bb0-9a90-ec83b5bca0f6";
+  const inheritedUsage = { ...usage, currentThreadId: inheritedThreadId };
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(inheritedUsage);
+  host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+  host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+  const globalMessage = "The session quota has reset. Please continue.";
+  const globalMessageInput = host.shadowRoot.querySelector('[data-setting-text="globalAutoResumeMessage"]');
+  globalMessageInput.value = globalMessage;
+  globalMessageInput.dispatchEvent(new window.Event("change", { bubbles: true }));
+  const globalSettings = window.__CODEX_USAGE_MONITOR_STATE__.getSettings();
+  assert.equal(globalSettings.autoResumeMessage, globalMessage);
+  assert.equal(globalSettings.autoResumeThreads[inheritedThreadId].enabled, false);
+  assert.equal(globalSettings.autoResumeThreads[inheritedThreadId].message, globalMessage);
+  assert.equal(globalSettings.autoResumeThreads[currentThreadId].message, independentSettings.autoResumeThreads[currentThreadId].message);
+  assert.equal(globalSettings.autoResumeThreads[otherThreadId].message, independentSettings.autoResumeThreads[otherThreadId].message);
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).autoResumeMessage, globalMessage);
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage({ ...usage, currentThreadId: freshThreadId });
+  assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, globalMessage);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false);
+  host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.getSettings().autoResumeThreads[freshThreadId].message, globalMessage);
+  host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage);
+
   const densityToggle = host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="balance"]');
   assert.equal(densityToggle.checked, true);
   densityToggle.click();
