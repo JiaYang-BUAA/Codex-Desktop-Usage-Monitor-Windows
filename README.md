@@ -3,6 +3,7 @@
 - View session tokens, cache usage, and subscription limits inside Codex Desktop.
 - Set a global default for the message sent when a session resumes after its quota resets.
 - Keep custom messages and resume switches separate for each conversation.
+- Choose English or Chinese with a radio selector that always shows the active language.
 
 ## Contents
 
@@ -49,6 +50,9 @@ New conversations inherit this default. Changing it also updates saved messages
 that match the previous global default or the built-in defaults (`继续` / `Continue`).
 Other custom messages and all per-conversation resume switches are preserved.
 Use **Resume message** in **Session** to customize one conversation.
+
+In **Settings**, select **English** or **中文** using the radio buttons.
+Exactly one language stays selected, and the existing saved language preference is preserved.
 
 The default is stored in `autoResumeMessage` in
 `%LOCALAPPDATA%\CodexUsageMonitor\ui-settings.json`, alongside the existing

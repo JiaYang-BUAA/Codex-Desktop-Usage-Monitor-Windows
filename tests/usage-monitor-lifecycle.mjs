@@ -329,16 +329,19 @@ try {
   assert.equal(host.shadowRoot.querySelector("[data-toggle-settings]").textContent, "设置");
   host.shadowRoot.querySelector("[data-toggle-settings]").click();
   assert.equal(host.shadowRoot.querySelector(".usage-mode-switches").hidden, false);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "English UI", "自动更新", "API 栏", "重置概率预测栏"]);
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 6);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 6);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "自动更新", "API 栏", "重置概率预测栏"]);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 5);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 5);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll('.usage-language-option')].map((option) => option.textContent), ["English", "中文"]);
+  assert.equal(host.shadowRoot.querySelectorAll('input[data-setting="language"]:checked').length, 1);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="language"]:checked').value, "zh");
   assert.equal(host.shadowRoot.querySelector(".usage-mode-toggle-api"), null);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').title, "自动续跑已启用");
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').closest(".usage-column").querySelector(".usage-column-heading").textContent, "本会话");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "继续");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').closest(".usage-auto-resume-field").querySelector(".usage-auto-resume-label").textContent, "续跑发送内容");
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-column:nth-child(2) .usage-mode-toggle input[type="checkbox"]').length, 6);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-column:nth-child(2) .usage-mode-toggle input[type="checkbox"]').length, 5);
   const autoResumeMetric = host.shadowRoot.querySelector('input[data-source="session"][data-metric="autoResume"]');
   assert.equal(autoResumeMetric.checked, false);
   assert.equal(autoResumeMetric.closest(".usage-detail-row").nextElementSibling.className, "usage-auto-resume-field");
@@ -611,7 +614,14 @@ try {
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
   assert.match(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().strategy, /composer|editable/);
 
-  host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
+  host.shadowRoot.querySelector('input[data-setting="language"][value="en"]').click();
+  assert.equal(host.shadowRoot.querySelectorAll('input[data-setting="language"]:checked').length, 1);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="language"]:checked').value, "en");
+  assert.equal(host.shadowRoot.querySelector('[role="radiogroup"]').getAttribute("aria-label"), "Language");
+  assert.equal(host.shadowRoot.activeElement, host.shadowRoot.querySelector('input[data-setting="language"][value="en"]'));
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).englishUi, true);
+  host.shadowRoot.querySelector('input[data-setting="language"][value="en"]').click();
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="language"]:checked').value, "en");
   assert.deepEqual(
     [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-heading").textContent),
     ["Session", "Official Subscription", "API Account", "API Key", "Reset Probability (FYI)"],
@@ -639,7 +649,10 @@ try {
   assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="contextCompactions"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3");
   assert.equal(host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "40K");
   assert.equal(host.shadowRoot.querySelector('input[data-source="api-account"][data-metric="totalTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "360K");
-  host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
+  host.shadowRoot.querySelector('input[data-setting="language"][value="zh"]').click();
+  assert.equal(host.shadowRoot.querySelectorAll('input[data-setting="language"]:checked').length, 1);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="language"]:checked').value, "zh");
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).englishUi, false);
 
   window.document.getElementById("composer-wrapper").innerHTML = composerMarkup();
   await new Promise((resolve) => setTimeout(resolve, 250));

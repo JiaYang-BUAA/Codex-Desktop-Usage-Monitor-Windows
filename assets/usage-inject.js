@@ -797,6 +797,11 @@
       white-space: nowrap;
     }
     .usage-mode-switches[hidden] { display: none; }
+    .usage-language-selector { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; font-size: 9px; line-height: 1; }
+    .usage-language-option { display: inline-flex; align-items: center; gap: 3px; min-height: 18px; cursor: pointer; opacity: .72; }
+    .usage-language-option:has(input:checked) { opacity: 1; }
+    .usage-language-option input { appearance: auto; width: 12px; height: 12px; margin: 0; accent-color: #86efac; cursor: pointer; }
+    .usage-language-option input:focus-visible { outline: 2px solid color-mix(in srgb, #86efac 60%, transparent); outline-offset: 2px; }
     .usage-mode-toggle {
       display: grid;
       grid-template-columns: minmax(0, 1fr) 24px;
@@ -1423,11 +1428,35 @@
           for (const [setting, labelText] of [
             ["minimalMode", t("minimalMode")],
             ["countdownVisualization", t("countdownVisualization")],
-            ["englishUi", t("englishUi")],
+            ["language", t("language")],
             ["updateNotifications", t("updateNotifications")],
             ["showApiColumns", t("showApiColumns")],
             ["showResetForecast", t("showResetForecast")],
           ]) {
+            if (setting === "language") {
+              const languageSelector = document.createElement("div");
+              languageSelector.className = "usage-language-selector";
+              languageSelector.setAttribute("role", "radiogroup");
+              languageSelector.setAttribute("aria-label", labelText);
+              languageSelector.title = labelText;
+              for (const [language, languageName] of [["en", "English"], ["zh", "中文"]]) {
+                const option = document.createElement("label");
+                option.className = "usage-language-option";
+                const radio = document.createElement("input");
+                radio.type = "radio";
+                radio.name = "codex-usage-monitor-language";
+                radio.dataset.setting = "language";
+                radio.value = language;
+                radio.checked = language === (settings.englishUi ? "en" : "zh");
+                const languageLabel = document.createElement("span");
+                languageLabel.lang = language;
+                languageLabel.textContent = languageName;
+                option.append(radio, languageLabel);
+                languageSelector.append(option);
+              }
+              switches.append(languageSelector);
+              continue;
+            }
             const toggle = document.createElement("label");
             toggle.className = "usage-mode-toggle";
             const toggleLabel = document.createElement("span");
@@ -1653,6 +1682,15 @@
       host.shadowRoot.addEventListener("change", (event) => {
         const input = event.target;
         if (!(input instanceof HTMLInputElement)) return;
+        if (input.dataset.setting === "language") {
+          if (input.type !== "radio" || !input.checked || !["en", "zh"].includes(input.value)) return;
+          const settings = loadSettings();
+          settings.englishUi = input.value === "en";
+          saveSettings(settings);
+          render(host, window[STATE_KEY]?.usage || window[USAGE_KEY], true);
+          host.shadowRoot.querySelector(`input[data-setting="language"][value="${input.value}"]`)?.focus();
+          return;
+        }
         if (input.dataset.settingText === "globalAutoResumeMessage") {
           const settings = loadSettings();
           const previousMessage = settings.autoResumeMessage;
@@ -1682,7 +1720,7 @@
         if (input.type !== "checkbox") return;
         const state = window[STATE_KEY];
         const usage = normalizeUsage(state?.usage || window[USAGE_KEY]);
-        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume", "showApiColumns", "showResetForecast"].includes(input.dataset.setting)) {
+        if (["minimalMode", "countdownVisualization", "updateNotifications", "autoResume", "showApiColumns", "showResetForecast"].includes(input.dataset.setting)) {
           const settings = loadSettings();
           if (input.dataset.setting === "autoResume") {
             if (!usage.currentThreadId) return;
