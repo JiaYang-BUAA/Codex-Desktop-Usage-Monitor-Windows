@@ -169,7 +169,7 @@
       unavailable: "No data",
       minimalMode: "Minimal mode",
       countdownVisualization: "Countdown ring",
-      englishUi: "中文界面",
+      englishUi: "English UI",
       updateNotifications: "Auto update",
       showApiColumns: "API columns",
       showResetForecast: "Reset probability",
