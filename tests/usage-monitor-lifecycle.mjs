@@ -318,7 +318,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.3", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.4", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
