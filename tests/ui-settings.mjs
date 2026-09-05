@@ -42,6 +42,7 @@ try {
     englishUi: true,
     updateNotifications: false,
     autoResume: false,
+    autoResumeSharedMessage: false,
     showApiColumns: true,
     showResetForecast: true,
     autoResumeMessage: "继续",
@@ -78,6 +79,8 @@ try {
   assert.equal(restarted.current.showResetForecast, false);
   assert.deepEqual(restarted.current.metricOrder, ["official:secondaryRemaining", "api-account:balance"]);
   assert.equal(restarted.current.autoResumeMessage, "请继续完成当前任务");
+  await restarted.save({ ...restarted.current, autoResumeSharedMessage: true });
+  assert.equal((await createUiSettingsStore(settingsPath)).current.autoResumeSharedMessage, true);
   assert.deepEqual(restarted.current.autoResumeThreads, { [threadId]: { enabled: true, message: "请继续完成当前任务" } });
   assert.equal(normalizeUiSettings({ autoResumeMessage: "\n" }).autoResumeMessage, "继续");
   assert.equal(normalizeUiSettings({ autoResumeMessage: "x".repeat(501) }).autoResumeMessage, "继续");

@@ -267,7 +267,7 @@
     const config = threadId ? settings.autoResumeThreads?.[threadId] : null;
     return {
       enabled: config?.enabled === true,
-      message: normalizeAutoResumeMessage(config?.message),
+      message: normalizeAutoResumeMessage(settings.autoResumeSharedMessage ? settings.autoResumeMessage : config?.message ?? settings.autoResumeMessage),
     };
   };
   const loadSettings = () => {
@@ -299,6 +299,7 @@
           ? Boolean(value.showResetForecast)
           : true,
         autoResumeMessage: normalizeAutoResumeMessage(value?.autoResumeMessage),
+        autoResumeSharedMessage: value?.autoResumeSharedMessage === true,
       };
     } catch {
       return {
@@ -308,6 +309,7 @@
         showResetForecast: true,
         autoResumeThreads: {},
         autoResumeMessage: AUTO_RESUME_DEFAULT_MESSAGE,
+        autoResumeSharedMessage: false,
       };
     }
   };
@@ -854,6 +856,8 @@
     .usage-inline-toggle { position: relative; display: block; width: 24px; height: 14px; cursor: pointer; }
     .usage-inline-toggle .usage-toggle-track { display: block; }
     .usage-auto-resume-field { display: grid; gap: 3px; min-width: 0; padding: 0 0 5px 19px; }
+    .usage-inline-toggle.usage-shared-resume { display: flex; width: auto; height: auto; min-height: 14px; gap: 6px; align-items: center; margin-left: 19px; font-size: 10px; justify-content: space-between; }
+    .usage-shared-resume > span:first-child { white-space: normal; }
     .usage-auto-resume-label { font-size: 9px; font-weight: 650; line-height: 1.2; opacity: .72; }
     .usage-auto-resume-message {
       box-sizing: border-box;
@@ -1366,6 +1370,20 @@
               messageInput.setAttribute("aria-label", t("autoResumeMessage"));
               field.append(fieldLabel, messageInput);
               children.push(field);
+              const shared = document.createElement("label");
+              shared.className = "usage-inline-toggle usage-shared-resume";
+              const sharedLabel = document.createElement("span");
+              sharedLabel.textContent = t("autoResumeSharedMessage");
+              const sharedInput = document.createElement("input");
+              sharedInput.type = "checkbox";
+              sharedInput.dataset.setting = "autoResumeSharedMessage";
+              sharedInput.checked = settings.autoResumeSharedMessage;
+              sharedInput.setAttribute("aria-label", t("autoResumeSharedMessage"));
+              const sharedTrack = document.createElement("span");
+              sharedTrack.className = "usage-toggle-track";
+              sharedTrack.setAttribute("aria-hidden", "true");
+              shared.append(sharedLabel, sharedInput, sharedTrack);
+              children.push(shared);
               continue;
             }
             const metricValueNode = document.createElement("span");
@@ -1652,7 +1670,8 @@
           if (!usage.currentThreadId) return;
           const current = autoResumeForThread(settings, usage.currentThreadId);
           const message = normalizeAutoResumeMessage(input.value);
-          settings.autoResumeThreads[usage.currentThreadId] = { enabled: current.enabled, message };
+          if (settings.autoResumeSharedMessage) settings.autoResumeMessage = message;
+          else settings.autoResumeThreads[usage.currentThreadId] = { enabled: current.enabled, message };
           input.value = message;
           saveSettings(settings);
           return;
@@ -1660,13 +1679,22 @@
         if (input.type !== "checkbox") return;
         const state = window[STATE_KEY];
         const usage = normalizeUsage(state?.usage || window[USAGE_KEY]);
-        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume", "showApiColumns", "showResetForecast"].includes(input.dataset.setting)) {
+        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume", "autoResumeSharedMessage", "showApiColumns", "showResetForecast"].includes(input.dataset.setting)) {
           const settings = loadSettings();
           if (input.dataset.setting === "autoResume") {
             if (!usage.currentThreadId) return;
-            const current = autoResumeForThread(settings, usage.currentThreadId);
-            settings.autoResumeThreads[usage.currentThreadId] = { enabled: input.checked, message: current.message };
+            settings.autoResumeThreads[usage.currentThreadId] = { enabled: input.checked,
+              message: normalizeAutoResumeMessage(settings.autoResumeThreads[usage.currentThreadId]?.message ?? settings.autoResumeMessage) };
             settings.autoResume = false;
+          } else if (input.dataset.setting === "autoResumeSharedMessage") {
+            if (settings.autoResumeSharedMessage && !input.checked) {
+              const message = normalizeAutoResumeMessage(settings.autoResumeMessage);
+              for (const config of Object.values(settings.autoResumeThreads)) config.message = message;
+              if (usage.currentThreadId && !settings.autoResumeThreads[usage.currentThreadId]) {
+                settings.autoResumeThreads[usage.currentThreadId] = { enabled: false, message };
+              }
+            }
+            settings.autoResumeSharedMessage = input.checked;
           } else settings[input.dataset.setting] = input.checked;
           if (input.dataset.setting === "showApiColumns" && !input.checked && state?.configuration) {
             state.configuration.openSourceId = null;

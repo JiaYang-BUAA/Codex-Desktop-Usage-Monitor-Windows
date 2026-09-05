@@ -10,7 +10,7 @@ const SOURCE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
 const METRIC_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
 const THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VERSION_FIELDS = ["apiKeyMetricsVersion", "officialMetricsVersion", "unifiedMetricsVersion"];
-const BOOLEAN_FIELDS = ["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume"];
+const BOOLEAN_FIELDS = ["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume", "autoResumeSharedMessage"];
 
 const safeVersion = (value) => Number.isSafeInteger(Number(value)) && Number(value) >= 0
   ? Math.min(1000, Number(value))

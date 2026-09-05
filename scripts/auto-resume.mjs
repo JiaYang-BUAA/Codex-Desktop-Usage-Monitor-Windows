@@ -185,7 +185,8 @@ export class AutoResumeController {
           if (!UUID_PATTERN.test(id) || !config || typeof config !== "object" || Array.isArray(config)) continue;
           next[id] = {
             enabled: config.enabled === true,
-            message: normalizeAutoResumeMessage(config.message, AUTO_RESUME_MESSAGE),
+            message: normalizeAutoResumeMessage(settings.autoResumeSharedMessage === true
+              ? settings.autoResumeMessage : config.message, AUTO_RESUME_MESSAGE),
           };
           if (next[id].enabled && previous[id]?.enabled !== true) this.activationAtByThread.set(id, this.now());
         }

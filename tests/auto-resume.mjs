@@ -139,6 +139,26 @@ try {
   assert.equal(independentController.status.enabled, true);
   await independentController.stop();
 
+  for (const shared of [true, false]) {
+    let clock = startAt;
+    const sent = [];
+    const sharedStore = await createAutoResumeStateStore(path.join(root, `shared-${shared}.json`));
+    const sharedController = new AutoResumeController({ store: sharedStore, now: () => clock,
+      sendContinue: async (value) => { sent.push(value); return { ok: true }; } });
+    const settings = { autoResumeSharedMessage: true, autoResumeMessage: "统一继续",
+      autoResumeThreads: { [THREAD_ID]: { enabled: true, message: "独立继续" }, [OTHER_THREAD_ID]: { enabled: false, message: "不发送" } } };
+    await sharedController.settingsChanged(settings);
+    await sharedController.observeUsage(usage());
+    await sharedController.settingsChanged({ ...settings, autoResumeSharedMessage: shared,
+      autoResumeThreads: Object.fromEntries(Object.entries(settings.autoResumeThreads).map(([id, config]) => [id, { ...config, message: "统一继续" }])) });
+    assert.equal(sharedController.threadSettings[OTHER_THREAD_ID].enabled, false);
+    clock = resetAt + 5_000;
+    await sharedController.observeUsage(usage({ remaining: "50%" }));
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].message, "统一继续");
+    await sharedController.stop();
+  }
+
   console.log("PASS: per-task quota recovery auto-resume, duplicate prevention, cancellation, and restart persistence.");
 } finally {
   await fs.rm(root, { recursive: true, force: true });
