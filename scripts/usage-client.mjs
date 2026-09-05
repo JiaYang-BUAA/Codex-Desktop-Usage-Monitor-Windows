@@ -2213,6 +2213,9 @@ export function normalizeResetForecastView(payload, {
     error: stale ? "社区预测数据已过期" : null,
     fetchedAt: now,
     nextRefreshAt: now + refreshMs,
+    resetMethod: viewModel.activeWindow?.active === true && viewModel.activeWindow?.kind === "official"
+      && ["banked", "forced"].includes(viewModel.activeWindow.noticeKind)
+      ? viewModel.activeWindow.noticeKind : "unknown",
     latestActivity: normalizeTiboActivity(payload?.latestTiboActivity, {
       now,
       refreshMs: tiboRefreshMs,
@@ -2451,7 +2454,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.2" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.3" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");

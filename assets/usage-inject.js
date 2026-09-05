@@ -133,6 +133,7 @@
         ? Number(source.nextRefreshAt)
         : finiteNumber(source.fetchedAt) ? Number(source.fetchedAt) + REFRESH_INTERVAL_MS : null,
       latestActivity: normalizeLatestActivity(source.latestActivity),
+      resetMethod: ["banked", "forced"].includes(source.resetMethod) ? source.resetMethod : "unknown",
       metrics: (Array.isArray(source.metrics) ? source.metrics : []).map(normalizeMetric).filter(Boolean).slice(0, 16),
     };
   };
@@ -735,6 +736,7 @@
     .usage-detail-label { min-width: 0; color: inherit; font-weight: 650; }
     .usage-detail-value { max-width: 138px; overflow: hidden; color: inherit; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .usage-detail-reset { font-weight: 500; opacity: .58; }
+    .usage-reset-method { margin-top: 6px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
     .usage-tibo-activity {
       min-width: 0;
       margin-top: 6px;
@@ -1388,6 +1390,14 @@
           return column;
         }
         column.append(title, createRows(source.metrics));
+        if (source.accountType === "forecast") {
+          const method = document.createElement("div");
+          method.className = "usage-reset-method";
+          method.textContent = t("resetMethod", { value: t(source.resetMethod === "banked"
+            ? "resetMethodBanked" : source.resetMethod === "forced" ? "resetMethodForced" : "resetMethodUnknown") });
+          method.title = t("resetMethodHint");
+          column.append(method);
+        }
         if (source.accountType === "forecast" && source.latestActivity) {
           const activity = document.createElement("article");
           activity.className = "usage-tibo-activity";

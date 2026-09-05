@@ -143,6 +143,8 @@ Codex Usage Monitor 把官方订阅周期、当前会话 Token、社区重置概
 
 重置概率来自 MIT License 开源项目 [Codex Reset Observatory](https://github.com/gussuri/codex-reset-observatory)。本项目只读取并显示它汇总的 12/24/48/72 小时社区概率，不训练预测模型，也不使用预测结果触发自动续跑。
 
+概率下方的“预告方式”根据上游当前有效预告显示“发放重置卡”（需手动使用）或“直接重置”（恢复额度）；没有明确预告时显示“暂未明确”。这一说明仅在展开面板显示，不占监视栏勾选名额，也不代表当前账户已收到重置。
+
 监视器每 5 分钟向以下固定 HTTPS 接口发送一次无凭据 GET 请求：
 
 ```text

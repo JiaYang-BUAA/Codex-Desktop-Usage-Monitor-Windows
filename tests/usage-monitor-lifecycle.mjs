@@ -131,6 +131,7 @@ const usage = {
     },
     "reset-forecast": {
       id: "reset-forecast", label: "重置概率预测（仅供参考）", accountType: "forecast", status: "ready", nextRefreshAt: now + 300000,
+      resetMethod: "banked",
       latestActivity: {
         text: "Codex 使用额度已面向所有付费套餐重置。",
         createdAt: now - 3600000,
@@ -274,6 +275,7 @@ try {
   assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [6, 6, 8, 4, 4]);
   const tiboActivity = columns[4].querySelector(".usage-tibo-activity");
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-label").textContent, "Tibo 最新动态");
+  assert.equal(host.shadowRoot.querySelector(".usage-reset-method").textContent, "预告方式：发放重置卡");
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-text").textContent, "Codex 使用额度已面向所有付费套餐重置。");
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-link").textContent, "打开 X");
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-link").href, "https://x.com/thsottiaux/status/2094588317245509959");
@@ -316,7 +318,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.2", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.3", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -592,6 +594,7 @@ try {
     ["Session", "Official Subscription", "API Account", "API Key", "Reset Probability (FYI)"],
   );
   assert.equal(host.shadowRoot.querySelector(".usage-tibo-activity-label").textContent, "Latest from Tibo");
+  assert.equal(host.shadowRoot.querySelector(".usage-reset-method").textContent, "Announced type: Reset credit");
   assert.equal(host.shadowRoot.querySelector(".usage-tibo-activity-link").textContent, "Open X");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5-hour remaining");
   assert.equal(host.shadowRoot.querySelector('input[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "resets 07-24 12:00 · 75%");

@@ -1163,6 +1163,18 @@ const forecastPayload = {
 const forecastView = normalizeResetForecastView(forecastPayload, { now: 1000 });
 assert.equal(forecastView.accountType, "forecast");
 assert.equal(forecastView.status, "ready");
+assert.equal(forecastView.resetMethod, "unknown");
+for (const [activeWindow, expected] of [
+  [{ active: true, kind: "official", noticeKind: "banked" }, "banked"],
+  [{ active: true, kind: "official", noticeKind: "forced" }, "forced"],
+  [{ active: false, kind: "official", noticeKind: "banked" }, "unknown"],
+  [{ active: true, kind: "regular", noticeKind: "forced" }, "unknown"],
+  [{ active: true, kind: "official", noticeKind: "new-kind" }, "unknown"],
+]) {
+  const view = normalizeResetForecastView({ ...forecastPayload, viewModel: { ...forecastPayload.viewModel, activeWindow } });
+  assert.equal(view.resetMethod, expected);
+  assert.equal(normalizeResetForecastView(null, { previous: view }).resetMethod, expected);
+}
 assert.deepEqual(forecastView.metrics.map((item) => item.value), ["33.5%", "55.8%", "72.0%", "85.2%"]);
 assert.equal(forecastView.latestActivity.text, "Codex usage has been reset for all paid plans.");
 assert.equal(forecastView.latestActivity.sourceUrl, "https://x.com/thsottiaux/status/2094588317245509959");
