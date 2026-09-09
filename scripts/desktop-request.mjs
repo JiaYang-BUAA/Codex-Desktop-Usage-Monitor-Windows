@@ -113,6 +113,10 @@ export function buildDesktopAutoResumeExpression({ threadId, eventId, message })
     ${DESKTOP_QUEUED_FOLLOW_UP_LOOKUP}
     const request = findDesktopRequestClient();
     const payload = ${JSON.stringify(payload)};
+    const attempts = window.__CODEX_USAGE_MONITOR_SEND_ATTEMPTS__ ||= new Map();
+    const attemptKey = payload.threadId + ':' + payload.clientUserMessageId;
+    if (attempts.has(attemptKey)) return await attempts.get(attemptKey);
+    const attempt = (async () => {
     const options = { priority: "critical", source: "usage_monitor_auto_resume" };
     const queuedMessageIds = queuedFollowUpIds(payload.threadId);
     await request.sendRequest("thread/resume", { threadId: payload.threadId }, options);
@@ -121,7 +125,6 @@ export function buildDesktopAutoResumeExpression({ threadId, eventId, message })
     if (!turnId) throw new Error("codex-desktop-turn-id-missing");
     const queuedAfterStart = new Set(queuedFollowUpIds(payload.threadId));
     const queuePreserved = queuedMessageIds.every((id) => queuedAfterStart.has(id));
-    if (!queuePreserved) throw new Error("codex-desktop-native-queue-changed-during-auto-resume");
     return {
       ok: true,
       method: "codex-desktop-internal-request",
@@ -130,6 +133,10 @@ export function buildDesktopAutoResumeExpression({ threadId, eventId, message })
       queuedCount: queuedMessageIds.length,
       queuePreserved,
     };
+    })();
+    attempts.set(attemptKey, attempt);
+    try { return await attempt; }
+    catch (error) { attempts.delete(attemptKey); throw error; }
   })()`;
 }
 
@@ -158,9 +165,11 @@ export async function sendContinueThroughDesktop(session, {
       threadId: normalizedThreadId,
       eventId: normalizedEventId,
       message: normalizedMessage,
-    }));
+    }), 60000);
     return result?.ok ? result : { ok: false, reason: "desktop-turn-start-failed" };
   } catch (error) {
-    return { ok: false, reason: String(error?.message || "desktop-turn-start-failed").slice(0, 160) };
+    const message = String(error?.message || "");
+    return { ok: false, reason: /timed out|timeout/i.test(message) ? "desktop-send-timeout"
+      : /request-client|codex-root/i.test(message) ? "desktop-request-client-unavailable" : "desktop-send-failed" };
   }
 }

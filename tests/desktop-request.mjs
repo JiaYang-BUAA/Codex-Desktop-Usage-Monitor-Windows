@@ -110,7 +110,27 @@ const unavailable = {
 assert.deepEqual(await probeDesktopRequestClient(unavailable), { ok: false, reason: "codex-desktop-request-client-not-found" });
 assert.deepEqual(
   await sendContinueThroughDesktop(unavailable, { threadId: THREAD_ID, eventId: EVENT_ID, message: "继续" }),
-  { ok: false, reason: "codex-desktop-request-client-not-found" },
+  { ok: false, reason: "desktop-request-client-unavailable" },
 );
+
+// Retrying a completed event in the same renderer must not create another turn.
+const callCount = calls.length;
+await sendContinueThroughDesktop(session, { threadId: THREAD_ID, eventId: EVENT_ID, message: "继续" });
+assert.equal(calls.length, callCount);
+// Two overlapping evaluations share the in-flight operation. Queue movement after
+// an accepted turn does not turn success into a retryable failure.
+vm.runInContext(`window.__codexRoot._internalRoot.current.nested.sendRequest = async (method, params, options) => {
+  calls.push({method, params, options});
+  if (method === 'turn/start') { queuedFollowUps[${JSON.stringify(THREAD_ID)}] = []; return {turn:{id:${JSON.stringify(TURN_ID)}}}; }
+  return {};
+}`, context);
+const next = { threadId: THREAD_ID, eventId: 'f'.repeat(32), message: '继续' };
+const parallel = await Promise.all([sendContinueThroughDesktop(session, next), sendContinueThroughDesktop(session, next)]);
+assert.equal(calls.length, callCount + 2);
+assert.equal(parallel[0].ok, true);
+assert.equal(parallel[0].queuePreserved, false);
+assert.equal(parallel[1].turnId, TURN_ID);
+const timeoutSession = { async evaluate(expression, timeout) { assert.equal(timeout, 60000); throw new Error('Runtime.evaluate timed out'); } };
+assert.deepEqual(await sendContinueThroughDesktop(timeoutSession, next), {ok:false, reason:'desktop-send-timeout'});
 
 console.log("PASS: Codex Desktop internal request submission targets the exact task with validated, idempotent resume turns.");

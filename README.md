@@ -127,10 +127,14 @@ Codex Usage Monitor 把官方订阅周期、当前会话 Token、社区重置概
 开启后，监视器只会在以下条件全部成立时发送续跑内容：
 
 1. 当前任务明确以 `usage_limit_exceeded` 结束。
-2. 错误中给出的额度恢复时间已经到达。
-3. 官方订阅周期重新显示为有剩余额度。
+2. 该对话仍明确处于额度用尽暂停状态，没有开始新回合、执行完成或主动暂停。
+3. 耗尽事件之后更新的官方订阅数据确认阻塞周期已有剩余额度；提前恢复额度也可触发。
 
-默认发送内容为“继续”，可修改为最多 500 字符的单行文本。监视器在 Codex Desktop 内部按原任务 ID 调用 `thread/resume` 和 `turn/start`，不会填写或占用可见输入框，不会调用模型 API、侧边聊天或快速聊天，也不会删除或覆盖原有排队消息。同一额度事件使用稳定的客户端消息 ID 防止重复提交。
+可以在额度耗尽后开启续跑。已开启的对话分别记录等待状态，切换到其他对话后仍会跟踪；重启监视器后会重新核对记录。暂时缺少会话数据时保留等待，等待数据确认后再发送。
+
+若发送通道不可用或请求超时，展开面板会显示原因并等待重试。监视器必须保持运行，且 Codex 桌面的发送通道可用。
+
+默认发送内容为“继续”，可修改为最多 500 字符的单行文本。监视器在 Codex Desktop 内部按原任务 ID 调用 `thread/resume` 和 `turn/start`，不会填写或占用可见输入框，也不会删除或覆盖原有排队消息。每个额度事件使用稳定的客户端消息 ID，并在当前渲染器内复用进行中或已成功的请求，减少重复提交；发送回合仍会正常消耗 Codex 额度。
 
 等待记录保存在 `%LOCALAPPDATA%\CodexUsageMonitor\auto-resume-state.json`，不包含发送内容、对话正文或凭据。
 
@@ -302,7 +306,7 @@ pwsh -NoProfile -File .\scripts\restore-monitor.ps1
 node .\scripts\validate-provider.mjs .\config\providers\custom.example.json
 ```
 
-测试覆盖 JavaScript/PowerShell 语法、官方周期、Token 单位、账户分页与累计基线、通用 Provider 映射、Tibo 动态刷新、额度恢复状态机、Codex Desktop 内部发送保护、恶意配置拒绝、DPAPI 持久化、UI 生命周期、设置恢复、启动器、安全扫描和运行包白名单。Windows CI 会在推送和 Pull Request 时运行同一套测试。
+测试覆盖 JavaScript/PowerShell 语法、官方周期、Token 单位、账户分页与累计基线、通用 Provider 映射、Tibo 动态刷新、额度恢复状态机、Codex Desktop 内部发送保护、恶意配置拒绝、DPAPI 持久化、UI 生命周期、设置恢复、启动器、安全扫描和运行包白名单。续跑还包含从本地会话事件到发送请求的隔离集成测试，不向真实对话发送消息。Windows CI 会在推送和 Pull Request 时运行同一套测试。
 
 ## 8. FAQ
 

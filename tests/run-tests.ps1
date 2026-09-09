@@ -52,7 +52,7 @@ foreach ($file in $powerShellFiles) {
 $javascriptFiles = @(
   'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js',
   'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\current-thread.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\validate-provider.mjs',
-  'scripts\ui-settings.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-resume.mjs', 'scripts\desktop-request.mjs', 'tests\current-thread.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs', 'tests\auto-updater.mjs', 'tests\auto-resume.mjs', 'tests\desktop-request.mjs'
+  'scripts\ui-settings.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-resume.mjs', 'scripts\desktop-request.mjs', 'tests\current-thread.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs', 'tests\auto-updater.mjs', 'tests\auto-resume.mjs', 'tests\desktop-request.mjs', 'tests\auto-resume-integration.mjs'
 )
 foreach ($relative in $javascriptFiles) {
   & $node --check (Join-Path $root $relative)
@@ -73,6 +73,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Automatic updater tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Quota recovery auto-resume tests failed.' }
 & $node (Join-Path $root 'tests\desktop-request.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Codex Desktop internal request submission tests failed.' }
+& $node (Join-Path $root 'tests\auto-resume-integration.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Quota recovery auto-resume integration tests failed.' }
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\auto-update.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Automatic update package validation tests failed.' }
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\provider-persistence.ps1')

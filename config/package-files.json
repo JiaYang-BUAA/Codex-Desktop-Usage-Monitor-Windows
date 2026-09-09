@@ -49,6 +49,7 @@
   "tests/provider-persistence.ps1",
   "tests/auto-updater.mjs",
   "tests/auto-resume.mjs",
+  "tests/auto-resume-integration.mjs",
   "tests/desktop-request.mjs",
   "tests/auto-update.ps1",
   "tests/panel-configuration.ps1",

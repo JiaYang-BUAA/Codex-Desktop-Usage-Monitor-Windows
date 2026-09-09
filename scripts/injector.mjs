@@ -103,14 +103,14 @@ class CdpSession {
     this.listeners.set(method, listeners);
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = this.commandTimeoutMs) {
     if (this.closed) return Promise.reject(new Error("CDP session is closed"));
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const timer = setTimeout(() => {
         if (!this.pending.delete(id)) return;
-        reject(new Error(`${method} timed out after ${this.commandTimeoutMs} ms`));
-      }, this.commandTimeoutMs);
+        reject(new Error(`${method} timed out after ${timeoutMs} ms`));
+      }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try {
         this.ws.send(JSON.stringify({ id, method, params }));
@@ -122,13 +122,13 @@ class CdpSession {
     });
   }
 
-  async evaluate(expression) {
+  async evaluate(expression, timeoutMs = this.commandTimeoutMs) {
     const result = await this.send("Runtime.evaluate", {
       expression,
       awaitPromise: true,
       returnByValue: true,
       userGesture: false,
-    });
+    }, timeoutMs);
     if (result.exceptionDetails) {
       const detail = result.exceptionDetails.exception?.description ?? result.exceptionDetails.text;
       throw new Error(`Renderer evaluation failed: ${detail}`);
@@ -451,6 +451,7 @@ async function runWatch(options) {
         });
         if (result?.ok) return result;
         lastReason = result?.reason || "desktop-send-failed";
+        if (lastReason !== "desktop-request-client-unavailable") return result;
       }
       return { ok: false, reason: lastReason };
     },
@@ -484,11 +485,13 @@ async function runWatch(options) {
       });
       await registerSettingsBinding(session, settingsStore, (value) => {
         autoUpdater.settingsChanged(value);
+        usageClient.setAutoResumeThreadIds(Object.entries(value?.autoResumeThreads || {}).filter(([, config]) => config?.enabled === true).map(([id]) => id));
         return autoResumeController.settingsChanged(value);
       });
       await registerConfigurationBinding(session, options.port);
       await applyMonitor(session, latestUsage, settingsStore);
       autoUpdater.settingsChanged(settingsStore.current);
+      usageClient.setAutoResumeThreadIds(Object.entries(settingsStore.current?.autoResumeThreads || {}).filter(([, config]) => config?.enabled === true).map(([id]) => id));
       await autoResumeController.settingsChanged(settingsStore.current);
       await syncCurrentThread(session, usageClient);
     } catch (error) {

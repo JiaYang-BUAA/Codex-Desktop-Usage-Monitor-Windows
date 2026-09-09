@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   ResetForecastClient,
   TIBO_ACTIVITY_REFRESH_MS,
   LocalCodexTokenTracker,
+  CombinedUsageClient,
   accountLogIdentity,
   loadApiProviderConfig,
   mergeRateLimitSnapshot,
@@ -514,6 +515,116 @@ try {
   assert.equal((await historicalTracker.refresh()).quotaExceeded.observedLive, false);
 } finally {
   rmSync(quotaTrackerRoot, { recursive: true, force: true });
+}
+
+const backgroundTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-background-resume-test-"));
+try {
+  const sessionRoot = path.join(backgroundTrackerRoot, "sessions");
+  mkdirSync(sessionRoot, { recursive: true });
+  const trackerNow = localNoonTimestamp();
+  const oldTimestamp = trackerNow - 3 * 86400000;
+  const currentId = uuidAt(trackerNow - 9000, 81);
+  const backgroundId = uuidAt(oldTimestamp, 82);
+  const apiId = uuidAt(trackerNow - 8000, 83);
+  const unknownId = uuidAt(trackerNow - 7000, 84);
+  const missingId = uuidAt(trackerNow - 6000, 85);
+  const backgroundTurn = uuidAt(oldTimestamp + 1000, 86);
+  const apiTurn = uuidAt(trackerNow - 7500, 87);
+  const backgroundPath = path.join(sessionRoot, `rollout-background-${backgroundId}.jsonl`);
+  writeFileSync(path.join(sessionRoot, `rollout-current-${currentId}.jsonl`), [
+    sessionMeta(trackerNow - 9000, currentId, "openai"),
+    turnContext(trackerNow - 8500, uuidAt(trackerNow - 8500, 88)),
+    tokenCount(trackerNow - 8000, 10),
+    "",
+  ].join("\n"));
+  writeFileSync(backgroundPath, [
+    sessionMeta(oldTimestamp, backgroundId, "openai"),
+    turnContext(oldTimestamp + 1000, backgroundTurn),
+    tokenCount(oldTimestamp + 2000, 7),
+    quotaExceeded(oldTimestamp + 3000, backgroundTurn),
+    "",
+  ].join("\n"));
+  utimesSync(backgroundPath, new Date(oldTimestamp + 3000), new Date(oldTimestamp + 3000));
+  writeFileSync(path.join(sessionRoot, `rollout-api-${apiId}.jsonl`), [
+    sessionMeta(trackerNow - 8000, apiId, "custom"),
+    turnContext(trackerNow - 7500, apiTurn),
+    quotaExceeded(trackerNow - 7000, apiTurn),
+    "",
+  ].join("\n"));
+  writeFileSync(path.join(sessionRoot, `rollout-unknown-${unknownId}.jsonl`), [
+    sessionMeta(trackerNow - 7000, unknownId, "openai"),
+    tokenCount(trackerNow - 6500, 3),
+    "",
+  ].join("\n"));
+  const updates = [];
+  const tracker = new LocalCodexTokenTracker({
+    sessionRoot,
+    counterPath: path.join(backgroundTrackerRoot, "counter.json"),
+    now: () => trackerNow,
+    onUpdate: (view) => updates.push(view),
+  });
+  tracker.setCurrentThreadId(currentId);
+  await tracker.refresh();
+  assert.equal(tracker.threadLatest.has(backgroundId), false, "untracked old files are not scanned");
+  const enabledIds = [backgroundId, apiId, unknownId, missingId];
+  assert.equal(tracker.setAutoResumeThreadIds([...enabledIds, backgroundId.toUpperCase(), "invalid"]), true);
+  const unclassified = await tracker.refresh();
+  assert.equal(unclassified.autoResumeTasks[backgroundId].quotaExceeded, null);
+  assert.equal(unclassified.autoResumeTasks[backgroundId].currentStatus, null);
+  assert.equal(tracker.setAutoResumeThreadIds([...enabledIds].reverse()), false);
+  tracker.setOfficialModelProviders(["openai"]);
+  const tracked = await tracker.refresh();
+  assert.equal(tracked.currentThreadId, currentId);
+  assert.equal(tracked.currentStatus, "running");
+  assert.equal(tracked.autoResumeTasks[backgroundId].quotaExceeded.observedLive, false);
+  assert.equal(tracked.autoResumeTasks[backgroundId].currentStatus, "quota-paused");
+  assert.equal(tracked.autoResumeTasks[backgroundId].timestamp, oldTimestamp + 3000);
+  assert.equal(tracked.autoResumeTasks[backgroundId].turnId, backgroundTurn);
+  assert.equal(tracked.autoResumeTasks[apiId].quotaExceeded, null, "API billing errors cannot arm subscription resume");
+  assert.equal(tracked.autoResumeTasks[apiId].currentStatus, null);
+  assert.equal(tracked.autoResumeTasks[unknownId].currentStatus, null, "token counts do not invent task status");
+  assert.equal(tracked.autoResumeTasks[missingId], undefined);
+  assert.equal(tracked.todayTokens, 13, "old background history does not count towards today");
+  const emitted = updates.length;
+  await tracker.refresh();
+  assert.equal(updates.length, emitted, "unchanged background snapshots do not emit repeatedly");
+  assert.deepEqual(mergeOfficialLocalUsage({}, tracked, new Date(trackerNow)).autoResumeTasks, tracked.autoResumeTasks);
+
+  appendFileSync(backgroundPath, `${turnAborted(trackerNow - 5000, backgroundTurn)}\n`);
+  const cancelled = await tracker.refresh();
+  assert.equal(cancelled.autoResumeTasks[backgroundId].currentStatus, "paused");
+  assert.equal(cancelled.autoResumeTasks[backgroundId].quotaExceeded, null);
+  assert.equal(updates.length, emitted + 1, "background cancellation emits without changes in the visible task");
+  writeFileSync(path.join(sessionRoot, `zz-duplicate-history-${backgroundId}.jsonl`), [
+    sessionMeta(oldTimestamp, backgroundId, "openai"),
+    turnContext(oldTimestamp + 1000, backgroundTurn),
+    tokenCount(oldTimestamp + 2000, 7),
+    quotaExceeded(oldTimestamp + 3000, backgroundTurn),
+    "",
+  ].join("\n"));
+  assert.equal((await tracker.refresh()).autoResumeTasks[backgroundId].currentStatus, "paused",
+    "rediscovered older quota history cannot resurrect a cancelled task");
+  const nextTurn = uuidAt(trackerNow - 4000, 89);
+  appendFileSync(backgroundPath, `${turnContext(trackerNow - 4000, nextTurn)}\n`);
+  assert.equal((await tracker.refresh()).autoResumeTasks[backgroundId].currentStatus, "running");
+  appendFileSync(backgroundPath, `${tokenCount(trackerNow - 3000, 12, 5)}\n${taskComplete(trackerNow - 2000, nextTurn)}\n`);
+  const completed = await tracker.refresh();
+  assert.equal(completed.autoResumeTasks[backgroundId].currentStatus, "completed");
+  assert.equal(completed.autoResumeTasks[backgroundId].quotaExceeded, null);
+  assert.equal(completed.todayTokens, 18);
+  tracker.setCurrentThreadId(backgroundId);
+  assert.equal((await tracker.refresh()).todayTokens, 18, "visible and background tracking do not count the same file twice");
+  tracker.setAutoResumeThreadIds([]);
+  const disabled = await tracker.refresh();
+  assert.deepEqual(disabled.autoResumeTasks, {});
+  assert.equal(disabled.todayTokens, 18);
+
+  const delegateCalls = [];
+  const fakeCombined = { localOfficial: { setAutoResumeThreadIds: (ids) => { delegateCalls.push(ids); return true; } } };
+  assert.equal(CombinedUsageClient.prototype.setAutoResumeThreadIds.call(fakeCombined, enabledIds), true);
+  assert.deepEqual(delegateCalls, [enabledIds]);
+} finally {
+  rmSync(backgroundTrackerRoot, { recursive: true, force: true });
 }
 
 const cacheTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-cache-hit-test-"));

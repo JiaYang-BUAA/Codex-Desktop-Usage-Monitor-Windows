@@ -178,6 +178,7 @@
         ? {
             enabled: source.autoResume.enabled === true,
             status: ["idle", "waiting", "sending", "sent"].includes(source.autoResume.status) ? source.autoResume.status : "idle",
+            reason: ["desktop-request-client-unavailable", "desktop-send-timeout", "desktop-send-failed", "codex-desktop-unavailable"].includes(source.autoResume.reason) ? source.autoResume.reason : null,
             resetAt: finiteNumber(source.autoResume.resetAt) ? Number(source.autoResume.resetAt) : null,
           }
         : { enabled: false, status: "idle", resetAt: null },
@@ -856,6 +857,7 @@
     .usage-inline-toggle { position: relative; display: block; width: 24px; height: 14px; cursor: pointer; }
     .usage-inline-toggle .usage-toggle-track { display: block; }
     .usage-auto-resume-field { display: grid; gap: 3px; min-width: 0; padding: 0 0 5px 19px; }
+    .usage-auto-resume-error { padding: 3px 0 5px 19px; font-size: 10px; line-height: 1.5; color: #b45309; overflow-wrap: anywhere; }
     .usage-inline-toggle.usage-shared-resume { display: flex; width: auto; height: auto; min-height: 14px; gap: 6px; align-items: center; margin-left: 19px; font-size: 10px; justify-content: space-between; }
     .usage-shared-resume > span:first-child { white-space: normal; }
     .usage-auto-resume-label { font-size: 9px; font-weight: 650; line-height: 1.2; opacity: .72; }
@@ -1354,6 +1356,14 @@
               children.push(row);
 
               const field = document.createElement("label");
+              if (usage.autoResume.reason) {
+                const error = document.createElement("div");
+                error.className = "usage-auto-resume-error";
+                error.setAttribute("role", "status");
+                error.textContent = t(usage.autoResume.reason === "desktop-send-timeout" ? "autoResumeTimeout"
+                  : ["desktop-request-client-unavailable", "codex-desktop-unavailable"].includes(usage.autoResume.reason) ? "autoResumeClientUnavailable" : "autoResumeSendFailed");
+                children.push(error);
+              }
               field.className = "usage-auto-resume-field";
               const fieldLabel = document.createElement("span");
               fieldLabel.className = "usage-auto-resume-label";

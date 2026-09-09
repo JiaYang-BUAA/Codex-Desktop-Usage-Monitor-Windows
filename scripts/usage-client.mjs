@@ -600,7 +600,7 @@ function sessionThreadIdFromPath(filePath) {
   return path.basename(filePath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1]?.toLowerCase() || null;
 }
 
-function discoverRecentSessionFiles(root, dayStart, currentThreadId = null) {
+function discoverRecentSessionFiles(root, dayStart, trackedThreadIds = new Set()) {
   if (!root || !existsSync(root)) return [];
   const files = [];
   const pending = [root];
@@ -616,7 +616,7 @@ function discoverRecentSessionFiles(root, dayStart, currentThreadId = null) {
       }
       if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".jsonl")) continue;
       try {
-        if (statSync(candidate).mtimeMs >= dayStart || sessionThreadIdFromPath(candidate) === currentThreadId) files.push(candidate);
+        if (statSync(candidate).mtimeMs >= dayStart || trackedThreadIds.has(sessionThreadIdFromPath(candidate))) files.push(candidate);
       } catch {}
     }
   }
@@ -699,6 +699,7 @@ export class LocalCodexTokenTracker {
     );
     this.classificationReady = Array.isArray(officialModelProviders);
     this.currentThreadId = null;
+    this.autoResumeThreadIds = new Set();
     this.dailyDate = null;
     this.todayTokens = 0;
     this.officialLifetimeTokens = null;
@@ -723,6 +724,7 @@ export class LocalCodexTokenTracker {
       cacheHitRate: null,
       contextCompactions: null,
       quotaExceeded: null,
+      autoResumeTasks: {},
       fetchedAt: null,
       error: null,
     };
@@ -803,6 +805,7 @@ export class LocalCodexTokenTracker {
       && this.view.cacheHitRate === view.cacheHitRate
       && this.view.contextCompactions === view.contextCompactions
       && this.view.quotaExceeded?.eventId === view.quotaExceeded?.eventId
+      && JSON.stringify(this.view.autoResumeTasks) === JSON.stringify(view.autoResumeTasks)
       && this.view.error === view.error;
     this.view = view;
     if (!unchanged) this.onUpdate(view);
@@ -858,6 +861,38 @@ export class LocalCodexTokenTracker {
     return true;
   }
 
+  setAutoResumeThreadIds(values) {
+    const normalized = new Set((Array.isArray(values) ? values : [])
+      .filter((value) => typeof value === "string")
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value))
+      .sort());
+    if ([...normalized].join(",") === [...this.autoResumeThreadIds].join(",")) return false;
+    this.autoResumeThreadIds = normalized;
+    this.refresh().catch(() => {});
+    return true;
+  }
+
+  autoResumeTasks() {
+    const tasks = {};
+    for (const threadId of this.autoResumeThreadIds) {
+      const latest = this.threadLatest.get(threadId);
+      if (!latest) continue;
+      // Provider classification is required before treating a billing error as
+      // subscription exhaustion. Keep unknown status unknown until it resolves.
+      const officialQuota = this.classificationReady
+        && this.officialModelProviders.has(latest.quotaProvider);
+      tasks[threadId] = {
+        quotaExceeded: officialQuota && latest.currentStatus === "quota-paused" ? latest.quotaExceeded : null,
+        currentStatus: latest.currentStatus === "quota-paused" && !officialQuota
+          ? null : SESSION_STATUS_VALUES.has(latest.currentStatus) ? latest.currentStatus : null,
+        timestamp: Number.isFinite(latest.timestamp) ? latest.timestamp : null,
+        turnId: typeof latest.turnId === "string" ? latest.turnId : null,
+      };
+    }
+    return tasks;
+  }
+
   setOfficialModelProviders(values) {
     const normalized = new Set(
       Array.isArray(values)
@@ -889,7 +924,9 @@ export class LocalCodexTokenTracker {
       const checkpoints = [this.officialLifetimeCheckpointAt, this.officialLast7DaysCheckpointAt]
         .filter((value) => Number.isFinite(value));
       const scanStart = checkpoints.length ? Math.min(dayStart, ...checkpoints) : dayStart;
-      const files = discoverRecentSessionFiles(this.sessionRoot, scanStart, this.currentThreadId);
+      const trackedThreadIds = new Set(this.autoResumeThreadIds);
+      if (this.currentThreadId) trackedThreadIds.add(this.currentThreadId);
+      const files = discoverRecentSessionFiles(this.sessionRoot, scanStart, trackedThreadIds);
       let activityDetected = false;
       for (const filePath of files) {
         const state = this.fileStates.get(filePath) || {
@@ -915,6 +952,7 @@ export class LocalCodexTokenTracker {
           forkReady: true,
           forkSessionTimestamp: null,
           quotaExceeded: null,
+          quotaProvider: null,
           initialized: false,
         };
         try {
@@ -938,14 +976,7 @@ export class LocalCodexTokenTracker {
               } else if (context.kind === "turn") {
                 if (state.quotaExceeded && Number(context.timestamp) > Number(state.quotaExceeded.timestamp)) {
                   state.quotaExceeded = null;
-                  if (state.threadId) {
-                    const previous = this.threadLatest.get(state.threadId) || {};
-                    this.threadLatest.set(state.threadId, {
-                      ...previous,
-                      timestamp: Math.max(Number(previous.timestamp) || 0, Number(context.timestamp) || 0),
-                      quotaExceeded: null,
-                    });
-                  }
+                  state.quotaProvider = null;
                 }
                 if (context.turnId !== state.currentTurnId) {
                   state.currentTurnId = context.turnId;
@@ -969,6 +1000,7 @@ export class LocalCodexTokenTracker {
                       turnId: context.turnId,
                       currentStatus: state.currentStatus,
                       quotaExceeded: state.quotaExceeded,
+                      quotaProvider: state.quotaProvider,
                     });
                   }
                 }
@@ -978,6 +1010,8 @@ export class LocalCodexTokenTracker {
             const turnAborted = parseLocalTurnAbortedEvent(line);
             if (turnAborted) {
               state.currentStatus = "paused";
+              state.quotaExceeded = null;
+              state.quotaProvider = null;
               if (state.threadId) {
                 const previous = this.threadLatest.get(state.threadId) || {};
                 if (!Number.isFinite(Number(previous.timestamp)) || turnAborted.timestamp >= Number(previous.timestamp)) {
@@ -986,6 +1020,8 @@ export class LocalCodexTokenTracker {
                     timestamp: turnAborted.timestamp,
                     turnId: turnAborted.turnId || state.currentTurnId,
                     currentStatus: state.currentStatus,
+                    quotaExceeded: null,
+                    quotaProvider: null,
                   });
                 }
               }
@@ -1000,20 +1036,25 @@ export class LocalCodexTokenTracker {
                     observedLive: state.initialized || quotaExceeded.timestamp >= now - LOCAL_QUOTA_LIVE_WINDOW_MS,
                   }
                 : null;
+              state.quotaProvider = quotaExceeded && state.forkReady
+                ? state.currentProvider || state.fallbackProvider : null;
               state.currentStatus = quotaExceeded ? "quota-paused" : "completed";
               if (!taskComplete.turnId || taskComplete.turnId === state.currentTurnId) {
                 state.lastCompletedTurnTokens = state.currentTurnTokens;
               }
               if (state.threadId) {
                 const previous = this.threadLatest.get(state.threadId) || {};
-                this.threadLatest.set(state.threadId, {
-                  ...previous,
-                  timestamp: Math.max(Number(previous.timestamp) || 0, taskComplete.timestamp),
-                  tokens: state.lastCompletedTurnTokens,
-                  turnId: taskComplete.turnId || state.currentTurnId,
-                  currentStatus: state.currentStatus,
-                  quotaExceeded: state.quotaExceeded,
-                });
+                if (!Number.isFinite(Number(previous.timestamp)) || taskComplete.timestamp >= Number(previous.timestamp)) {
+                  this.threadLatest.set(state.threadId, {
+                    ...previous,
+                    timestamp: taskComplete.timestamp,
+                    tokens: state.lastCompletedTurnTokens,
+                    turnId: taskComplete.turnId || state.currentTurnId,
+                    currentStatus: state.currentStatus,
+                    quotaExceeded: state.quotaExceeded,
+                    quotaProvider: state.quotaProvider,
+                  });
+                }
               }
               return;
             }
@@ -1070,6 +1111,7 @@ export class LocalCodexTokenTracker {
                 currentStatus: state.currentStatus,
                 contextCompactions: state.contextCompactions,
                 quotaExceeded: state.quotaExceeded,
+                quotaProvider: state.quotaProvider,
               });
             }
             if (!this.classificationReady) return;
@@ -1142,6 +1184,7 @@ export class LocalCodexTokenTracker {
         cacheHitRate,
         contextCompactions: currentTask?.contextCompactions ?? (this.currentThreadId ? 0 : null),
         quotaExceeded: currentTask?.quotaExceeded ?? null,
+        autoResumeTasks: this.autoResumeTasks(),
         fetchedAt: now,
         error: available ? null : "未找到本机 Codex 任务记录",
       });
@@ -1262,6 +1305,8 @@ function officialModelProviderResolutionReady(accountResponse, configResponse) {
 export function mergeOfficialLocalUsage(officialView, localView, now = new Date()) {
   const todayKey = localDateKey(now);
   const taskUsage = {
+    autoResumeTasks: localView?.autoResumeTasks && typeof localView.autoResumeTasks === "object"
+      ? localView.autoResumeTasks : {},
     currentThreadId: typeof localView?.currentThreadId === "string" ? localView.currentThreadId : null,
     currentTaskTokens: Number.isSafeInteger(localView?.currentTaskTokens) && localView.currentTaskTokens >= 0 ? localView.currentTaskTokens : null,
     lastTurnTokens: Number.isSafeInteger(localView?.lastTurnTokens) && localView.lastTurnTokens >= 0 ? localView.lastTurnTokens : null,
@@ -2371,6 +2416,10 @@ export class CombinedUsageClient {
     return this.localOfficial.setCurrentThreadId(value);
   }
 
+  setAutoResumeThreadIds(values) {
+    return this.localOfficial.setAutoResumeThreadIds(values);
+  }
+
   async start() {
     await Promise.all([this.official.start(), this.localOfficial.start(), this.account.start(), this.api.start(), this.forecast.start()]);
     this.nextRefreshAt = Date.now() + this.refreshMs;
@@ -2454,7 +2503,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.4" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.5" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");
