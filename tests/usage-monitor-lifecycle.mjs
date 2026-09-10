@@ -318,7 +318,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.5", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.6", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -665,6 +665,68 @@ try {
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, true);
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().strategy, "explicit-editable");
   assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().availableWidth > 300);
+
+  // Both desktop modes share the layout and data-codex-composer attribute.
+  // ChatGPT Work must remain supported under the same global ChatGPT mode.
+  const savedModeSettings = JSON.stringify(window.__CODEX_USAGE_MONITOR_STATE__.getSettings());
+  const placementModule = window.__CODEX_USAGE_MONITOR_MODULES__.placement;
+  const chatEditable = window.document.querySelector('#composer-wrapper [contenteditable="true"]');
+  const modeSwitch = window.document.createElement("button");
+  modeSwitch.setAttribute("aria-haspopup", "menu");
+  modeSwitch.setAttribute("aria-label", "切换模式，当前模式：Codex");
+  modeSwitch.textContent = "Codex";
+  modeSwitch.getBoundingClientRect = () => ({ x: 10, y: 10, width: 100, height: 30, right: 110, bottom: 40 });
+  window.document.body.appendChild(modeSwitch);
+  host.shadowRoot.querySelector(".usage-summary").click();
+  modeSwitch.textContent = "ChatGPT";
+  modeSwitch.setAttribute("aria-label", "切换模式，当前模式：ChatGPT");
+  chatEditable.setAttribute("aria-label", "使用 ChatGPT Work");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.ok(window.document.getElementById("codex-usage-monitor"), "ChatGPT Work must stay mounted");
+  chatEditable.setAttribute("aria-label", "给 ChatGPT 发送消息");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(window.document.getElementById("codex-usage-monitor"), null);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().reason, "chatgpt-composer");
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage);
+  assert.equal(window.document.getElementById("codex-usage-monitor"), null, "usage refresh must not remount in ChatGPT");
+  assert.equal(window.eval(payload).installed, false, "fresh injection in ChatGPT must stay hidden");
+  modeSwitch.firstChild.data = "Codex";
+  modeSwitch.setAttribute("aria-label", "Switch mode, current mode: Codex");
+  chatEditable.setAttribute("aria-label", "随心输入");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.ok(window.document.getElementById("codex-usage-monitor")?.shadowRoot);
+  modeSwitch.firstChild.data = "ChatGPT";
+  modeSwitch.setAttribute("aria-label", "Switch mode, current mode: ChatGPT");
+  chatEditable.setAttribute("aria-label", "Message ChatGPT");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(window.document.getElementById("codex-usage-monitor"), null);
+  modeSwitch.remove();
+
+  chatEditable.removeAttribute("aria-label");
+  chatEditable.setAttribute("data-codex-composer", "true");
+  for (const [attribute, label] of [["aria-label", "给 ChatGPT 发送消息"], ["placeholder", "Message ChatGPT"]]) {
+    chatEditable.setAttribute(attribute, label);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(window.document.getElementById("codex-usage-monitor"), null);
+    assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().reason, "chatgpt-composer");
+    chatEditable.removeAttribute(attribute);
+  }
+  const wrapper = window.document.getElementById("composer-wrapper");
+  wrapper.setAttribute("data-conversation-id", "chatgpt:test-conversation");
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null);
+  chatEditable.setAttribute("aria-label", "Use ChatGPT Work");
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), "explicit Work metadata wins over a shared ChatGPT namespace");
+  chatEditable.removeAttribute("aria-label");
+  wrapper.removeAttribute("data-conversation-id");
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure());
+  const chatSide = window.document.createElement("div");
+  chatSide.innerHTML = composerMarkup().replace('contenteditable="true"', 'contenteditable="true" aria-label="Message ChatGPT"');
+  window.document.body.prepend(chatSide);
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), "a ChatGPT side composer must not hide the main Codex monitor");
+  const placement = placementModule.findPlacement("codex-usage-monitor");
+  assert.ok(wrapper.contains(placement.composer), "fresh selection must exclude the ChatGPT side composer");
+  chatSide.remove();
+  assert.equal(JSON.stringify(window.__CODEX_USAGE_MONITOR_STATE__.getSettings()), savedModeSettings);
 
   window.document.getElementById("composer-wrapper").replaceChildren();
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null);

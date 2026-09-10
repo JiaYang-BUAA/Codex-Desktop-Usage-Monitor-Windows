@@ -23,10 +23,26 @@
   const isApprovalControl = (node) => APPROVAL_PATTERN.test(controlText(node));
   const composerSelector = COMPOSER_SELECTORS.join(", ");
 
+  // ChatGPT Chat and Work share ComposerLayoutRoot and the top-level mode.
+  // Use field metadata, never message contents or the global ChatGPT selector.
+  const isChatGptComposer = (node) => {
+    const fields = node.matches(EDITABLE_SELECTOR) ? [node] : [...node.querySelectorAll(EDITABLE_SELECTOR)];
+    const labels = fields.flatMap((field) => ["aria-label", "placeholder", "data-placeholder"]
+      .map((attribute) => field.getAttribute(attribute) || ""));
+    if (labels.some((label) => /\bChatGPT\s+(?:Work\b|工作)/i.test(label))) return false;
+    if (labels.some((label) => /\bChatGPT\b/i.test(label))) return true;
+    for (let current = node; current; current = current.parentElement) {
+      if (["data-above-composer-conversation-id", "data-conversation-id", "data-thread-id"]
+        .some((attribute) => /^chatgpt\s*:/i.test(current.getAttribute(attribute) || ""))) return true;
+    }
+    return false;
+  };
+
   const findPlacement = (hostId, preferredComposer = null) => {
-    const composers = [...document.querySelectorAll(composerSelector)].filter(isVisible);
-    const editables = [...document.querySelectorAll(EDITABLE_SELECTOR)]
+    const composers = [...document.querySelectorAll(composerSelector)].filter((node) => isVisible(node) && !isChatGptComposer(node));
+    const visibleEditables = [...document.querySelectorAll(EDITABLE_SELECTOR)]
       .filter((node) => isVisible(node) && !node.closest(`#${hostId}`));
+    const editables = visibleEditables.filter((node) => !isChatGptComposer(node));
     const nearestComposer = (editable) => {
       const explicit = editable.closest(composerSelector);
       if (explicit && isVisible(explicit)) return { composer: explicit, strategy: "explicit-editable" };
@@ -74,7 +90,8 @@
       return {
         composer: null,
         strategy: "none",
-        reason: editables.length ? "composer-not-found-for-editable" : "visible-editable-not-found",
+        reason: visibleEditables.length && !editables.length ? "chatgpt-composer"
+          : editables.length ? "composer-not-found-for-editable" : "visible-editable-not-found",
         editableCount: editables.length,
         composerCount: composers.length,
       };

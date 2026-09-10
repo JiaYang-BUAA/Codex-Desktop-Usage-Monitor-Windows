@@ -63,6 +63,8 @@ Codex Usage Monitor 把官方订阅周期、当前会话 Token、社区重置概
 
 监视栏位于 Codex 输入区域底部。新安装默认勾选“7天剩余”和“当前会话累计 Token”，普通模式最多显示 8 项。
 
+ChatGPT 普通聊天模式不挂载监视栏；ChatGPT Work 工作模式和 Codex 任务继续显示。切回工作模式或 Codex 任务后自动恢复，原有显示设置不变。
+
 指标会严格按照勾选顺序从左到右排列；取消后重新勾选的项目会移动到末尾。展开面板中的“5小时剩余”和“7天剩余”显示为“重置时间 · 剩余百分数”，折叠栏只保留百分数。
 
 ![Codex Usage Monitor 普通模式示意图](docs/images/monitor-collapsed.png)
