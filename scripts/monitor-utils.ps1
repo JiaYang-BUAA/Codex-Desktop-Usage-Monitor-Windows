@@ -583,6 +583,53 @@ function Get-CodexUsageState {
   return $null
 }
 
+# Read logs written by a live child process without hiding the original failure
+# behind a sharing violation, missing file, or a null .Trim() call.
+function Read-CodexUsageStartupLog([string]$Path, [int]$MaxCharacters = 4000) {
+  $stream = $null
+  $reader = $null
+  try {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.File]::Exists($Path)) { return '' }
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    if ($stream.Length -gt ($MaxCharacters * 4)) { [void]$stream.Seek(-($MaxCharacters * 4), [IO.SeekOrigin]::End) }
+    $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+    $text = ([string]$reader.ReadToEnd()).Trim()
+    if ($text.Length -gt $MaxCharacters) { $text = $text.Substring($text.Length - $MaxCharacters) }
+    return $text
+  } catch { return '(日志暂时不可读取；请稍后查看日志文件。)' }
+  finally {
+    if ($reader) { $reader.Dispose() }
+    elseif ($stream) { $stream.Dispose() }
+  }
+}
+
+function Get-CodexUsageStartupPhase([bool]$ProcessAlive, [bool]$Verified) {
+  if (-not $ProcessAlive) { return 'failed' }
+  if ($Verified) { return 'ready' }
+  return 'waiting-ui'
+}
+
+function Get-CodexUsageStartupFailure([int]$ProcessId, $ExitCode, [string]$StderrPath, [string]$StdoutPath) {
+  $detail = Read-CodexUsageStartupLog $StderrPath
+  if ([string]::IsNullOrWhiteSpace($detail)) { $detail = Read-CodexUsageStartupLog $StdoutPath }
+  if ([string]::IsNullOrWhiteSpace($detail)) { $detail = '日志为空，后台未留下进一步错误信息。' }
+  return "监视器后台已退出（PID $ProcessId，退出码 $ExitCode）。$detail 日志：$StderrPath"
+}
+
+function Stop-CodexUsagePreviousInjectors($PreviousInjectors, [int]$KeepProcessId, [bool]$Verified) {
+  # Never retire the healthy previous runtime until the replacement itself has
+  # produced a fresh heartbeat. Recheck command-line ownership to avoid PID reuse.
+  if (-not $Verified) { return }
+  if (-not (Get-CodexUsageInjectorById $KeepProcessId)) { return }
+  foreach ($previous in @($PreviousInjectors)) {
+    if ($previous.ProcessId -eq $KeepProcessId) { continue }
+    $live = Get-CodexUsageInjectorById $previous.ProcessId
+    if ($live -and $live.InjectorPath -eq $previous.InjectorPath -and $live.Port -eq $previous.Port) {
+      Stop-Process -Id $live.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Get-CodexUsageInjectorPathFromCommandLine([string]$CommandLine) {
   if (-not $CommandLine -or $CommandLine -notmatch '(?i)(?:^|\s)--watch(?:\s|$)') { return $null }
   $match = [regex]::Match($CommandLine, '(?i)(?:"(?<quoted>[^\"]*[\\/]scripts[\\/]injector\.mjs)"|(?<plain>\S*[\\/]scripts[\\/]injector\.mjs))')
@@ -669,6 +716,30 @@ function Test-CodexUsageCdpPort([int]$Port) {
   return [bool](Get-CodexUsageTargets $Port | Where-Object { $_.type -eq 'page' -and [string]$_.url -like 'app://*' })
 }
 
+function Wait-CodexUsageCdpPort([int]$Port, [int]$TimeoutSeconds = 180, [int]$PollMilliseconds = 400) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  do {
+    if (Test-CodexUsageCdpPort $Port) { return $true }
+    if ([DateTime]::UtcNow -ge $deadline) { return $false }
+    Start-Sleep -Milliseconds $PollMilliseconds
+  } while ($true)
+}
+
+function Get-CodexUsageProcessCdpPorts {
+  $processPorts = [Collections.Generic.List[int]]::new()
+  try {
+    foreach ($process in Get-CimInstance Win32_Process -Filter "Name = 'ChatGPT.exe'" -ErrorAction Stop) {
+      foreach ($match in [regex]::Matches([string]$process.CommandLine, '--remote-debugging-port(?:=|\s+)(\d+)')) {
+        $candidate = 0
+        if ([int]::TryParse($match.Groups[1].Value, [ref]$candidate) -and $candidate -ge 1024 -and $candidate -le 65535 -and -not $processPorts.Contains($candidate)) {
+          $processPorts.Add($candidate)
+        }
+      }
+    }
+  } catch {}
+  return $processPorts.ToArray()
+}
+
 function Test-CodexUsageTcpPortAvailable([int]$Port) {
   if ($Port -lt 1024 -or $Port -gt 65535) { return $false }
   $listener = $null
@@ -718,15 +789,7 @@ function Get-CodexUsageCdpCandidates {
 function Resolve-CodexUsageCdpPort {
   [CmdletBinding()]
   param([ValidateRange(1024, 65535)][int]$PreferredPort = 9335)
-  $processPorts = [Collections.Generic.List[int]]::new()
-  try {
-    foreach ($process in Get-CimInstance Win32_Process -Filter "Name = 'ChatGPT.exe'" -ErrorAction Stop) {
-      foreach ($match in [regex]::Matches([string]$process.CommandLine, '--remote-debugging-port(?:=|\s+)(\d+)')) {
-        $candidate = [int]$match.Groups[1].Value
-        if (-not $processPorts.Contains($candidate)) { $processPorts.Add($candidate) }
-      }
-    }
-  } catch {}
+  $processPorts = @(Get-CodexUsageProcessCdpPorts)
   $activeFilePort = 0
   $activePortPath = Join-Path $env:APPDATA 'Codex\DevToolsActivePort'
   if (Test-Path -LiteralPath $activePortPath -PathType Leaf) {
@@ -734,7 +797,7 @@ function Resolve-CodexUsageCdpPort {
   }
   $state = Get-CodexUsageState
   $statePort = if ($state -and $state.port) { [int]$state.port } else { 0 }
-  $candidates = Get-CodexUsageCdpCandidates -PreferredPort $PreferredPort -ProcessPorts $processPorts.ToArray() -ActiveFilePort $activeFilePort -StatePort $statePort
+  $candidates = Get-CodexUsageCdpCandidates -PreferredPort $PreferredPort -ProcessPorts $processPorts -ActiveFilePort $activeFilePort -StatePort $statePort
   foreach ($candidate in $candidates) { if (Test-CodexUsageCdpPort $candidate) { return $candidate } }
   return 0
 }

@@ -61,6 +61,10 @@ foreach ($relative in $javascriptFiles) {
 
 & $node (Join-Path $root 'tests\current-thread.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Current task selection tests failed.' }
+& $node (Join-Path $root 'tests\injector-health.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Backend heartbeat verification tests failed.' }
+& $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\startup-wait.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Slow startup recovery tests failed.' }
 & $node (Join-Path $root 'tests\usage-client.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Usage client tests failed.' }
 & $node (Join-Path $root 'tests\usage-monitor-lifecycle.mjs')
@@ -188,11 +192,11 @@ if ($runtimeSource -notmatch 'Resolve-CodexUsageAvailablePort') { throw 'Automat
 if ($runtimeSource -notmatch 'CODEX_USAGE_DESKTOP_PATH') { throw 'Custom desktop executable contract is missing.' }
 if ($runtimeSource -notmatch '\[Threading\.Mutex\]') { throw 'Startup mutex contract is missing.' }
 if ($runtimeSource -notmatch "Local\\CodexUsageMonitor'") { throw 'Cross-port startup mutex contract is missing.' }
-if ($runtimeSource -notmatch 'TARGET_ABSENCE_EXIT_MS\s*=\s*60000') { throw 'Orphan injector shutdown grace-period contract is missing.' }
+if ($runtimeSource -notmatch 'TARGET_ABSENCE_EXIT_MS\s*=\s*180000' -or $runtimeSource -notmatch 'nextEndpointLoss') { throw 'Orphan injector shutdown grace-period contract is missing.' }
 if ($runtimeSource -notmatch 'redirect:\s*"error"' -or $runtimeSource -notmatch '只有本机回环地址允许 HTTP') { throw 'Credential transport hardening contract is missing.' }
 if ($runtimeSource -match 'await usageClient\.start\(\)') { throw 'Initial usage refresh must not delay renderer injection.' }
 if ($runtimeSource -notmatch 'usageStartPromise = usageClient\.start\(\)') { throw 'Background initial usage refresh contract is missing.' }
-if ($runtimeSource -notmatch '注入验证探针失败，将继续重试' -or $runtimeSource -notmatch '\$detailText\s*=.*\[string\]\(Get-Content') { throw 'Monitor startup retry and empty-log safety contract is missing.' }
+if ($runtimeSource -notmatch 'Read-CodexUsageStartupLog' -or $runtimeSource -notmatch 'expected-pid' -or $runtimeSource -notmatch 'waiting-ui') { throw 'Monitor startup retry and empty-log safety contract is missing.' }
 if ($runtimeSource -notmatch '\$owned = @\(Get-CodexUsageInjectorProcesses\)') { throw 'Cross-port injector cleanup contract is missing.' }
 if ($runtimeSource -notmatch 'rate-limited' -or $runtimeSource -notmatch 'HTTP 429') { throw 'API rate-limit backoff contract is missing.' }
 if ($runtimeSource -notmatch 'minimalMode' -or $runtimeSource -notmatch 'countdownVisualization' -or $runtimeSource -notmatch 'englishUi' -or $runtimeSource -notmatch 'updateNotifications' -or $runtimeSource -notmatch 'usage-refresh-ring') { throw 'Display mode controls are missing.' }

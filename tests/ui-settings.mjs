@@ -16,6 +16,14 @@ try {
   assert.equal(resolveUiSettingsPath({ CODEX_USAGE_UI_SETTINGS_PATH: settingsPath }), settingsPath);
   assert.equal(resolveUiSettingsPath({ LOCALAPPDATA: root }), path.join(root, "CodexUsageMonitor", "ui-settings.json"));
   assert.equal(normalizeUiSettings(null), null);
+  const migratedDuration = normalizeUiSettings({
+    metrics: { session: ["currentStatus", "autoResume", "executionTime"], official: ["currentStatus"] },
+    metricOrder: ["session:currentStatus", "session:autoResume", "session:executionTime", "official:currentStatus"],
+  });
+  assert.deepEqual(migratedDuration.metrics.session, ["executionTime", "autoResume"]);
+  assert.deepEqual(migratedDuration.metrics.official, ["executionTime"]);
+  assert.deepEqual(migratedDuration.metricOrder, ["session:executionTime", "session:autoResume", "official:executionTime"]);
+  assert.deepEqual(normalizeUiSettings(migratedDuration), migratedDuration, "duration selection migration is idempotent");
   assert.deepEqual(normalizeUiSettings({
     metrics: {
       official: ["secondaryRemaining", "currentTaskTokens", "secondaryRemaining", "bad metric"],

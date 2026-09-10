@@ -68,6 +68,17 @@ try {
   $codexRunning = @(Get-Process ChatGPT -ErrorAction SilentlyContinue).Count -gt 0
   $activePort = if ($codexRunning) { Resolve-CodexUsageCdpPort $Port } else { 0 }
   $debugReady = [bool]$activePort
+  if ($codexRunning -and -not $debugReady) {
+    # A process launched with CDP can exist well before its renderer is ready.
+    # Do not mistake that loading interval for a native launch without CDP.
+    $pendingPorts = @(Get-CodexUsageProcessCdpPorts)
+    if ($pendingPorts.Count -gt 0) {
+      $Port = $pendingPorts[0]
+      if (-not (Wait-CodexUsageCdpPort $Port)) { throw "Codex 仍在加载，180 秒内未能连接端口 $Port；未结束 Codex，请稍后再试。" }
+      $activePort = $Port
+      $debugReady = $true
+    }
+  }
   $plan = Get-CodexMonitorLaunchPlan $debugReady $codexRunning
   if ($plan -eq 'blocked-running-without-cdp') {
     Show-CodexMonitorMessage 'Codex 已通过原生入口运行，无法在不中断会话的情况下补加监视端口。请先正常退出 Codex，再点击“Codex Usage Monitor”。' 'Warning'
@@ -77,12 +88,11 @@ try {
   if (-not $debugReady) {
     $Port = Resolve-CodexUsageAvailablePort -PreferredPort $Port
     [void](Start-CodexUsagePackagedCodex -Port $Port)
-    $deadline = (Get-Date).AddSeconds(30)
-    while (-not (Test-CodexUsageCdpPort $Port) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 400 }
-    if (-not (Test-CodexUsageCdpPort $Port)) { throw "Codex 未在 30 秒内开放端口 $Port。" }
+    if (-not (Wait-CodexUsageCdpPort $Port)) { throw "Codex 未在 180 秒内开放端口 $Port；未结束 Codex，请等待加载完成后再试。" }
   }
   & (Join-Path $PSScriptRoot 'start-monitor.ps1') -Port $Port
-  if ($LASTEXITCODE -ne 0) { throw "监视器启动脚本退出码：$LASTEXITCODE" }
+  # start-monitor.ps1 throws on failure. LASTEXITCODE may still contain a failed
+  # readiness probe while the daemon is legitimately waiting for the renderer.
 } catch {
   $message = "启动失败。`n`n$($_.Exception.Message)"
   Write-CodexMonitorLaunchError $message

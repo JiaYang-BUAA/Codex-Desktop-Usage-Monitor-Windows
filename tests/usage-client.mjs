@@ -25,6 +25,7 @@ import {
   parseLocalContextCompactionEvent,
   parseLocalQuotaExceededEvent,
   parseLocalTaskCompleteEvent,
+  parseLocalTaskStartedEvent,
   parseLocalTurnAbortedEvent,
   parseLocalTokenContextEvent,
   parseLocalTokenUsageEvent,
@@ -78,6 +79,7 @@ assert.deepEqual(parseLocalTaskCompleteEvent(JSON.stringify({
 })), {
   timestamp: quotaObservedAt,
   turnId: "019fb3b1-2638-7bb0-9a90-ec83b5bca0f3",
+  durationMs: null,
   errorInfo: null,
   errorMessage: null,
 });
@@ -88,6 +90,7 @@ assert.deepEqual(parseLocalTurnAbortedEvent(JSON.stringify({
 })), {
   timestamp: quotaObservedAt,
   turnId: "019fb3b1-2638-7bb0-9a90-ec83b5bca0f3",
+  durationMs: null,
   reason: "interrupted",
 });
 
@@ -342,12 +345,16 @@ function tokenCountWithCache(timestamp, totalTokens, lastTokens, inputTokens, ca
   });
 }
 
-function taskComplete(timestamp, turnId, error = null) {
+function taskComplete(timestamp, turnId, error = null, durationMs = undefined) {
   return JSON.stringify({
     timestamp: new Date(timestamp).toISOString(),
     type: "event_msg",
-    payload: { type: "task_complete", turn_id: turnId, error },
+    payload: { type: "task_complete", turn_id: turnId, error, duration_ms: durationMs },
   });
+}
+
+function taskStarted(timestamp, turnId) {
+  return JSON.stringify({ timestamp: new Date(timestamp).toISOString(), type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
 }
 
 function turnAborted(timestamp, turnId) {
@@ -379,6 +386,146 @@ function quotaExceeded(timestamp, turnId) {
       },
     },
   });
+}
+
+const durationTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-duration-test-"));
+try {
+  let clock = localNoonTimestamp();
+  const thread = uuidAt(clock - 100_000, 401);
+  const other = uuidAt(clock - 90_000, 402);
+  const first = uuidAt(clock - 80_000, 403);
+  const second = uuidAt(clock - 20_000, 404);
+  const sessionPath = path.join(durationTrackerRoot, `rollout-${thread}.jsonl`);
+  writeFileSync(sessionPath, [
+    sessionMeta(clock - 100_000, thread, "openai"),
+    // Rehydrated timestamps are identical: the official duration is authoritative.
+    taskStarted(clock - 80_000, first), turnContext(clock - 80_000, first),
+    taskComplete(clock - 80_000, first, null, 53196),
+    taskComplete(clock - 79_000, first, null, 53196),
+    taskStarted(clock - 20_000, second), turnContext(clock - 20_000, second),
+    turnContext(clock - 5_000, second), "",
+  ].join("\n"));
+  writeFileSync(path.join(durationTrackerRoot, `rollout-${other}.jsonl`), [
+    sessionMeta(clock - 90_000, other, "openai"), taskComplete(clock - 10_000, uuidAt(clock - 30_000, 405), null, 999999), "",
+  ].join("\n"));
+  const tracker = new LocalCodexTokenTracker({ sessionRoot: durationTrackerRoot, counterPath: null, now: () => clock });
+  tracker.setCurrentThreadId(thread);
+  let result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 73196, "repeated contexts must not restart the current clock");
+  assert.equal(result.executionTimeEstimated, true);
+  assert.equal(result.executionTimeIncomplete, false);
+  assert.equal(result.executionTimeRunning, true);
+  assert.deepEqual(parseLocalTaskStartedEvent(taskStarted(clock, second)), { timestamp: clock, turnId: second });
+  assert.equal(parseLocalTaskCompleteEvent(taskComplete(clock, second, null, -1)).durationMs, null);
+  assert.equal(parseLocalTaskCompleteEvent(taskComplete(clock, second, null, "12")).durationMs, null);
+  clock += 5_000;
+  assert.equal((await tracker.refresh()).executionTimeMs, 78196);
+  appendFileSync(sessionPath, `${taskComplete(clock, second, null, 199388)}\n`);
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 252584, "completion replaces the estimate rather than adding it again");
+  assert.equal(result.executionTimeEstimated, false);
+  assert.equal(result.executionTimeRunning, false);
+  const idleThread = uuidAt(clock - 900_000, 420);
+  const idleTurn = uuidAt(clock - 700_000, 421);
+  const nextActiveTurn = uuidAt(clock - 500, 422);
+  const idlePath = path.join(durationTrackerRoot, `rollout-${idleThread}.jsonl`);
+  const messageActivity = (timestamp, role) => JSON.stringify({
+    timestamp: new Date(timestamp).toISOString(), type: "response_item", payload: { type: "message", role, content: [] },
+  });
+  writeFileSync(idlePath, [sessionMeta(clock - 900_000, idleThread, "openai"),
+    taskStarted(clock - 700_000, idleTurn), turnContext(clock - 700_000, idleTurn),
+    messageActivity(clock - 600_000, "assistant"),
+    messageActivity(clock - 1500, "system"), messageActivity(clock - 1200, "developer"), messageActivity(clock - 1000, "user"), "",
+  ].join("\n"));
+  tracker.setCurrentThreadId(idleThread);
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 100000, "late non-assistant messages cannot revive an orphan clock or count idle time");
+  assert.equal(result.executionTimeRunning, false);
+  appendFileSync(idlePath, [taskStarted(clock - 500, nextActiveTurn),
+    messageActivity(clock - 100, "assistant"), ""].join("\n"));
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 100500, "task_started alone assigns new activity to the new execution turn");
+  assert.equal(result.executionTimeRunning, true);
+  tracker.setCurrentThreadId(thread);
+  clock += 1_000_000;
+  assert.equal((await tracker.refresh()).executionTimeMs, 252584, "inter-turn idle time is excluded");
+  const paused = uuidAt(clock, 406);
+  appendFileSync(sessionPath, [taskStarted(clock - 10_000, paused), turnContext(clock - 10_000, paused), turnAborted(clock - 2_000, paused), ""].join("\n"));
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 260584);
+  assert.equal(result.executionTimeEstimated, true);
+  assert.equal(result.executionTimeRunning, false);
+  clock += 60_000;
+  assert.equal((await tracker.refresh()).executionTimeMs, 260584, "paused rounds do not keep counting");
+  const blocked = uuidAt(clock, 407);
+  appendFileSync(sessionPath, [taskStarted(clock - 10_000, blocked), turnContext(clock - 10_000, blocked), quotaExceeded(clock - 8_000, blocked), ""].join("\n"));
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 262584);
+  assert.equal(result.currentStatus, "quota-paused", "backend status remains available for auto-resume");
+  clock += 60_000;
+  assert.equal((await tracker.refresh()).executionTimeMs, 262584);
+  const orphan = uuidAt(clock - 600_000, 408);
+  appendFileSync(sessionPath, [taskStarted(clock - 600_000, orphan), turnContext(clock - 580_000, orphan), ""].join("\n"));
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 282584);
+  assert.equal(result.executionTimeRunning, false, "stale orphan starts cannot run for days");
+  assert.equal(result.executionTimeIncomplete, true);
+  const missing = uuidAt(clock, 409);
+  appendFileSync(sessionPath, `${taskComplete(clock, missing)}\n`);
+  assert.equal((await tracker.refresh()).executionTimeIncomplete, true);
+  const restarted = new LocalCodexTokenTracker({ sessionRoot: durationTrackerRoot, counterPath: null, now: () => clock });
+  restarted.setCurrentThreadId(thread);
+  assert.equal((await restarted.refresh()).executionTimeMs, 282584, "restart reconstructs the same total");
+  tracker.setCurrentThreadId(other);
+  assert.equal((await tracker.refresh()).executionTimeMs, 999999, "conversation clocks are independent");
+  const fork = uuidAt(clock + 1, 410);
+  const own = uuidAt(clock + 2, 411);
+  writeFileSync(path.join(durationTrackerRoot, `rollout-${fork}.jsonl`), [
+    sessionMeta(clock + 1, fork, "openai", { parent_thread_id: thread }),
+    taskStarted(clock - 80_000, first), turnContext(clock - 80_000, first), taskComplete(clock - 79_000, first, null, 53196),
+    taskStarted(clock + 2, own), turnContext(clock + 2, own), taskComplete(clock + 3, own, null, 1000), "",
+  ].join("\n"));
+  clock += 10;
+  tracker.setCurrentThreadId(fork);
+  assert.equal((await tracker.refresh()).executionTimeMs, 1000, "forks exclude inherited parent execution time");
+  const sparseFork = uuidAt(clock + 1, 413);
+  writeFileSync(path.join(durationTrackerRoot, `rollout-${sparseFork}.jsonl`), [
+    sessionMeta(clock + 1, sparseFork, "openai", { parent_thread_id: thread }),
+    taskComplete(clock + 2, first, null, 53196),
+    taskComplete(clock + 3, uuidAt(clock + 2, 414), null, 0), "",
+  ].join("\n"));
+  tracker.setCurrentThreadId(sparseFork);
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 0, "sparse own completion is counted but replayed parent completion is excluded");
+  assert.equal(result.executionTimeIncomplete, false, "official zero duration is valid");
+  tracker.setCurrentThreadId(uuidAt(clock, 412));
+  assert.equal((await tracker.refresh()).executionTimeMs, null, "missing sessions are not a fabricated zero");
+  const rotatedThread = uuidAt(clock - 2_000_000, 415);
+  const rotatedTurn = uuidAt(clock - 1_000_000, 416);
+  const oldPath = path.join(durationTrackerRoot, `rollout-${rotatedThread}.jsonl`);
+  const rotatedPath = path.join(durationTrackerRoot, `rollout-${rotatedThread}_${uuidAt(clock, 417)}.jsonl`);
+  writeFileSync(oldPath, [sessionMeta(clock - 2_000_000, rotatedThread, "openai"),
+    taskComplete(clock - 1_500_000, uuidAt(clock - 1_600_000, 418), null, 1000), ""].join("\n"));
+  writeFileSync(rotatedPath, [sessionMeta(clock - 2_000_000, rotatedThread, "openai"),
+    taskComplete(clock - 1_400_000, uuidAt(clock - 1_450_000, 419), null, 2000),
+    taskStarted(clock - 1_000_000, rotatedTurn), turnContext(clock - 1_000_000, rotatedTurn),
+    JSON.stringify({ timestamp: new Date(clock - 1000).toISOString(), type: "response_item", payload: { type: "function_call_output", output: "fixture" } }), ""].join("\n"));
+  const oldMtime = new Date(clock - 3 * 86400_000);
+  utimesSync(oldPath, oldMtime, oldMtime);
+  utimesSync(rotatedPath, oldMtime, oldMtime);
+  tracker.setCurrentThreadId(rotatedThread);
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 1003000, "rotated logs are grouped by their session header, not the runtime filename suffix");
+  assert.equal(result.executionTimeRunning, true, "recent tool activity keeps a long round live without fresh context/token events");
+  appendFileSync(rotatedPath, `${JSON.stringify({ timestamp: new Date(clock).toISOString(), type: "event_msg", payload: {
+    type: "turn_aborted", turn_id: rotatedTurn, duration_ms: 11014,
+  } })}\n`);
+  result = await tracker.refresh();
+  assert.equal(result.executionTimeMs, 14014, "official aborted duration replaces the estimate too");
+  assert.equal(result.executionTimeEstimated, false);
+  assert.equal(result.executionTimeRunning, false);
+} finally {
+  rmSync(durationTrackerRoot, { recursive: true, force: true });
 }
 
 const providerTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-provider-token-test-"));
@@ -835,6 +982,11 @@ const delayedOfficial = mergeOfficialLocalUsage(missingToday, {
   currentTaskTokens: 190,
   lastTurnTokens: 40,
   currentStatus: "completed",
+  executionTimeMs: 691323,
+  executionTimeEstimated: false,
+  executionTimeIncomplete: false,
+  executionTimeRunning: false,
+  executionTimeUpdatedAt: trackerDate.toISOString(),
   cacheHitRate: 75.25,
   contextCompactions: 3,
 }, trackerDate);
@@ -847,8 +999,10 @@ assert.equal(delayedSource.metrics.find((item) => item.id === "todayTokens").val
 assert.ok(!delayedSource.metrics.some((item) => ["currentTaskTokens", "lastTurnTokens", "contextCompactions"].includes(item.id)));
 const delayedSessionSource = toSessionUsageSource(delayedOfficial, trackerDate.getTime());
 assert.equal(delayedSessionSource.label, "本会话");
-assert.equal(delayedSessionSource.metrics.find((item) => item.id === "currentStatus").value, "执行完成");
-assert.equal(delayedSessionSource.metrics.find((item) => item.id === "currentStatus").statusCode, "completed");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "executionTime").value, "11分31秒");
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "executionTime").durationMs, 691323);
+assert.equal(delayedSessionSource.metrics.find((item) => item.id === "executionTime").sampledAt, trackerDate.toISOString());
+assert.equal(delayedSessionSource.metrics.some((item) => item.id === "currentStatus"), false);
 assert.equal(delayedSessionSource.metrics.find((item) => item.id === "autoResume").value, "--");
 assert.equal(delayedSessionSource.metrics.find((item) => item.id === "currentTaskTokens").label, "当前会话累计 Token");
 assert.equal(delayedSessionSource.metrics.find((item) => item.id === "currentTaskTokens").value, "190");

@@ -16,13 +16,13 @@
     const rect = node?.getBoundingClientRect?.();
     return Boolean(rect && rect.width > 0 && rect.height > 0);
   };
-  const SESSION_METRIC_IDS = new Set(["currentStatus", "autoResume", "currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions"]);
+  const SESSION_METRIC_IDS = new Set(["currentStatus", "executionTime", "autoResume", "currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions"]);
   const SESSION_METRIC_FALLBACKS = [
     { id: "currentTaskTokens", label: "当前会话累计 Token", display: "会话 --", value: "--", defaultVisible: true },
     { id: "lastTurnTokens", label: "上次回答消耗 Token", display: "上次回答 --", value: "--", defaultVisible: false },
     { id: "cacheHitRate", label: "缓存命中率", display: "缓存 --", value: "--", defaultVisible: false },
     { id: "contextCompactions", label: "自动压缩上下文次数", display: "压缩 --", value: "--", defaultVisible: false },
-    { id: "currentStatus", label: "当前状态", display: "状态 --", value: "--", statusCode: null, defaultVisible: false },
+    { id: "executionTime", label: "执行总耗时", display: "耗时 --", value: "--", durationMs: null, defaultVisible: false },
     { id: "autoResume", label: "额度恢复续跑", display: "续跑 --", value: "--", defaultVisible: false },
   ];
   const DEFAULT_METRIC_SELECTIONS = Object.freeze({
@@ -105,6 +105,11 @@
       detail: typeof item.detail === "string" ? item.detail.slice(0, 96) : null,
       value: typeof item.value === "string" ? item.value.slice(0, 48) : null,
       statusCode: ["running", "completed", "quota-paused", "paused"].includes(item.statusCode) ? item.statusCode : null,
+      durationMs: finiteNumber(item.durationMs) && Number(item.durationMs) >= 0 ? Number(item.durationMs) : null,
+      estimated: item.estimated === true,
+      incomplete: item.incomplete === true,
+      running: item.running === true,
+      sampledAt: typeof item.sampledAt === "string" && Number.isFinite(Date.parse(item.sampledAt)) ? item.sampledAt : null,
       resetsAt: finiteNumber(item.resetsAt) && Number(item.resetsAt) > 0 ? Number(item.resetsAt) : null,
       defaultVisible: Boolean(item.defaultVisible),
     };
@@ -190,6 +195,7 @@
     const sources = { ...incoming.sources };
     for (const [id, source] of Object.entries(sources)) {
       const previousSource = previous.sources[id];
+      if (id === "session" && previous.currentThreadId !== incoming.currentThreadId) continue;
       if (source.status !== "loading" || !previousSource?.metrics?.length) continue;
       sources[id] = {
         ...source,
@@ -280,9 +286,9 @@
       const metrics = value?.metrics && typeof value.metrics === "object" ? value.metrics : {};
       const hasSettings = Boolean(value && typeof value === "object" && !Array.isArray(value));
       return {
-        metrics: Object.fromEntries(Object.entries(metrics).map(([id, ids]) => [id, Array.isArray(ids) ? ids.map((item) => item === "dayTokens" ? "todayTokens" : item).filter((item) => typeof item === "string").slice(0, 12) : []])),
+        metrics: Object.fromEntries(Object.entries(metrics).map(([id, ids]) => [id, Array.isArray(ids) ? [...new Set(ids.map((item) => item === "dayTokens" ? "todayTokens" : ["session", "official"].includes(id) && item === "currentStatus" ? "executionTime" : item).filter((item) => typeof item === "string"))].slice(0, 12) : []])),
         metricOrder: Array.isArray(value?.metricOrder)
-          ? [...new Set(value.metricOrder.filter((item) => typeof item === "string" && item.includes(":")))].slice(0, 64)
+          ? [...new Set(value.metricOrder.filter((item) => typeof item === "string" && item.includes(":")).map((key) => key.replace(/^(session|official):currentStatus$/, "$1:executionTime")))].slice(0, 64)
           : [],
         apiKeyMetricsVersion: Number(value?.apiKeyMetricsVersion) || 0,
         officialMetricsVersion: Number(value?.officialMetricsVersion) || 0,
@@ -466,12 +472,17 @@
   const markup = `
     <div class="usage-summary" role="button" tabindex="0" aria-label="Codex usage details" aria-expanded="false">
       <span class="usage-refresh-ring" aria-hidden="true" hidden></span>
+      <span class="usage-backend-warning" hidden></span>
       <span class="usage-summary-items"><span class="usage-summary-item">Usage --</span></span>
     </div>
     <div class="usage-popover" role="dialog" aria-label="Usage display settings" hidden>
+      <div class="usage-backend-notice" role="status" aria-atomic="true" hidden></div>
       <div class="usage-columns"></div>
     </div>`;
   const css = `
+    .usage-backend-notice { margin-bottom: 10px; padding: 8px; border: 1px solid currentColor; border-radius: 6px; color: inherit; font-weight: 600; line-height: 1.5; }
+    :host([data-backend="disconnected"]) .usage-summary-items { display: none; }
+    :host([data-backend="disconnected"]) .usage-status { background: #9ca3af !important; }
     :host {
       position: fixed;
       left: var(--usage-left, 0px);
@@ -943,17 +954,57 @@
     ? MAX_MINIMAL_SELECTED_METRICS
     : MAX_SELECTED_METRICS;
 
+  const executionTimeDisplay = (metric, t, now = Date.now()) => {
+    if (!finiteNumber(metric?.durationMs)) return "--";
+    const sampledAt = Date.parse(metric.sampledAt);
+    const elapsed = metric.running && Number.isFinite(sampledAt) ? Math.max(0, now - sampledAt) : 0;
+    // Stop extrapolating if the local data feed disappears. A later snapshot
+    // reconciles this estimate; never turn a disconnected monitor into a clock.
+    const seconds = Math.floor((Number(metric.durationMs) + Math.min(elapsed, 60000)) / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor(seconds / 60) % 60;
+    const rest = seconds % 60;
+    const pad = (value) => String(value).padStart(2, "0");
+    const units = t.language === "en" ? ["h", "m", "s"] : ["时", "分", "秒"];
+    const duration = hours ? `${hours}${units[0]}${pad(minutes)}${units[1]}${pad(rest)}${units[2]}`
+      : minutes ? `${minutes}${units[1]}${pad(rest)}${units[2]}` : `${rest}${units[2]}`;
+    return `${metric.estimated || metric.running ? "≈" : ""}${duration}${metric.incomplete || elapsed > 60000 ? "+" : ""}`;
+  };
+
   const updateCountdowns = (host, value) => {
     if (!host?.shadowRoot) return;
     const usage = normalizeUsage(value);
     const settings = loadSettings();
     const t = createTranslator(settings.englishUi ? "en" : "zh");
     const now = Date.now();
+    const backend = window.__CODEX_USAGE_MONITOR_BACKEND__;
+    const disconnected = Boolean(backend && (!finiteNumber(backend.at) || now - Number(backend.at) > 30000));
+    const wasDisconnected = host.dataset.backend === "disconnected";
+    host.dataset.backend = disconnected ? "disconnected" : backend ? "connected" : "unknown";
+    const warning = host.shadowRoot.querySelector(".usage-backend-warning");
+    const notice = host.shadowRoot.querySelector(".usage-backend-notice");
+    if (warning) { warning.hidden = !disconnected; setText(warning, t("backendDisconnected")); }
+    if (notice) { notice.hidden = !disconnected; setText(notice, disconnected ? t("backendRecovery") : ""); }
+    if (disconnected) host.shadowRoot.querySelector(".usage-summary")?.setAttribute("aria-label", t("backendRecovery"));
+    else if (wasDisconnected) host.shadowRoot.querySelector(".usage-summary")?.setAttribute("aria-label", t("displayedItems", {
+      count: host.shadowRoot.querySelectorAll('.usage-summary-item[data-metric]').length,
+    }));
+    const duration = usage.sources.session?.metrics.find((metric) => metric.id === "executionTime") || { durationMs: null };
+    {
+      const text = executionTimeDisplay(duration, t, now);
+      const hint = `${t.metric("executionTime")}：${text} · ${t("executionTimeHint")}`;
+      const detail = host.shadowRoot.querySelector('[data-duration-value]');
+      setText(detail, text);
+      if (detail) detail.title = hint;
+      const summary = host.shadowRoot.querySelector('.usage-summary-item[data-source="session"][data-metric="executionTime"]');
+      setText(summary, settings.minimalMode ? text : `${t.compact("executionTime")}${host.dataset.density === "normal" ? " " : ""}${text}`);
+      if (summary) summary.title = hint;
+    }
     const remainingMs = finiteNumber(usage.nextRefreshAt)
       ? Math.max(0, Number(usage.nextRefreshAt) - now)
       : null;
     const seconds = remainingMs === null ? null : Math.ceil(remainingMs / 1000);
-    setText(host.shadowRoot.querySelector(".usage-refresh-countdown"), t("refreshIn", {
+    setText(host.shadowRoot.querySelector(".usage-refresh-countdown"), disconnected ? t("backendDisconnected") : t("refreshIn", {
       seconds: seconds === null ? "--" : t.language === "en" ? `${seconds}s` : `${seconds}秒后`,
     }));
     const ring = host.shadowRoot.querySelector(".usage-refresh-ring");
@@ -1170,16 +1221,12 @@
           : source.accountType === "api-account" ? t("apiAccount")
             : source.accountType === "api-key" ? t("apiKey") : source.label,
         metrics: source.metrics.map((metric) => {
-          const sessionStatusKey = metric.statusCode === "running" ? "sessionStatusRunning"
-            : metric.statusCode === "completed" ? "sessionStatusCompleted"
-              : metric.statusCode === "quota-paused" ? "sessionStatusQuotaPaused"
-                : metric.statusCode === "paused" ? "sessionStatusPaused" : null;
           const autoResumeValueKey = !currentAutoResume.enabled ? "autoResumeOff"
             : usage.autoResume.status === "waiting" ? "autoResumeWaitingValue"
               : usage.autoResume.status === "sending" ? "autoResumeSendingValue"
                 : usage.autoResume.status === "sent" ? "autoResumeSentValue" : "autoResumeOn";
           const value = metric.id === "autoResume" ? t(autoResumeValueKey)
-            : metric.id === "currentStatus" && sessionStatusKey ? t(sessionStatusKey)
+            : metric.id === "executionTime" ? executionTimeDisplay(metric, t)
             : metric.id === "requestStatus" ? localizedStatus
             : metric.id.endsWith("Tokens") ? formatLocalizedTokenUnit(metric.value, t.language)
               : metric.value;
@@ -1200,6 +1247,8 @@
           settings.metrics.session = legacyOfficial.filter((id) => SESSION_METRIC_IDS.has(id));
         }
         settings.metrics.official = legacyOfficial.filter((id) => !SESSION_METRIC_IDS.has(id));
+        settings.metricOrder = [...new Set(settings.metricOrder.map((key) =>
+          key.startsWith("official:") && SESSION_METRIC_IDS.has(key.slice(9)) ? `session:${key.slice(9)}` : key))];
       }
       settings.unifiedMetricsVersion = 2;
       settingsChanged = true;
@@ -1398,6 +1447,7 @@
             }
             const metricValueNode = document.createElement("span");
             metricValueNode.className = "usage-detail-value";
+            if (metric.id === "executionTime") metricValueNode.dataset.durationValue = "true";
             const valueText = metric.value || "--";
             if (["primaryRemaining", "secondaryRemaining"].includes(metric.id)
               && finiteNumber(metric.resetsAt) && Number(metric.resetsAt) > 0) {

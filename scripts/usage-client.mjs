@@ -30,6 +30,9 @@ const THREAD_SETTINGS_MARKER = Buffer.from('"thread_settings_applied"', "utf8");
 const SESSION_META_MARKER = Buffer.from('"session_meta"', "utf8");
 const CONTEXT_COMPACTED_MARKER = Buffer.from('"type":"compacted"', "utf8");
 const TASK_COMPLETE_MARKER = Buffer.from('"task_complete"', "utf8");
+const TASK_STARTED_MARKER = Buffer.from('"task_started"', "utf8");
+const RESPONSE_ITEM_MARKER = Buffer.from('"response_item"', "utf8");
+const EXECUTION_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
 const TURN_ABORTED_MARKER = Buffer.from('"turn_aborted"', "utf8");
 const SESSION_STATUS_VALUES = new Set(["running", "completed", "quota-paused", "paused"]);
 const LOCAL_QUOTA_LIVE_WINDOW_MS = 60_000;
@@ -413,9 +416,21 @@ export function parseLocalTaskCompleteEvent(line) {
   return {
     timestamp,
     turnId,
+    durationMs: Number.isSafeInteger(payload?.duration_ms) && payload.duration_ms >= 0 ? payload.duration_ms : null,
     errorInfo: typeof payload?.error?.codex_error_info === "string" ? payload.error.codex_error_info : null,
     errorMessage: typeof payload?.error?.message === "string" ? payload.error.message : null,
   };
+}
+
+export function parseLocalTaskStartedEvent(line) {
+  const text = String(line ?? "");
+  if (!text.includes('"task_started"')) return null;
+  let item;
+  try { item = JSON.parse(text); } catch { return null; }
+  const timestamp = Date.parse(String(item?.timestamp ?? ""));
+  if (item?.type !== "event_msg" || item?.payload?.type !== "task_started" || !Number.isFinite(timestamp)) return null;
+  const turnId = normalizeLocalId(item.payload.turn_id ?? item.payload.turnId);
+  return turnId ? { timestamp, turnId } : null;
 }
 
 export function parseLocalTurnAbortedEvent(line) {
@@ -430,6 +445,7 @@ export function parseLocalTurnAbortedEvent(line) {
   return {
     timestamp,
     turnId: normalizeLocalId(payload?.turn_id ?? payload?.turnId),
+    durationMs: Number.isSafeInteger(payload?.duration_ms) && payload.duration_ms >= 0 ? payload.duration_ms : null,
     reason: typeof payload?.reason === "string" ? payload.reason.slice(0, 64) : null,
   };
 }
@@ -616,7 +632,9 @@ function discoverRecentSessionFiles(root, dayStart, trackedThreadIds = new Set()
       }
       if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".jsonl")) continue;
       try {
-        if (statSync(candidate).mtimeMs >= dayStart || trackedThreadIds.has(sessionThreadIdFromPath(candidate))) files.push(candidate);
+        const filenameThreadIds = entry.name.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) || [];
+        if (statSync(candidate).mtimeMs >= dayStart
+          || filenameThreadIds.some((id) => trackedThreadIds.has(id.toLowerCase()))) files.push(candidate);
       } catch {}
     }
   }
@@ -652,6 +670,8 @@ function readAppendedUsageLines(filePath, fileState, onLine) {
           || line.indexOf(SESSION_META_MARKER) >= 0
           || line.indexOf(CONTEXT_COMPACTED_MARKER) >= 0
           || line.indexOf(TASK_COMPLETE_MARKER) >= 0
+          || line.indexOf(TASK_STARTED_MARKER) >= 0
+          || line.indexOf(RESPONSE_ITEM_MARKER) >= 0
           || line.indexOf(TURN_ABORTED_MARKER) >= 0) {
           onLine(line.toString("utf8"));
         }
@@ -692,6 +712,7 @@ export class LocalCodexTokenTracker {
     this.fileStates = new Map();
     this.seenEvents = new Set();
     this.threadLatest = new Map();
+    this.threadExecutions = new Map();
     this.officialModelProviders = new Set(
       Array.isArray(officialModelProviders)
         ? officialModelProviders.map((value) => String(value).trim().toLowerCase()).filter(Boolean)
@@ -721,6 +742,11 @@ export class LocalCodexTokenTracker {
       currentTaskTokens: null,
       lastTurnTokens: null,
       currentStatus: null,
+      executionTimeMs: null,
+      executionTimeEstimated: false,
+      executionTimeIncomplete: false,
+      executionTimeRunning: false,
+      executionTimeUpdatedAt: null,
       cacheHitRate: null,
       contextCompactions: null,
       quotaExceeded: null,
@@ -746,6 +772,7 @@ export class LocalCodexTokenTracker {
     this.counterDirty = false;
     this.fileStates.clear();
     this.threadLatest.clear();
+    this.threadExecutions.clear();
   }
 
   officialProviderKey() {
@@ -802,6 +829,11 @@ export class LocalCodexTokenTracker {
       && this.view.currentTaskTokens === view.currentTaskTokens
       && this.view.lastTurnTokens === view.lastTurnTokens
       && this.view.currentStatus === view.currentStatus
+      && this.view.executionTimeMs === view.executionTimeMs
+      && this.view.executionTimeEstimated === view.executionTimeEstimated
+      && this.view.executionTimeIncomplete === view.executionTimeIncomplete
+      && this.view.executionTimeRunning === view.executionTimeRunning
+      && (!view.executionTimeRunning || this.view.executionTimeUpdatedAt === view.executionTimeUpdatedAt)
       && this.view.cacheHitRate === view.cacheHitRate
       && this.view.contextCompactions === view.contextCompactions
       && this.view.quotaExceeded?.eventId === view.quotaExceeded?.eventId
@@ -909,9 +941,83 @@ export class LocalCodexTokenTracker {
     else {
       this.fileStates.clear();
       this.threadLatest.clear();
+      this.threadExecutions.clear();
     }
     this.refresh().catch(() => {});
     return true;
+  }
+
+  observeExecution(state, event, kind) {
+    const executionThreadId = state.executionThreadId || state.threadId;
+    if (!executionThreadId || !Number.isFinite(event.timestamp)) return;
+    const turnId = event.turnId || state.executionTurnId || state.currentTurnId;
+    if (!turnId) return;
+    // A fork can have sparse logs containing only its own completion record.
+    // Use the turn identity, not a replayed outer timestamp, to exclude ancestry.
+    if (state.executionForked) {
+      const turnTimestamp = uuidV7Timestamp(turnId);
+      if (!Number.isFinite(turnTimestamp) || !Number.isFinite(state.executionSessionTimestamp)
+        || turnTimestamp < state.executionSessionTimestamp) return;
+    }
+    let turns = this.threadExecutions.get(executionThreadId);
+    if (!turns) this.threadExecutions.set(executionThreadId, turns = new Map());
+    let turn = turns.get(turnId);
+    if (!turn) {
+      // A later round proves the earlier unclosed one is no longer executing.
+      // Its last observed activity is a lower bound, not the next prompt time.
+      for (const earlier of turns.values()) {
+        if (!earlier.ended && earlier.activityAt < event.timestamp) {
+          earlier.ended = true;
+          earlier.endAt = earlier.activityAt;
+          earlier.incomplete = true;
+        }
+      }
+      turns.set(turnId, turn = { startAt: null, endAt: null, activityAt: event.timestamp, durationMs: null, ended: false, incomplete: false });
+    }
+    turn.activityAt = Math.max(turn.activityAt, event.timestamp);
+    if (kind === "start" && turn.startAt === null) turn.startAt = event.timestamp;
+    if (kind === "complete" || kind === "abort") {
+      turn.ended = true;
+      if (turn.endAt === null) turn.endAt = event.timestamp;
+      if (Number.isSafeInteger(event.durationMs) && event.durationMs >= 0) {
+        turn.durationMs = event.durationMs;
+        turn.incomplete = false;
+      }
+    }
+  }
+
+  executionView(threadId, now) {
+    const turns = this.threadExecutions.get(threadId);
+    let total = 0;
+    let known = false;
+    let estimated = false;
+    let incomplete = !turns?.size;
+    let running = false;
+    for (const turn of turns?.values() || []) {
+      if (turn.durationMs !== null) {
+        total += turn.durationMs;
+        known = true;
+        continue;
+      }
+      if (turn.startAt === null) { incomplete = true; continue; }
+      const live = !turn.ended && now >= turn.activityAt && now - turn.activityAt <= EXECUTION_ACTIVITY_WINDOW_MS;
+      const endAt = turn.ended ? turn.endAt : live ? now : turn.activityAt;
+      const duration = endAt - turn.startAt;
+      if (Number.isSafeInteger(duration) && duration >= 0) {
+        total += duration;
+        known = true;
+        estimated = true;
+        running ||= live;
+      } else incomplete = true;
+      incomplete ||= turn.incomplete || (!turn.ended && !live) || (turn.ended && duration === 0);
+    }
+    return {
+      executionTimeMs: known && Number.isSafeInteger(total) ? total : null,
+      executionTimeEstimated: estimated,
+      executionTimeIncomplete: incomplete,
+      executionTimeRunning: running,
+      executionTimeUpdatedAt: new Date(now).toISOString(),
+    };
   }
 
   async refresh() {
@@ -932,6 +1038,10 @@ export class LocalCodexTokenTracker {
         const state = this.fileStates.get(filePath) || {
           offset: 0,
           threadId: sessionThreadIdFromPath(filePath),
+          executionThreadId: null,
+          executionTurnId: null,
+          executionForked: false,
+          executionSessionTimestamp: null,
           logicalSessionId: null,
           fallbackProvider: null,
           currentProvider: null,
@@ -960,6 +1070,14 @@ export class LocalCodexTokenTracker {
             const context = parseLocalTokenContextEvent(line);
             if (context) {
               if (context.kind === "session") {
+                // Rotated files can end in a runtime UUID different from the
+                // conversation ID. Only the first session header owns timing;
+                // copied ancestor metadata must never change that identity.
+                if (!state.executionThreadId && context.sessionId) {
+                  state.executionThreadId = context.sessionId;
+                  state.executionForked = context.forked;
+                  state.executionSessionTimestamp = uuidV7Timestamp(context.sessionId) ?? context.timestamp;
+                }
                 if (context.modelProvider) {
                   state.fallbackProvider = context.modelProvider;
                   if (!state.currentProvider) state.currentProvider = context.modelProvider;
@@ -974,6 +1092,7 @@ export class LocalCodexTokenTracker {
               } else if (context.kind === "settings") {
                 state.currentProvider = context.modelProvider || state.fallbackProvider;
               } else if (context.kind === "turn") {
+                state.executionTurnId = context.turnId;
                 if (state.quotaExceeded && Number(context.timestamp) > Number(state.quotaExceeded.timestamp)) {
                   state.quotaExceeded = null;
                   state.quotaProvider = null;
@@ -991,6 +1110,7 @@ export class LocalCodexTokenTracker {
                     state.forkReady = true;
                   }
                 }
+                this.observeExecution(state, context, "context");
                 if (state.threadId) {
                   const previous = this.threadLatest.get(state.threadId) || {};
                   if (!Number.isFinite(Number(previous.timestamp)) || Number(context.timestamp) >= Number(previous.timestamp)) {
@@ -1007,8 +1127,19 @@ export class LocalCodexTokenTracker {
               }
               return;
             }
+            const taskStarted = parseLocalTaskStartedEvent(line);
+            if (taskStarted) {
+              state.executionTurnId = taskStarted.turnId;
+              if (state.forked && !state.forkReady) {
+                const turnTimestamp = uuidV7Timestamp(taskStarted.turnId) ?? taskStarted.timestamp;
+                if (Number.isFinite(state.forkSessionTimestamp) && turnTimestamp >= state.forkSessionTimestamp) state.forkReady = true;
+              }
+              this.observeExecution(state, taskStarted, "start");
+              return;
+            }
             const turnAborted = parseLocalTurnAbortedEvent(line);
             if (turnAborted) {
+              this.observeExecution(state, turnAborted, "abort");
               state.currentStatus = "paused";
               state.quotaExceeded = null;
               state.quotaProvider = null;
@@ -1029,6 +1160,7 @@ export class LocalCodexTokenTracker {
             }
             const taskComplete = parseLocalTaskCompleteEvent(line);
             if (taskComplete) {
+              this.observeExecution(state, taskComplete, "complete");
               const quotaExceeded = parseLocalQuotaExceededEvent(line);
               state.quotaExceeded = quotaExceeded
                 ? {
@@ -1072,7 +1204,24 @@ export class LocalCodexTokenTracker {
               return;
             }
             const event = parseLocalTokenUsageEvent(line);
-            if (!event) return;
+            if (!event) {
+              // Tool calls/results and assistant progress keep a long-running
+              // round live even when no new turn_context/token_count is emitted.
+              if (line.includes('"response_item"')) {
+                try {
+                  const item = JSON.parse(line);
+                  const payload = item?.payload;
+                  const executionActivity = payload?.type === "message" ? payload.role === "assistant"
+                    : ["reasoning", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output",
+                      "local_shell_call", "web_search_call", "image_generation_call", "computer_call", "computer_call_output"].includes(payload?.type);
+                  if (item?.type === "response_item" && executionActivity) this.observeExecution(state, {
+                    timestamp: Date.parse(String(item.timestamp ?? "")), turnId: state.executionTurnId || state.currentTurnId,
+                  }, "activity");
+                } catch {}
+              }
+              return;
+            }
+            this.observeExecution(state, { timestamp: event.timestamp, turnId: state.executionTurnId || state.currentTurnId }, "activity");
             const previousTotalTokens = state.lastTotalTokens;
             const totalChanged = event.totalTokens === null || event.totalTokens !== previousTotalTokens;
             if (event.totalTokens !== null
@@ -1181,6 +1330,7 @@ export class LocalCodexTokenTracker {
         currentTaskTokens: currentTask?.sessionTokens ?? currentTask?.totalTokens ?? null,
         lastTurnTokens: currentTask?.tokens ?? null,
         currentStatus: SESSION_STATUS_VALUES.has(currentTask?.currentStatus) ? currentTask.currentStatus : null,
+        ...this.executionView(this.currentThreadId, now),
         cacheHitRate,
         contextCompactions: currentTask?.contextCompactions ?? (this.currentThreadId ? 0 : null),
         quotaExceeded: currentTask?.quotaExceeded ?? null,
@@ -1311,6 +1461,12 @@ export function mergeOfficialLocalUsage(officialView, localView, now = new Date(
     currentTaskTokens: Number.isSafeInteger(localView?.currentTaskTokens) && localView.currentTaskTokens >= 0 ? localView.currentTaskTokens : null,
     lastTurnTokens: Number.isSafeInteger(localView?.lastTurnTokens) && localView.lastTurnTokens >= 0 ? localView.lastTurnTokens : null,
     currentStatus: SESSION_STATUS_VALUES.has(localView?.currentStatus) ? localView.currentStatus : null,
+    executionTimeMs: Number.isSafeInteger(localView?.executionTimeMs) && localView.executionTimeMs >= 0 ? localView.executionTimeMs : null,
+    executionTimeEstimated: localView?.executionTimeEstimated === true,
+    executionTimeIncomplete: localView?.executionTimeIncomplete === true,
+    executionTimeRunning: localView?.executionTimeRunning === true,
+    executionTimeUpdatedAt: typeof localView?.executionTimeUpdatedAt === "string" && Number.isFinite(Date.parse(localView.executionTimeUpdatedAt))
+      ? localView.executionTimeUpdatedAt : null,
     cacheHitRate: localView?.cacheHitRate !== null && localView?.cacheHitRate !== undefined
       && Number.isFinite(Number(localView.cacheHitRate))
       ? Math.max(0, Math.min(100, Number(localView.cacheHitRate)))
@@ -1468,11 +1624,9 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
 }
 
 export function toSessionUsageSource(view, now = Date.now(), refreshMs = DEFAULT_REFRESH_MS) {
-  const statusCode = SESSION_STATUS_VALUES.has(view?.currentStatus) ? view.currentStatus : null;
-  const statusValue = statusCode === "running" ? "正在执行"
-    : statusCode === "completed" ? "执行完成"
-      : statusCode === "quota-paused" ? "额度用尽暂停"
-        : statusCode === "paused" ? "主动暂停" : "--";
+  const durationMs = Number.isSafeInteger(view?.executionTimeMs) && view.executionTimeMs >= 0 ? view.executionTimeMs : null;
+  const seconds = durationMs === null ? 0 : Math.floor(durationMs / 1000);
+  const durationValue = durationMs === null ? "--" : `${view?.executionTimeEstimated ? "≈" : ""}${seconds >= 3600 ? `${Math.floor(seconds / 3600)}时` : ""}${seconds >= 60 ? `${Math.floor(seconds / 60) % 60}分` : ""}${seconds % 60}秒${view?.executionTimeIncomplete ? "+" : ""}`;
   const currentSessionValue = view?.currentTaskTokens === null || view?.currentTaskTokens === undefined
     ? "--"
     : formatMetricTokens(view.currentTaskTokens);
@@ -1529,12 +1683,16 @@ export function toSessionUsageSource(view, now = Date.now(), refreshMs = DEFAULT
         defaultVisible: false,
       },
       {
-        id: "currentStatus",
-        label: "当前状态",
-        display: `状态 ${statusValue}`,
-        detail: `当前状态：${statusValue}`,
-        value: statusValue,
-        statusCode,
+        id: "executionTime",
+        label: "执行总耗时",
+        display: `耗时 ${durationValue}`,
+        detail: `执行总耗时：${durationValue}；已完成轮次优先使用记录的实际耗时，≈ 表示估算，+ 表示历史记录不完整。`,
+        value: durationValue,
+        durationMs,
+        estimated: view?.executionTimeEstimated === true,
+        incomplete: view?.executionTimeIncomplete === true,
+        running: view?.executionTimeRunning === true,
+        sampledAt: view?.executionTimeUpdatedAt || new Date(now).toISOString(),
         defaultVisible: false,
       },
       {
@@ -2503,7 +2661,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.6" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.7" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");

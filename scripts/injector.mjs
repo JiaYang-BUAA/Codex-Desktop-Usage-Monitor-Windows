@@ -24,7 +24,7 @@ const SETTINGS_BINDING = "__codexUsageMonitorSaveSettings";
 const CONFIGURATION_KEY = "__CODEX_USAGE_MONITOR_CONFIGURATION__";
 const CONFIGURATION_BINDING = "__codexUsageMonitorConfigureSource";
 const MAX_CONFIGURATION_BYTES = 131072;
-const TARGET_ABSENCE_EXIT_MS = 60000;
+const TARGET_ABSENCE_EXIT_MS = 180000;
 
 function parseArgs(argv) {
   const options = {
@@ -33,6 +33,7 @@ function parseArgs(argv) {
     timeoutMs: 30000,
     screenshot: null,
     monitorOnly: false,
+    expectedPid: null,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -42,12 +43,14 @@ function parseArgs(argv) {
     else if (arg === "--verify") options.mode = "verify";
     else if (arg === "--remove") options.mode = "remove";
     else if (arg === "--monitor-only") options.monitorOnly = true;
+    else if (arg === "--expected-pid") options.expectedPid = Number(argv[++i]);
     else if (arg === "--timeout-ms") options.timeoutMs = Number(argv[++i]);
     else if (arg === "--screenshot") options.screenshot = path.resolve(argv[++i]);
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!Number.isInteger(options.port) || options.port < 1024 || options.port > 65535) throw new Error(`Invalid port: ${options.port}`);
   if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 250 || options.timeoutMs > 120000) throw new Error(`Invalid timeout: ${options.timeoutMs}`);
+  if (options.expectedPid !== null && (!Number.isSafeInteger(options.expectedPid) || options.expectedPid <= 0)) throw new Error("Invalid expected monitor PID.");
   return options;
 }
 
@@ -175,18 +178,51 @@ function isValidDebuggerSocket(value, port) {
 }
 
 async function getTargets(port) {
+  return (await getTargetStatus(port)).targets;
+}
+
+async function getTargetStatus(port) {
   for (const host of ["127.0.0.1", "[::1]", "localhost"]) {
     try {
       const response = await fetch(`http://${host}:${port}/json/list`, { redirect: "error", signal: AbortSignal.timeout(1000) });
       if (!response.ok) continue;
       const targets = await response.json();
       if (!Array.isArray(targets)) continue;
-      return targets.filter((item) => item?.type === "page"
+      return { reachable: true, targets: targets.filter((item) => item?.type === "page"
         && String(item.url).startsWith("app://")
-        && isValidDebuggerSocket(item.webSocketDebuggerUrl, port));
+        && isValidDebuggerSocket(item.webSocketDebuggerUrl, port)) };
     } catch {}
   }
-  return [];
+  return { reachable: false, targets: [] };
+}
+
+// A responsive desktop can legitimately have no Composer while restoring tasks
+// or showing ordinary ChatGPT chat. Only sustained endpoint loss ends the watch.
+export function nextEndpointLoss(previous, reachable, now, graceMs = TARGET_ABSENCE_EXIT_MS) {
+  const missingSince = reachable ? null : previous ?? now;
+  return { missingSince, shouldExit: missingSince !== null && now - missingSince >= graceMs };
+}
+
+export function backendHeartbeatExpression(pid, now = Date.now()) {
+  return `(() => {
+    const entries = window.__CODEX_USAGE_MONITOR_BACKENDS__ ||= {};
+    for (const [key, value] of Object.entries(entries)) if (!value || ${now} - value.at > 60000) delete entries[key];
+    const value = { pid: ${pid}, at: ${now}, phase: document.getElementById(${JSON.stringify(HOST_ID)}) ? "connected" : "waiting-composer" };
+    entries[${JSON.stringify(String(pid))}] = value;
+    window.__CODEX_USAGE_MONITOR_BACKEND__ = value;
+    return value;
+  })()`;
+}
+
+export function backendVerificationExpression(expectedPid = null, now = Date.now()) {
+  return `(() => {
+    const expectedPid = ${JSON.stringify(expectedPid)};
+    const value = expectedPid === null ? window.__CODEX_USAGE_MONITOR_BACKEND__ : window.__CODEX_USAGE_MONITOR_BACKENDS__?.[String(expectedPid)];
+    const age = typeof value?.at === "number" ? ${now} - value.at : null;
+    return { backendRunning: Boolean(value && Number.isSafeInteger(value.pid) && value.pid > 0 && (expectedPid === null || value.pid === expectedPid) && age !== null && age >= 0 && age <= 15000 && ["connected", "waiting-composer"].includes(value.phase)),
+      pid: value?.pid || null, phase: value?.phase || null, heartbeatAgeMs: age,
+      installed: Boolean(document.getElementById(${JSON.stringify(HOST_ID)})?.shadowRoot) };
+  })()`;
 }
 
 async function waitForTargets(port, timeoutMs) {
@@ -385,9 +421,9 @@ async function closeSessions(sessions) {
   sessions.clear();
 }
 
-async function runOnce(options) {
+export async function runOnce(options) {
   const targets = await waitForTargets(options.port, options.timeoutMs);
-  const settingsStore = options.mode === "remove" ? null : await createUiSettingsStore();
+  const settingsStore = ["remove", "verify"].includes(options.mode) ? null : await createUiSettingsStore();
   const results = [];
   for (const target of targets) {
     if (!isMonitorTarget(target)) {
@@ -397,6 +433,12 @@ async function runOnce(options) {
     const session = new CdpSession(target, Math.min(options.timeoutMs, 10000));
     await session.open();
     try {
+      if (options.mode === "verify") {
+        // Never inject or overwrite settings/data in a health probe. A leftover
+        // panel is not proof that the newly launched background process is alive.
+        results.push({ targetId: target.id, verified: await session.evaluate(backendVerificationExpression(options.expectedPid)) });
+        continue;
+      }
       if (options.mode === "remove") {
         results.push({ targetId: target.id, removed: await removeFromSession(session) });
         continue;
@@ -412,7 +454,7 @@ async function runOnce(options) {
   }
   const monitorResults = results.filter((item) => !item.auxiliary);
   const verified = options.mode === "verify"
-    ? monitorResults.length > 0 && monitorResults.every((item) => item.verified?.installed)
+    ? monitorResults.length > 0 && monitorResults.some((item) => item.verified?.backendRunning)
     : true;
   console.log(JSON.stringify({ mode: options.mode, monitorOnly: true, port: options.port, verified, targets: results }, null, 2));
   if (settingsStore) await settingsStore.flush();
@@ -430,6 +472,23 @@ async function runWatch(options) {
   let stopping = false;
   let targetsMissingSince = null;
   let usageStartPromise = Promise.resolve();
+  let nextPendingCheckAt = 0;
+  let lastPendingPromotionAt = 0;
+  const promotePendingStartup = async () => {
+    if (Date.now() < nextPendingCheckAt || !process.env.LOCALAPPDATA) return;
+    nextPendingCheckAt = Date.now() + 5000;
+    try {
+      const statePath = path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor", "state.json");
+      const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+      if (state.injectorPid !== process.pid || state.startupPhase !== "waiting-ui" || Date.now() - lastPendingPromotionAt < 30000) return;
+      lastPendingPromotionAt = Date.now();
+      const child = spawn(process.env.CODEX_USAGE_POWERSHELL_PATH || "pwsh.exe",
+        ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path.join(root, "scripts", "start-monitor.ps1"), "-Port", String(options.port)],
+        { detached: true, windowsHide: true, stdio: "ignore" });
+      child.on("error", () => {});
+      child.unref();
+    } catch {}
+  };
   const publishUsage = () => {
     if (!latestBaseUsage) return;
     latestUsage = { ...latestBaseUsage, autoResume: { ...autoResumeController.status } };
@@ -522,12 +581,12 @@ async function runWatch(options) {
     });
     autoUpdater.start();
     while (!stopping) {
-      const targets = await getTargets(options.port);
+      const { targets, reachable } = await getTargetStatus(options.port);
       const monitorTargets = targets.filter(isMonitorTarget);
-      if (monitorTargets.length) targetsMissingSince = null;
-      else if (targetsMissingSince === null) targetsMissingSince = Date.now();
-      else if (Date.now() - targetsMissingSince >= TARGET_ABSENCE_EXIT_MS) {
-        console.log(`[usage-monitor] no Codex renderer target for ${TARGET_ABSENCE_EXIT_MS} ms; exiting`);
+      const endpointLoss = nextEndpointLoss(targetsMissingSince, reachable, Date.now());
+      targetsMissingSince = endpointLoss.missingSince;
+      if (endpointLoss.shouldExit) {
+        console.log(`[usage-monitor] Codex endpoint unreachable for ${TARGET_ABSENCE_EXIT_MS} ms; exiting`);
         break;
       }
       const activeIds = new Set(monitorTargets.map((target) => target.id));
@@ -541,7 +600,11 @@ async function runWatch(options) {
         try { await attach(target); } catch (error) { console.error(`[usage-monitor] target attach failed: ${error.message}`); }
       }
       for (const entry of sessions.values()) {
-        try { await syncCurrentThread(entry.session, usageClient); } catch {}
+        try {
+          await entry.session.evaluate(backendHeartbeatExpression(process.pid));
+          await promotePendingStartup();
+          await syncCurrentThread(entry.session, usageClient);
+        } catch {}
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
@@ -563,7 +626,7 @@ function scheduleOneShotExit(code) {
   setTimeout(() => process.exit(code), 50);
 }
 
-main().then((mode) => {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().then((mode) => {
   if (mode !== "watch") scheduleOneShotExit(process.exitCode ?? 0);
 }).catch((error) => {
   console.error(`[usage-monitor] ${error.message}`);

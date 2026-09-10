@@ -28,7 +28,7 @@
 
 必须从桌面的 `Codex Usage Monitor` 快捷方式启动。原生 Codex 图标不会开放 CDP 端口。
 
-等待最多 30 秒后，读取实际动态端口：
+启动器最多等待 180 秒让 CDP 就绪。后台进程已运行、页面仍在加载时会保留后台继续重试，不会因面板尚未出现就停止。读取实际动态端口：
 
 ```powershell
 $state = Get-Content -Raw -LiteralPath "$env:LOCALAPPDATA\CodexUsageMonitor\state.json" | ConvertFrom-Json
@@ -42,6 +42,10 @@ Invoke-RestMethod "http://127.0.0.1:$($state.port)/json/list"
 ```
 
 首选端口被占用时，启动器会自动选择后续可用端口，因此不要硬编码历史端口。
+
+`state.json` 中的 `startupPhase` 为 `waiting-ui` 时表示后台仍在等待页面连接，`ready` 表示已验证指定后台进程的心跳；这不代表每个数据源的网络请求都已成功。启动验证只读，不会重新注入面板。CDP 仍可访问但尚无可用页面时，后台继续等待；CDP 连续不可访问 180 秒后才退出，避免关闭 Codex 后残留后台。
+
+如果监视栏显示“监视器已断连”，展开面板会保留旧数据并标注连接中断。已有 CDP 端口时，双击桌面专用快捷方式即可重新连接，无需关闭 Codex；仅有残留面板不能证明后台还在运行。后台真正退出时，启动诊断会记录进程和退出信息，不再被空日志的空值错误覆盖。
 
 ## 3. Codex 更新后监视栏消失或位置异常
 

@@ -87,7 +87,7 @@ const usage = {
     session: {
       id: "session", label: "本会话", accountType: "session", status: "ready", nextRefreshAt: now + 60000,
       metrics: [
-        { id: "currentStatus", label: "当前状态", display: "状态 正在执行", value: "正在执行", statusCode: "running", defaultVisible: false },
+        { id: "executionTime", label: "执行总耗时", display: "耗时 11分31秒", value: "11分31秒", durationMs: 691323, running: false, estimated: false, incomplete: false, sampledAt: new Date(now).toISOString(), defaultVisible: false },
         { id: "autoResume", label: "额度恢复续跑", display: "续跑 --", value: "--", defaultVisible: false },
         { id: "currentTaskTokens", label: "当前会话累计 Token", display: "会话 3822万", value: "3822万", defaultVisible: true },
         { id: "lastTurnTokens", label: "上次回答消耗 Token", display: "上次回答 8万", value: "8万", defaultVisible: false },
@@ -281,9 +281,10 @@ try {
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-link").href, "https://x.com/thsottiaux/status/2094588317245509959");
   assert.match(tiboActivity.querySelector(".usage-tibo-activity-time").textContent, /^发布于 \d{2}-\d{2} \d{2}:\d{2}$/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-tibo-activity-text\s*\{[\s\S]*?-webkit-line-clamp:\s*3;/);
-  assert.deepEqual([...columns[0].querySelectorAll('input[data-source="session"][data-metric]')].map((input) => input.dataset.metric), ["currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions", "currentStatus", "autoResume"]);
-  assert.equal(columns[0].querySelector('[data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "当前状态");
-  assert.equal(columns[0].querySelector('[data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "正在执行");
+  assert.deepEqual([...columns[0].querySelectorAll('input[data-source="session"][data-metric]')].map((input) => input.dataset.metric), ["currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions", "executionTime", "autoResume"]);
+  assert.equal(columns[0].querySelector('[data-metric="executionTime"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "执行总耗时");
+  assert.equal(columns[0].querySelector('[data-metric="executionTime"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "11分31秒");
+  assert.equal(host.shadowRoot.querySelector('[data-metric="currentStatus"]'), null);
   assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "当前会话累计 Token");
   assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3822万");
   assert.equal(columns[0].querySelector('[data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "上次回答消耗 Token");
@@ -318,7 +319,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.6", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.7", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -630,8 +631,8 @@ try {
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="todayTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "128K");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="lifetimeTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "12M");
   assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Current session tokens");
-  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Current status");
-  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="currentStatus"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "Running");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="executionTime"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Total execution time");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="executionTime"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "11m31s");
   assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="autoResume"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Resume after reset");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').closest(".usage-auto-resume-field").querySelector(".usage-auto-resume-label").textContent, "Resume message");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "请继续完成当前任务");
@@ -818,6 +819,89 @@ try {
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.cleanup(), true);
   delete window.__codexUsageMonitorSaveSettings;
   delete window.__CODEX_USAGE_MONITOR_PERSISTED_SETTINGS__;
+  // Migrate a selected old status in place, then exercise the real one-second
+  // updater with a deterministic clock (without waiting a minute in tests).
+  window.localStorage.clear();
+  window.__CODEX_USAGE_MONITOR_PERSISTED_SETTINGS__ = {
+    metrics: { session: ["currentStatus"], official: ["secondaryRemaining"] },
+    metricOrder: ["session:currentStatus", "official:secondaryRemaining"], unifiedMetricsVersion: 2,
+  };
+  const originalNow = window.Date.now;
+  const originalInterval = window.setInterval;
+  let clockNow = now;
+  let tick;
+  window.Date.now = () => clockNow;
+  window.setInterval = (callback, delay, ...args) => {
+    if (delay === 1000) tick = callback;
+    return originalInterval.call(window, callback, delay, ...args);
+  };
+  const timedUsage = (overrides = {}) => ({ ...usage, sources: { ...usage.sources, session: {
+    ...usage.sources.session, metrics: usage.sources.session.metrics.map((metric) => metric.id === "executionTime"
+      ? { ...metric, durationMs: 3600000, estimated: true, running: true, sampledAt: new Date(now).toISOString(), ...overrides } : metric),
+  } } });
+  try {
+    window.__CODEX_USAGE_MONITOR__ = timedUsage();
+    assert.equal(window.eval(payload).installed, true);
+    host = window.document.getElementById("codex-usage-monitor");
+    const monitor = window.__CODEX_USAGE_MONITOR_STATE__;
+    assert.deepEqual(Array.from(monitor.getSettings().metrics.session), ["executionTime"]);
+    assert.deepEqual(Array.from(monitor.getSettings().metricOrder), ["session:executionTime", "official:secondaryRemaining"]);
+    assert.equal(host.shadowRoot.querySelector('[data-metric="currentStatus"]'), null);
+    const durationDetail = () => host.shadowRoot.querySelector('[data-duration-value]');
+    const durationSummary = () => host.shadowRoot.querySelector('.usage-summary-item[data-metric="executionTime"]');
+    assert.equal(durationDetail().textContent, "≈1时00分00秒");
+    assert.equal(durationSummary().textContent, "耗时 ≈1时00分00秒");
+    const unchangedInput = host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]');
+    clockNow += 2500;
+    tick();
+    assert.equal(durationDetail().textContent, "≈1时00分02秒");
+    assert.equal(durationSummary().textContent, "耗时 ≈1时00分02秒");
+    assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]'), unchangedInput, "clock does not rebuild controls");
+    clockNow = now + 86400000;
+    tick();
+    assert.equal(durationDetail().textContent, "≈1时01分00秒+", "stale feed cannot count an entire offline day");
+    assert.match(durationDetail().title, /记录不完整/);
+    monitor.updateUsage(timedUsage({ durationMs: 3599000, estimated: false, running: false }));
+    assert.equal(durationDetail().textContent, "59分59秒", "official duration replaces estimate");
+    clockNow += 5000;
+    tick();
+    assert.equal(durationDetail().textContent, "59分59秒", "completed execution remains frozen");
+    host.shadowRoot.querySelector('[data-setting="englishUi"]').click();
+    assert.equal(durationDetail().textContent, "59m59s");
+    host.shadowRoot.querySelector('[data-setting="minimalMode"]').click();
+    assert.equal(durationSummary().textContent, "59m59s", "minimal mode omits the label only");
+    monitor.updateUsage(timedUsage({ durationMs: 0, estimated: false, incomplete: true, running: false }));
+    assert.equal(durationDetail().textContent, "0s+");
+    monitor.updateUsage({ ...usage, currentThreadId: otherThreadId, sources: { ...usage.sources,
+      session: { ...usage.sources.session, status: "loading", metrics: [] },
+    } });
+    assert.equal(durationDetail().textContent, "--", "thread switches cannot inherit prior execution time");
+    assert.equal(durationSummary().textContent, "--");
+    window.__CODEX_USAGE_MONITOR_BACKEND__ = { pid: 123, at: clockNow, phase: "connected" };
+    tick();
+    assert.equal(host.dataset.backend, "connected");
+    assert.equal(host.shadowRoot.querySelector('.usage-backend-warning').hidden, true);
+    const preservedData = JSON.stringify(monitor.usage);
+    clockNow += 31000;
+    tick();
+    assert.equal(host.dataset.backend, "disconnected");
+    assert.equal(host.shadowRoot.querySelector('.usage-backend-warning').textContent, "Monitor disconnected");
+    assert.equal(host.shadowRoot.querySelector('.usage-backend-warning').hidden, false);
+    assert.match(host.shadowRoot.querySelector('.usage-backend-notice').textContent, /desktop shortcut/);
+    assert.match(host.shadowRoot.querySelector('.usage-summary').getAttribute('aria-label'), /outdated/);
+    assert.equal(JSON.stringify(monitor.usage), preservedData, "disconnect warning preserves last data, not fabricated zeroes");
+    window.__CODEX_USAGE_MONITOR_BACKEND__.at = clockNow;
+    tick();
+    assert.equal(host.dataset.backend, "connected");
+    assert.equal(host.shadowRoot.querySelector('.usage-backend-notice').hidden, true);
+    assert.doesNotMatch(host.shadowRoot.querySelector('.usage-summary').getAttribute('aria-label'), /disconnected/);
+  } finally {
+    window.__CODEX_USAGE_MONITOR_STATE__.cleanup();
+    window.Date.now = originalNow;
+    window.setInterval = originalInterval;
+    delete window.__CODEX_USAGE_MONITOR_BACKEND__;
+    delete window.__CODEX_USAGE_MONITOR_PERSISTED_SETTINGS__;
+  }
 } finally {
   dom.window.close();
 }
