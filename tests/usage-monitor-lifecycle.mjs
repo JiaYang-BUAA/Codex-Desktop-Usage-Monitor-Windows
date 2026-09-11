@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
+import { normalizeUsageView, toOfficialUsageSource } from "../scripts/usage-client.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -319,7 +320,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.7", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.8", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -496,6 +497,24 @@ try {
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").style.getPropertyValue("--usage-refresh-progress"), "360deg");
   window.Date.now = realDateNow;
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
+
+  const proUsage = structuredClone(usage);
+  proUsage.sources.official = toOfficialUsageSource(normalizeUsageView({
+    rateLimits: { limitId: "codex", planType: "pro", primary: { usedPercent: 56, windowDurationMins: 10080, resetsAt: secondaryResetsAt } },
+    rateLimitsByLimitId: { codex_bengalfox: { limitId: "codex_bengalfox", primary: { usedPercent: 0, windowDurationMins: 300, resetsAt: primaryResetsAt } } },
+  }, null));
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(proUsage);
+  const primaryCheckbox = () => host.shadowRoot.querySelector('input[data-source="official"][data-metric="primaryRemaining"]');
+  const primarySummary = () => host.shadowRoot.querySelector('.usage-summary-item[data-source="official"][data-metric="primaryRemaining"]');
+  assert.ok(primaryCheckbox(), "Pro retains the 5h row and checkbox");
+  assert.equal(primaryCheckbox().checked, true, "saved selection survives");
+  assert.equal(primaryCheckbox().closest('.usage-detail-row').querySelector('.usage-detail-value').textContent, "--");
+  assert.equal(primarySummary().textContent, "5时--");
+  host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
+  assert.equal(primarySummary().textContent, "--");
+  host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage);
+  assert.equal(primarySummary().textContent, "5时75%", "other plans resume their normal value");
 
   const resumeMessageInput = host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]');
   resumeMessageInput.value = "请继续完成当前任务";

@@ -163,6 +163,33 @@ assert.equal(official.metrics.find((item) => item.id === "last7DaysTokens").valu
 assert.equal(official.metrics.find((item) => item.id === "lifetimeTokens").value, "125万");
 assert.equal(official.nextRefreshAt - official.fetchedAt, 45000);
 const largeOfficial = toOfficialUsageSource({ ...view, todayTokens: 123456789, lifetimeTokens: 100000000 }, now.getTime());
+
+const proLimits = {
+  rateLimits: { limitId: "codex", planType: "pro", primary: rateLimits.rateLimits.secondary, secondary: null },
+  rateLimitsByLimitId: {
+    codex: { limitId: "codex", planType: "pro", primary: rateLimits.rateLimits.secondary, secondary: null },
+    codex_bengalfox: { limitId: "codex_bengalfox", planType: "pro", primary: rateLimits.rateLimits.primary, secondary: rateLimits.rateLimits.secondary },
+  },
+};
+const proView = normalizeUsageView(proLimits, tokenUsage, now);
+const rawProWindows = JSON.stringify(proView.windows);
+const proOfficial = toOfficialUsageSource(proView, now.getTime());
+assert.equal(proView.planType, "pro");
+assert.ok(proView.windows.some((item) => item.limitId === "codex_bengalfox"), "raw quota data stays unchanged for backend consumers");
+assert.equal(proOfficial.metrics.find((item) => item.id === "primaryRemaining").value, "--");
+assert.equal(proOfficial.metrics.find((item) => item.id === "primaryRemaining").resetsAt, null);
+assert.equal(proOfficial.metrics.find((item) => item.id === "secondaryRemaining").value, "42%");
+assert.equal(proOfficial.metrics.find((item) => item.id === "primaryReset").value, expectedSecondaryReset);
+assert.equal(JSON.stringify(proView.windows), rawProWindows);
+assert.equal(toOfficialUsageSource({ ...view, planType: " Pro " }).metrics.find((item) => item.id === "primaryRemaining").value, "--", "Pro keeps a placeholder even if a main 5h window exists");
+for (const planType of ["plus", "team", "enterprise", null]) {
+  assert.equal(toOfficialUsageSource({ ...view, planType }).metrics.find((item) => item.id === "primaryRemaining").value, "68%");
+}
+const sparkOnly = toOfficialUsageSource({ ...proView, windows: proView.windows.filter((item) => item.limitId !== "codex") });
+assert.equal(sparkOnly.metrics.find((item) => item.id === "secondaryRemaining").value, "--");
+assert.equal(sparkOnly.metrics.find((item) => item.id === "primaryReset").value, "--");
+assert.equal(normalizeUsageView(rateLimits, null, now, { account: { planType: "Pro" } }).planType, "pro");
+assert.equal(normalizeUsageView({ ...rateLimits, rateLimits: { ...rateLimits.rateLimits, planType: "plus" } }, null, now, { account: { planType: "pro" } }).planType, "plus");
 assert.equal(largeOfficial.metrics.find((item) => item.id === "todayTokens").value, "1.23亿");
 assert.equal(largeOfficial.metrics.find((item) => item.id === "lifetimeTokens").value, "1.00亿");
 

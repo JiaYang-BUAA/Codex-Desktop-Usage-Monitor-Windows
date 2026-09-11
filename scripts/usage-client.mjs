@@ -1376,7 +1376,10 @@ export class LocalCodexTokenTracker {
   }
 }
 
-export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = new Date()) {
+export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = new Date(), accountResponse = null) {
+  const planTypeValue = rateLimitResponse?.rateLimitsByLimitId?.codex?.planType
+    ?? rateLimitResponse?.rateLimits?.planType ?? accountResponse?.account?.planType;
+  const planType = typeof planTypeValue === "string" ? planTypeValue.trim().toLowerCase() : null;
   const windows = windowsFromSnapshot(rateLimitResponse?.rateLimits);
   const seen = new Set(windows.map((item) => `${item.limitId || ""}:${item.position}:${item.windowDurationMins || ""}`));
   for (const snapshot of Object.values(rateLimitResponse?.rateLimitsByLimitId || {})) {
@@ -1417,6 +1420,7 @@ export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = 
     : null;
   return {
     status: windows.length || todayTokens !== null ? "ready" : "unavailable",
+    planType,
     windows: windows.slice(0, 2).map(({ position, ...item }) => item),
     todayTokens,
     last7DaysTokens,
@@ -1530,13 +1534,17 @@ function formatMetricReset(timestamp) {
 }
 
 export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAULT_REFRESH_MS) {
-  const availableWindows = Array.isArray(view?.windows) ? view.windows : [];
+  // Display only the main subscription pool; model-specific pools (e.g. Spark)
+  // must not fill a missing main window. Keep raw windows for quota consumers.
+  const availableWindows = (Array.isArray(view?.windows) ? view.windows : [])
+    .filter((item) => !item?.limitId || item.limitId === "codex");
+  const isPro = String(view?.planType || "").trim().toLowerCase() === "pro";
   const metrics = [];
   const officialWindows = [
     {
       id: "primaryRemaining",
       label: "5小时",
-      item: availableWindows.find((item) => Number(item?.windowDurationMins) === 5 * 60) || null,
+      item: isPro ? null : availableWindows.find((item) => Number(item?.windowDurationMins) === 5 * 60) || null,
       defaultVisible: true,
     },
     {
@@ -2661,7 +2669,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.7" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.8" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");
@@ -2812,7 +2820,7 @@ export class UsageClient {
     if (rateLimits?.limitId) byId[rateLimits.limitId] = mergeRateLimitSnapshot(byId[rateLimits.limitId], rateLimits);
     this.rateLimits = { ...(this.rateLimits || {}), rateLimits, rateLimitsByLimitId: Object.keys(byId).length ? byId : null };
     this.emit({
-      ...normalizeUsageView(this.rateLimits, this.tokenUsage),
+      ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),
       officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
       officialModelProvidersResolved: officialModelProviderResolutionReady(this.accountSnapshot, this.configSnapshot),
     });
@@ -2844,7 +2852,7 @@ export class UsageClient {
         if (configResult.status === "fulfilled") this.configSnapshot = configResult.value;
         if (limitsResult.status === "rejected" && usageResult.status === "rejected") throw limitsResult.reason;
         this.emit({
-          ...normalizeUsageView(this.rateLimits, this.tokenUsage),
+          ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),
           officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
           officialModelProvidersResolved: officialModelProviderResolutionReady(this.accountSnapshot, this.configSnapshot),
         });
