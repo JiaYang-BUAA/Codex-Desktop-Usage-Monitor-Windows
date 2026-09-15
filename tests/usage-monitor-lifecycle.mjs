@@ -266,15 +266,15 @@ try {
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
   const columns = [...host.shadowRoot.querySelectorAll(".usage-column")];
-  assert.equal(columns.length, 5);
-  assert.equal(host.dataset.columnCount, "5");
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 230px 170px 160px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1060px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-298px");
-  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "API 账户", "API Key", "重置概率预测（仅供参考）"]);
-  assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "ready", "loading", "error", "ready"]);
-  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [6, 6, 8, 4, 4]);
-  const tiboActivity = columns[4].querySelector(".usage-tibo-activity");
+  assert.equal(columns.length, 6);
+  assert.equal(host.dataset.columnCount, "6");
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 400px 230px 170px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1460px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-698px");
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "额度对应 Token", "API 账户", "API Key"]);
+  assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "ready", "ready", "loading", "loading", "error"]);
+  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [7, 6, 4, 1, 8, 4]);
+  const tiboActivity = columns[2].querySelector(".usage-tibo-activity");
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-label").textContent, "Tibo 最新动态");
   assert.equal(host.shadowRoot.querySelector(".usage-reset-method").textContent, "预告方式：发放重置卡");
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-text").textContent, "Codex 使用额度已面向所有付费套餐重置。");
@@ -282,7 +282,7 @@ try {
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-link").href, "https://x.com/thsottiaux/status/2094588317245509959");
   assert.match(tiboActivity.querySelector(".usage-tibo-activity-time").textContent, /^发布于 \d{2}-\d{2} \d{2}:\d{2}$/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-tibo-activity-text\s*\{[\s\S]*?-webkit-line-clamp:\s*3;/);
-  assert.deepEqual([...columns[0].querySelectorAll('input[data-source="session"][data-metric]')].map((input) => input.dataset.metric), ["currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions", "executionTime", "autoResume"]);
+  assert.deepEqual([...columns[0].querySelectorAll('input[data-source="session"][data-metric]')].map((input) => input.dataset.metric), ["currentTaskTokens", "lastTurnTokens", "cacheHitRate", "lastTurnCacheHitRate", "contextCompactions", "executionTime", "autoResume"]);
   assert.equal(columns[0].querySelector('[data-metric="executionTime"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "执行总耗时");
   assert.equal(columns[0].querySelector('[data-metric="executionTime"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "11分31秒");
   assert.equal(host.shadowRoot.querySelector('[data-metric="currentStatus"]'), null);
@@ -290,8 +290,31 @@ try {
   assert.equal(columns[0].querySelector('[data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3822万");
   assert.equal(columns[0].querySelector('[data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "上次回答消耗 Token");
   assert.equal(columns[0].querySelector('[data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "8万");
-  assert.equal(columns[0].querySelector('[data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "缓存命中率");
+  assert.equal(columns[0].querySelector('[data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "总缓存命中率");
   assert.equal(columns[0].querySelector('[data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "95.3%");
+  assert.equal(columns[0].querySelector('[data-metric="lastTurnCacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "上次回答缓存命中率");
+  const quotaUsage = structuredClone(usage);
+  quotaUsage.sources["quota-token"] = {
+    id: "quota-token", accountType: "quota-token", status: "ready",
+    metrics: [
+      { id: "wholeEstimateTokens", label: "推算 100% 周额度 Token", value: "≈4000万", detail: "按已观测比例外推；覆盖 5 个百分点" },
+      ...Array.from({ length: 10 }, (_, index) => ({ id: `band${100-index*10}To${90-index*10}Tokens`,
+        label: `${100-index*10}%→${90-index*10}%`, value: "≈400万", detail: "实测 200万 / 5 个百分点" })),
+    ],
+  };
+  quotaUsage.sources.session.metrics.push({ id: "lastTurnCacheHitRate", label: "上次回答缓存命中率", value: "97.24%" });
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(quotaUsage), true);
+  const quotaColumn = host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]');
+  const bandColumns = [...quotaColumn.querySelectorAll('.usage-quota-bands > .usage-column-rows')];
+  assert.deepEqual(bandColumns.map(column => column.querySelectorAll('.usage-detail-row').length), [5, 5]);
+  assert.equal(bandColumns[0].querySelector('input').dataset.metric, "band100To90Tokens");
+  assert.equal(bandColumns[1].querySelector('input').dataset.metric, "band50To40Tokens");
+  assert.equal(quotaColumn.querySelector('[data-metric="band80To70Tokens"]').closest(".usage-detail-row").querySelector(".usage-quota-detail").textContent, "实测 200万 / 5 个百分点");
+  assert.equal(quotaColumn.querySelector('[data-metric="wholeEstimateTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "≈4000万");
+  assert.match(quotaColumn.querySelector(".usage-quota-note").textContent, /非官方上限/);
+  assert.equal(host.shadowRoot.querySelector('[data-metric="lastTurnCacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "97.24%");
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
+
   assert.equal(columns[0].querySelector('[data-metric="contextCompactions"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "自动压缩上下文次数");
   assert.equal(columns[0].querySelector('[data-metric="contextCompactions"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "3");
   assert.equal(columns[1].querySelector('[data-metric="primaryRemaining"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "5小时剩余");
@@ -309,9 +332,9 @@ try {
   const unavailableSessionColumn = host.shadowRoot.querySelector('.usage-column[data-status="unavailable"]');
   assert.ok(unavailableSessionColumn);
   assert.equal(unavailableSessionColumn.querySelector(".usage-status").getAttribute("aria-label"), "暂无数据");
-  assert.deepEqual([...unavailableSessionColumn.querySelectorAll(".usage-detail-value")].map((item) => item.textContent), ["--", "--", "--", "--", "--"]);
+  assert.deepEqual([...unavailableSessionColumn.querySelectorAll(".usage-detail-value")].map((item) => item.textContent), ["--", "--", "--", "--", "--", "--"]);
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
-  assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "正常", "请求中", "请求失败", "正常"]);
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "正常", "正常", "请求中", "请求中", "请求失败"]);
   const limitedUsage = structuredClone(usage);
   limitedUsage.sources.acme.status = "rate-limited";
   limitedUsage.sources.acme.error = "Acme API 请求受限（HTTP 429），稍后自动重试";
@@ -320,29 +343,29 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.0.8", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.1.0", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
   assert.equal(columns[0].querySelector(".usage-column-meta"), null);
   assert.equal(columns[1].querySelector(".usage-column-meta span:first-of-type").textContent, "最多显示 8 项");
-  assert.equal(columns[4].querySelector(".usage-column-meta"), null);
+  assert.equal(columns[2].querySelector(".usage-column-meta"), null);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-meta\s*\{[\s\S]*?justify-content:\s*flex-end;/);
   assert.match(host.shadowRoot.querySelector(".usage-refresh-countdown").textContent, /^刷新 \d+秒后$/);
   assert.equal(host.shadowRoot.querySelector(".usage-mode-switches").hidden, true);
   assert.equal(host.shadowRoot.querySelector("[data-toggle-settings]").textContent, "设置");
   host.shadowRoot.querySelector("[data-toggle-settings]").click();
   assert.equal(host.shadowRoot.querySelector(".usage-mode-switches").hidden, false);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "English UI", "自动更新", "API 栏", "重置概率预测栏"]);
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 6);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 6);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "English UI", "自动更新", "API 栏", "重置概率预测栏", "额度对应 Token 栏"]);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 7);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 7);
   assert.equal(host.shadowRoot.querySelector(".usage-mode-toggle-api"), null);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').title, "自动续跑已启用");
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').closest(".usage-column").querySelector(".usage-column-heading").textContent, "本会话");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "继续");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').closest(".usage-auto-resume-field").querySelector(".usage-auto-resume-label").textContent, "续跑发送内容");
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-column:nth-child(2) .usage-mode-toggle input[type="checkbox"]').length, 6);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-column:nth-child(2) .usage-mode-toggle input[type="checkbox"]').length, 7);
   const autoResumeMetric = host.shadowRoot.querySelector('input[data-source="session"][data-metric="autoResume"]');
   assert.equal(autoResumeMetric.checked, false);
   assert.equal(autoResumeMetric.closest(".usage-detail-row").nextElementSibling.className, "usage-auto-resume-field");
@@ -370,31 +393,40 @@ try {
   assert.equal(columns[1].querySelector(".usage-column-footer").nextElementSibling, columns[1].querySelector(".usage-column-brand"));
   host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）"]);
-  assert.equal(host.shadowRoot.querySelector(".usage-columns").style.getPropertyValue("--usage-column-count"), "3");
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "660px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-176px");
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "额度对应 Token"]);
+  assert.equal(host.shadowRoot.querySelector(".usage-columns").style.getPropertyValue("--usage-column-count"), "4");
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 400px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1060px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-298px");
   assert.equal(host.shadowRoot.querySelector('.usage-column[data-status="ready"] + .usage-column .usage-column-footer') !== null, true);
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showApiColumns, false);
   host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅"]);
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "500px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-16px");
-  host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "API 账户", "API Key"]);
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 230px 170px");
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "额度对应 Token"]);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 400px");
   assert.equal(host.style.getPropertyValue("--usage-popover-width"), "900px");
   assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-138px");
+  host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "额度对应 Token", "API 账户", "API Key"]);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 400px 230px 170px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1300px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-538px");
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showApiColumns, true);
   host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 230px 170px 160px");
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 6);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 400px 230px 170px");
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showResetForecast, true);
+  host.shadowRoot.querySelector('input[data-setting="showQuotaToken"]').click();
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]'), null);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 230px 170px");
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showQuotaToken, false);
+  host.shadowRoot.querySelector('input[data-setting="showQuotaToken"]').click();
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.ok(host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]'));
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showQuotaToken, true);
   assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-config-trigger")].map((button) => button.textContent), ["配置", "配置"]);
   host.shadowRoot.querySelector('[data-configure-source="api-account"]').click();
   let accountForm = host.shadowRoot.querySelector('[data-config-source="api-account"]');
@@ -639,7 +671,7 @@ try {
   host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
   assert.deepEqual(
     [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-heading").textContent),
-    ["Session", "Official Subscription", "API Account", "API Key", "Reset Probability (FYI)"],
+    ["Session", "Official Subscription", "Reset Probability (FYI)", "Quota to Tokens", "API Account", "API Key"],
   );
   assert.equal(host.shadowRoot.querySelector(".usage-tibo-activity-label").textContent, "Latest from Tibo");
   assert.equal(host.shadowRoot.querySelector(".usage-reset-method").textContent, "Announced type: Reset credit");
@@ -657,7 +689,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "请继续完成当前任务");
   assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="currentTaskTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "38.22M");
   assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Last answer tokens");
-  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Cache hit rate");
+  assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Total cache hit rate");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="last7DaysTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "Tokens in last 7 days");
   assert.equal(host.shadowRoot.querySelector('input[data-source="official"][data-metric="last7DaysTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "2.4M");
   assert.equal(host.shadowRoot.querySelector('input[data-source="session"][data-metric="lastTurnTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "80K");
@@ -674,6 +706,31 @@ try {
   assert.ok(host?.shadowRoot);
   assert.equal(host.shadowRoot.querySelectorAll(".usage-summary-item").length, 7);
   assert.equal(host.shadowRoot.querySelector(".usage-refresh-ring").hidden, false);
+
+  // Goal/plan mode chips occupy the old permission-adjacent anchor.
+  const modeComposer = window.document.querySelector('.composer-surface-chrome');
+  const modeChips = [];
+  for (const specs of [[['计划模式', 228, 80]], [['目标', 228, 110]], [['计划模式', 228, 80], ['目标', 312, 90]]]) {
+    for (const chip of modeChips.splice(0)) chip.remove();
+    for (const [label, x, width] of specs) {
+      const chip = window.document.createElement('button');
+      chip.textContent = label;
+      chip.getBoundingClientRect = () => ({ x, y: 164, width, height: 28, right: x + width, bottom: 192 });
+      modeComposer.append(chip);
+      modeChips.push(chip);
+    }
+    window.__CODEX_USAGE_MONITOR_STATE__.ensure();
+    assert.equal(host.hidden, false, 'mode chips should use the available gap to their right');
+    assert.equal(host.dataset.anchor, 'right-control-gap');
+    const left = Number.parseFloat(host.style.getPropertyValue('--usage-left'));
+    const width = Number.parseFloat(host.style.getPropertyValue('--usage-max-width'));
+    assert.equal(left, Math.max(...specs.map(([, x, width]) => x + width)) + 8);
+    assert.ok(left + width <= 622 - 8, 'monitor must not overlap the model selector');
+  }
+  for (const chip of modeChips) chip.remove();
+  window.__CODEX_USAGE_MONITOR_STATE__.ensure();
+  assert.equal(host.dataset.anchor, 'approval');
+  assert.equal(host.style.getPropertyValue('--usage-left'), '234px');
 
   window.document.getElementById("composer-wrapper").innerHTML = updatedComposerMarkup();
   await new Promise((resolve) => setTimeout(resolve, 250));
@@ -776,12 +833,12 @@ try {
   assert.equal(window.eval(payload).installed, true);
   host = window.document.getElementById("codex-usage-monitor");
   host.shadowRoot.querySelector(".usage-summary").click();
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "额度对应 Token"]);
   host.shadowRoot.querySelector("[data-toggle-settings]").click();
   assert.equal(host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').checked, false);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').checked, true);
   host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 6);
   host.shadowRoot.querySelector('[data-configure-source="acme"]').click();
   const beginnerForm = host.shadowRoot.querySelector('[data-config-source="acme"]');
   assert.equal(beginnerForm.querySelector('[data-config-field="preset"]'), null);

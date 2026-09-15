@@ -16,11 +16,12 @@
     const rect = node?.getBoundingClientRect?.();
     return Boolean(rect && rect.width > 0 && rect.height > 0);
   };
-  const SESSION_METRIC_IDS = new Set(["currentStatus", "executionTime", "autoResume", "currentTaskTokens", "lastTurnTokens", "cacheHitRate", "contextCompactions"]);
+  const SESSION_METRIC_IDS = new Set(["currentStatus", "executionTime", "autoResume", "currentTaskTokens", "lastTurnTokens", "cacheHitRate", "lastTurnCacheHitRate", "contextCompactions"]);
   const SESSION_METRIC_FALLBACKS = [
     { id: "currentTaskTokens", label: "当前会话累计 Token", display: "会话 --", value: "--", defaultVisible: true },
     { id: "lastTurnTokens", label: "上次回答消耗 Token", display: "上次回答 --", value: "--", defaultVisible: false },
-    { id: "cacheHitRate", label: "缓存命中率", display: "缓存 --", value: "--", defaultVisible: false },
+    { id: "cacheHitRate", label: "总缓存命中率", display: "总缓存 --", value: "--", defaultVisible: false },
+    { id: "lastTurnCacheHitRate", label: "上次回答缓存命中率", display: "上次缓存 --", value: "--", defaultVisible: false },
     { id: "contextCompactions", label: "自动压缩上下文次数", display: "压缩 --", value: "--", defaultVisible: false },
     { id: "executionTime", label: "执行总耗时", display: "耗时 --", value: "--", durationMs: null, defaultVisible: false },
     { id: "autoResume", label: "额度恢复续跑", display: "续跑 --", value: "--", defaultVisible: false },
@@ -130,7 +131,7 @@
     return {
       id,
       label: typeof source.label === "string" ? source.label.slice(0, 24) : id,
-      accountType: ["api-key", "api-account", "session", "forecast"].includes(source.accountType) ? source.accountType : "subscription",
+      accountType: ["api-key", "api-account", "session", "forecast", "quota-token"].includes(source.accountType) ? source.accountType : "subscription",
       status: validStatus(source.status),
       error: typeof source.error === "string" ? source.error.slice(0, 160) : null,
       fetchedAt: finiteNumber(source.fetchedAt) ? Number(source.fetchedAt) : null,
@@ -139,7 +140,7 @@
         : finiteNumber(source.fetchedAt) ? Number(source.fetchedAt) + REFRESH_INTERVAL_MS : null,
       latestActivity: normalizeLatestActivity(source.latestActivity),
       resetMethod: ["banked", "forced"].includes(source.resetMethod) ? source.resetMethod : "unknown",
-      metrics: (Array.isArray(source.metrics) ? source.metrics : []).map(normalizeMetric).filter(Boolean).slice(0, 16),
+      metrics: (Array.isArray(source.metrics) ? source.metrics : []).map(normalizeMetric).filter(Boolean).slice(0, source.accountType === "quota-token" ? 32 : 16),
     };
   };
   const legacyOfficialSource = (source) => {
@@ -240,9 +241,14 @@
     if (number >= 1000) return compact(1000, "K");
     return String(Math.round(number));
   };
-  const formatLocalizedTokenUnit = (value, language) => language === "en"
-    ? formatEnglishTokenUnit(value)
-    : formatChineseTokenUnit(parseTokenUnit(value));
+  const formatLocalizedTokenUnit = (value, language) => {
+    const text = String(value ?? "--");
+    const approximate = text.startsWith("≈");
+    const raw = approximate ? text.slice(1).trim() : text;
+    const number = parseTokenUnit(raw);
+    if (number === null) return text;
+    return `${approximate ? "≈" : ""}${language === "en" ? formatEnglishTokenUnit(raw) : formatChineseTokenUnit(number)}`;
+  };
   const formatReset = (timestamp) => {
     if (!timestamp) return "重置时间未知";
     const date = new Date(Number(timestamp) * 1000);
@@ -305,6 +311,7 @@
         showResetForecast: Object.prototype.hasOwnProperty.call(value || {}, "showResetForecast")
           ? Boolean(value.showResetForecast)
           : true,
+        showQuotaToken: value?.showQuotaToken !== false,
         autoResumeMessage: normalizeAutoResumeMessage(value?.autoResumeMessage),
         autoResumeSharedMessage: value?.autoResumeSharedMessage === true,
       };
@@ -314,6 +321,7 @@
         minimalMode: false, countdownVisualization: false, englishUi: false, updateNotifications: false, autoResume: false,
         showApiColumns: false,
         showResetForecast: true,
+        showQuotaToken: true,
         autoResumeThreads: {},
         autoResumeMessage: AUTO_RESUME_DEFAULT_MESSAGE,
         autoResumeSharedMessage: false,
@@ -463,7 +471,7 @@
   };
   const selectableSource = (source) => ({
     ...source,
-    metrics: source.accountType === "forecast" ? source.metrics
+    metrics: ["forecast", "quota-token"].includes(source.accountType) ? source.metrics
       : source.accountType === "api-key"
       ? apiKeyMetrics(source)
       : source.accountType === "api-account" ? apiAccountMetrics(source)
@@ -710,6 +718,10 @@
     .usage-column[data-status="loading"] .usage-status { background: #facc15; }
     .usage-column[data-status="stale"] .usage-status { background: #fb3f4f; }
     .usage-column-rows { display: grid; }
+    .usage-quota-detail { grid-column: 1 / -1; font-size: 10px; opacity: .72; padding: 0 0 4px 22px; overflow-wrap: anywhere; }
+    .usage-quota-note { font-size: 10px; line-height: 1.5; opacity: .75; margin-top: 7px; overflow-wrap: anywhere; }
+    .usage-quota-bands { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 6px; }
+    .usage-quota-bands > .usage-column-rows { min-width: 0; align-content: start; }
     .usage-detail-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -1206,9 +1218,10 @@
     const sources = [
       usage.sources.session || normalizeSource({ id: "session", label: "本会话", accountType: "session", status: "unavailable" }, "session"),
       usage.sources.official || normalizeSource({ id: "official", label: "官方订阅", accountType: "subscription", status: "unavailable" }, "official"),
+      usage.sources["reset-forecast"] || normalizeSource({ id: "reset-forecast", label: "重置概率预测（仅供参考）", accountType: "forecast", status: "unavailable", error: "重置概率预测接口暂不可用" }, "reset-forecast"),
+      usage.sources["quota-token"] || normalizeSource({ id: "quota-token", label: "额度对应 Token", accountType: "quota-token", status: "loading", metrics: [{ id: "quotaObservationStatus", label: "观测状态", value: "等待采样", display: "等待采样" }] }, "quota-token"),
       usage.sources["api-account"] || normalizeSource({ id: "api-account", label: "API 账户", accountType: "api-account", status: "unavailable", error: "未配置 API 账户令牌" }, "api-account"),
       { ...apiKeySource, label: "API Key" },
-      usage.sources["reset-forecast"] || normalizeSource({ id: "reset-forecast", label: "重置概率预测（仅供参考）", accountType: "forecast", status: "unavailable", error: "重置概率预测接口暂不可用" }, "reset-forecast"),
     ].map(selectableSource).map((source) => {
       const localizedStatus = source.status === "loading" ? t("loading") : source.status === "ready" ? t("ready")
         : source.status === "stale" ? t("stale") : source.status === "rate-limited" ? t("rateLimited")
@@ -1218,6 +1231,7 @@
         label: source.id === "session" ? t("session")
           : source.id === "official" ? t("official")
           : source.id === "reset-forecast" ? t("resetForecast")
+          : source.id === "quota-token" ? t("quotaToken")
           : source.accountType === "api-account" ? t("apiAccount")
             : source.accountType === "api-key" ? t("apiKey") : source.label,
         metrics: source.metrics.map((metric) => {
@@ -1326,9 +1340,12 @@
       const visibleSources = sources.filter((source) => {
         if (["api-account", "api-key"].includes(source.accountType)) return settings.showApiColumns;
         if (source.accountType === "forecast") return settings.showResetForecast;
+        if (source.accountType === "quota-token") return settings.showQuotaToken;
         return true;
       });
       host.dataset.apiColumns = String(settings.showApiColumns);
+      host.dataset.resetForecast = String(settings.showResetForecast);
+      host.dataset.quotaToken = String(settings.showQuotaToken);
       host.dataset.columnCount = String(visibleSources.length);
       columns.style.setProperty("--usage-column-count", String(visibleSources.length));
       const selectedKeys = new Set(selected.map((item) => `${item.source.id}:${item.metric.id}`));
@@ -1336,6 +1353,7 @@
         const column = document.createElement("section");
         column.className = "usage-column";
         column.dataset.status = source.status;
+        column.dataset.source = source.id;
         const title = document.createElement("div");
         title.className = "usage-column-title";
         const status = document.createElement("span");
@@ -1456,8 +1474,14 @@
               reset.textContent = t("resetsAt", { value: formatReset(metric.resetsAt) });
               metricValueNode.append(reset, document.createTextNode(` · ${valueText}`));
             } else metricValueNode.textContent = valueText;
-            metricValueNode.title = metricValueNode.textContent;
+            metricValueNode.title = metric.detail || metricValueNode.textContent;
             row.append(select, metricValueNode);
+            if (source.accountType === "quota-token" && metric.detail) {
+              const detail = document.createElement("span");
+              detail.className = "usage-quota-detail";
+              detail.textContent = metric.detail;
+              row.append(detail);
+            }
             children.push(row);
           }
           rows.replaceChildren(...children);
@@ -1467,7 +1491,23 @@
           column.append(title, createConfigurationForm(source, t));
           return column;
         }
-        column.append(title, createRows(source.metrics));
+        column.append(title);
+        if (source.accountType === "quota-token") {
+          const isBand = metric => /^band\d+To\d+Tokens$/.test(metric.id);
+          column.append(createRows(source.metrics.filter(metric => !isBand(metric))));
+          const bandMetrics = source.metrics.filter(isBand);
+          const bands = document.createElement("div");
+          bands.className = "usage-quota-bands";
+          const midpoint = Math.ceil(bandMetrics.length / 2);
+          bands.append(createRows(bandMetrics.slice(0, midpoint)), createRows(bandMetrics.slice(midpoint)));
+          column.append(bands);
+        } else column.append(createRows(source.metrics));
+        if (source.accountType === "quota-token") {
+          const note = document.createElement("div");
+          note.className = "usage-quota-note";
+          note.textContent = t("quotaTokenNote");
+          column.append(note);
+        }
         if (source.accountType === "forecast") {
           const method = document.createElement("div");
           method.className = "usage-reset-method";
@@ -1514,6 +1554,7 @@
             ["updateNotifications", t("updateNotifications")],
             ["showApiColumns", t("showApiColumns")],
             ["showResetForecast", t("showResetForecast")],
+            ["showQuotaToken", t("showQuotaToken")],
           ]) {
             const toggle = document.createElement("label");
             toggle.className = "usage-mode-toggle";
@@ -1739,7 +1780,7 @@
         if (input.type !== "checkbox") return;
         const state = window[STATE_KEY];
         const usage = normalizeUsage(state?.usage || window[USAGE_KEY]);
-        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume", "autoResumeSharedMessage", "showApiColumns", "showResetForecast"].includes(input.dataset.setting)) {
+        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume", "autoResumeSharedMessage", "showApiColumns", "showResetForecast", "showQuotaToken"].includes(input.dataset.setting)) {
           const settings = loadSettings();
           if (input.dataset.setting === "autoResume") {
             if (!usage.currentThreadId) return;
@@ -1793,7 +1834,9 @@
     if (moved) portal.appendChild(host);
     const currentSettings = loadSettings();
     host.dataset.apiColumns = String(currentSettings.showApiColumns);
-    host.dataset.columnCount = String(2 + (currentSettings.showApiColumns ? 2 : 0) + (currentSettings.showResetForecast ? 1 : 0));
+    host.dataset.resetForecast = String(currentSettings.showResetForecast);
+    host.dataset.quotaToken = String(currentSettings.showQuotaToken);
+    host.dataset.columnCount = String(2 + (currentSettings.showQuotaToken ? 1 : 0) + (currentSettings.showApiColumns ? 2 : 0) + (currentSettings.showResetForecast ? 1 : 0));
     const position = configurePosition(host, placement.composer, HOST_ID);
     host.dataset.placementStrategy = placement.strategy;
     host.dataset.status = position.ok ? "ready" : "degraded";

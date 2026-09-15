@@ -5,7 +5,7 @@
 [![Windows CI](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/latest)
 
-Codex Usage Monitor 把官方订阅周期、当前会话 Token、社区重置概率、Tibo 最新 X 动态，以及可选的 API 账户和 API Key 用量，直接放到 Windows 版 Codex Desktop 的输入区域旁。
+Codex Usage Monitor 把官方订阅周期、当前会话 Token、额度与 Token 换算观测、社区重置概率、Tibo 最新 X 动态，以及可选的 API 账户和 API Key 用量，直接放到 Windows 版 Codex Desktop 的输入区域旁。
 
 监视器通过仅绑定本机的 Chrome DevTools Protocol（CDP）运行时注入，不是独立悬浮窗，也不修改 WindowsApps、`app.asar`、Codex 登录文件或模型配置。
 
@@ -17,8 +17,8 @@ Codex Usage Monitor 把官方订阅周期、当前会话 Token、社区重置概
 
 主要功能：
 
-- 在一个面板中查看“本会话”“官方订阅”“重置概率预测（仅供参考）”，并按需开启 API 账户和 API Key 两栏。
-- 查看当前会话累计 Token、上次回答消耗 Token、缓存命中率、自动压缩上下文次数和执行总耗时。
+- 在一个面板中查看“本会话”“官方订阅”“重置概率预测（仅供参考）”“额度对应 Token”，并按需开启 API 账户和 API Key 两栏。
+- 查看当前会话累计 Token、上次回答消耗 Token、总缓存命中率、上次回答缓存命中率、自动压缩上下文次数和执行总耗时。
 - 查看 5 小时与 7 天官方周期、重置时间、今日 Token、近7天 Token和累计 Token。
 - 每 5 分钟显示社区重置概率和 Tibo（[`@thsottiaux`](https://x.com/thsottiaux)）最新 X 动态摘要。
 - 支持普通模式、极简模式、倒计时可视化、中文与 English UI、自动更新和按任务独立的额度恢复续跑。
@@ -26,7 +26,7 @@ Codex Usage Monitor 把官方订阅周期、当前会话 Token、社区重置概
 
 ## 1. 三步开始使用
 
-当前版本 **v3.0.8**：Pro 的“5小时剩余”保留栏目与勾选框，数值显示为 `--`，不再误用 Spark 独立额度；其他套餐显示不变。升级说明见 [更新日志](CHANGELOG.md#308---2026-09-11)。
+当前版本 **v3.1.0**：新增两列“额度对应 Token”观测栏及显隐开关，按剩余额度区间统计 Token 并推算 100% 周额度；新增上次回答缓存命中率，修复恢复日志统计和目标／计划模式下监视栏消失。变更见 [更新日志](CHANGELOG.md)。
 
 ### 1.1 准备环境
 
@@ -85,9 +85,10 @@ ChatGPT 普通聊天模式不挂载监视栏；ChatGPT Work 工作模式和 Code
 
 | 栏位 | 默认状态 | 主要内容 |
 | --- | --- | --- |
-| 本会话 | 显示 | 当前会话累计 Token、上次回答消耗 Token、缓存命中率、自动压缩上下文次数、执行总耗时和额度恢复续跑。耗时累计各轮执行时间，不计轮次之间的等待；`≈` 表示含估算，`+` 表示记录不完整。 |
+| 本会话 | 显示 | 当前会话累计 Token、上次回答消耗 Token、总缓存命中率、上次回答缓存命中率、自动压缩上下文次数、执行总耗时和额度恢复续跑。耗时累计各轮执行时间，不计轮次之间的等待；`≈` 表示含估算，`+` 表示记录不完整。 |
 | 官方订阅 | 显示 | 5 小时/7 天周期、重置时间、今日/近7天/累计 Token 和全局设置。 |
 | 重置概率预测（仅供参考） | 显示 | 12/24/48/72 小时社区概率、重置预告方式，以及 Tibo 最新 X 动态缩略卡片。 |
+| 额度对应 Token | 显示 | 剩余额度每 10 个百分点的 Token 观测、每 1 个百分点换算及推算 100% 周额度 Token。结果是本机观测估计，非官方上限。 |
 | API 账户 | 隐藏 | 第三方用户账户余额、请求日志和累计 Token。 |
 | API Key | 隐藏 | 某个 API Key 的额度、限额、到期时间和请求状态。 |
 
@@ -107,6 +108,7 @@ ChatGPT 普通聊天模式不挂载监视栏；ChatGPT Work 工作模式和 Code
 | 自动更新 | 每 24 小时检查一次最新正式 Release。 |
 | API 栏 | 同时显示或隐藏 API 账户与 API Key。新安装默认关闭。 |
 | 重置概率预测栏 | 显示或隐藏社区概率与 Tibo 动态。新安装默认开启。 |
+| 额度对应 Token 栏 | 显示或隐藏额度换算栏，默认开启；隐藏时后台继续采集，保留已选指标与观测记录。 |
 
 显示项、勾选顺序和上述全局设置保存在：
 
@@ -160,6 +162,16 @@ ChatGPT 普通聊天模式不挂载监视栏；ChatGPT Work 工作模式和 Code
 ### 3.2 官方订阅
 
 官方订阅通过 Codex Desktop 本机 app-server 读取，无需填写任何凭据。红色指示灯表示本轮请求失败但仍保留上一次成功数据，不代表额度耗尽或模型不可用。
+
+### 额度对应 Token
+
+展开栏顺序为：本会话、官方订阅、重置概率预测、额度对应 Token、API 账户、API Key；后两栏继续由“API 栏”开关控制。“额度对应 Token”内部采用两列布局，可在设置中单独隐藏；隐藏只影响展示，后台继续采集。
+
+观测从首次取得实时周额度快照开始，不重建历史额度。累计至少 3 个百分点的有效消耗后，用 `同期 Token ÷ 额度消耗百分点` 估计每 1 个百分点对应的 Token。区间按剩余额度 `100%→90%` 至 `10%→0%` 划分，分别显示实测 Token、观测跨度和完整 10 点区间的估计值。
+
+“推算 100% 周额度 Token”汇总各区间比例；没有有效样本的区间用本周期总体平均比例补齐，并显示覆盖情况。跨区间样本只参与总体估计，不强行分摊。超过 5 分钟的采集中断、重置、额度回升会切断前后样本；历史记录保留，接口暂不可用时保留旧统计并标记过期。
+
+这些数值只反映本机能确认的官方订阅用量；其他设备、模型组成、缓存比例和额度更新延迟都可能影响换算，不能据此认定官方采用固定上限或分段计费。详细口径见 [数据来源](docs/data-sources.md)。
 
 ### 3.3 重置概率与 Tibo 动态
 

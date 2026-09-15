@@ -48,6 +48,9 @@ export function normalizeUiSettings(value) {
   normalized.showResetForecast = Object.prototype.hasOwnProperty.call(value, "showResetForecast")
     ? Boolean(value.showResetForecast)
     : true;
+  normalized.showQuotaToken = Object.prototype.hasOwnProperty.call(value, "showQuotaToken")
+    ? Boolean(value.showQuotaToken)
+    : true;
   normalized.autoResumeMessage = normalizeAutoResumeMessage(value.autoResumeMessage, AUTO_RESUME_MESSAGE);
   normalized.autoResumeThreads = {};
   if (value.autoResumeThreads && typeof value.autoResumeThreads === "object" && !Array.isArray(value.autoResumeThreads)) {

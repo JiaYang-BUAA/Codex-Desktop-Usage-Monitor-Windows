@@ -67,6 +67,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Backend heartbeat verification tests failed.' 
 if ($LASTEXITCODE -ne 0) { throw 'Slow startup recovery tests failed.' }
 & $node (Join-Path $root 'tests\usage-client.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Usage client tests failed.' }
+& $node (Join-Path $root 'tests\quota-token-observer.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Quota token observation tests failed.' }
+& $node (Join-Path $root 'tests\quota-token-integration.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Quota token integration tests failed.' }
 & $node (Join-Path $root 'tests\usage-monitor-lifecycle.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Renderer lifecycle tests failed.' }
 & $node (Join-Path $root 'tests\ui-settings.mjs')

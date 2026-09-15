@@ -115,18 +115,37 @@
       const gap = right.rect.x - left.rect.right;
       return !widest || gap > widest.width ? { left, right, width: gap } : widest;
     }, null);
-    const anchor = approval || widestGap?.left.node || bottomRow[0]?.node || null;
-    const anchorBox = box(anchor);
+    let anchor = approval || widestGap?.left.node || bottomRow[0]?.node || null;
+    let anchorBox = box(anchor);
     const rowCenter = anchorBox ? anchorBox.y + anchorBox.height / 2 : composerBox.bottom - 22;
     const controlsToRight = controls
       .map((node) => ({ node, rect: box(node) }))
       .filter(({ node, rect }) => rect && node !== anchor && rect.x >= (anchorBox?.right ?? composerBox.x)
         && Math.abs(rect.y + rect.height / 2 - rowCenter) <= 14);
-    const anchorRight = anchorBox?.right ?? composerBox.x + 12;
-    const placementX = anchorRight + 8;
-    const rightBoundary = approval || !widestGap
+    let placementX = (anchorBox?.right ?? composerBox.x + 12) + 8;
+    let rightBoundary = approval || !widestGap
       ? controlsToRight.reduce((minimum, value) => Math.min(minimum, value.rect.x), composerBox.right)
       : widestGap.right.rect.x;
+    let shiftedRight = false;
+    if (approval && rightBoundary - placementX - 8 < 104) {
+      // Goal/plan chips can occupy the gap immediately after permissions.
+      // Keep the same toolbar row and move beyond intervening controls instead
+      // of hiding while a usable gap still exists to the right.
+      const row = controlBoxes.filter(item => Math.abs(item.rect.y + item.rect.height / 2 - rowCenter) <= 14)
+        .sort((left, right) => left.rect.x - right.rect.x);
+      for (let index = 0; index < row.length; index += 1) {
+        const left = row[index];
+        if (left.rect.right < (anchorBox?.right ?? composerBox.x)) continue;
+        const boundary = row.slice(index + 1).reduce((minimum, item) => Math.min(minimum, item.rect.x), composerBox.right);
+        if (boundary - left.rect.right - 16 < 104) continue;
+        anchor = left.node;
+        anchorBox = left.rect;
+        placementX = left.rect.right + 8;
+        rightBoundary = boundary;
+        shiftedRight = true;
+        break;
+      }
+    }
     const available = Math.max(0, Math.floor(rightBoundary - placementX - 8));
     const reference = anchor || controls.find((node) => /(?:\b5\.\d|model|极高|high)/i.test(controlText(node))) || controls[0];
     if (reference) {
@@ -142,12 +161,14 @@
     host.style.setProperty("--usage-top", `${Math.round(placementY)}px`);
     host.style.setProperty("--usage-max-width", `${available}px`);
     const apiColumnsVisible = host.dataset.apiColumns !== "false";
-    const baseColumnCount = apiColumnsVisible ? 4 : 2;
+    const quotaTokenVisible = host.dataset.quotaToken !== "false";
+    const baseColumnCount = (apiColumnsVisible ? 4 : 2) + (quotaTokenVisible ? 1 : 0);
     const columnCount = Math.max(baseColumnCount, Number.parseInt(host.dataset.columnCount, 10) || baseColumnCount);
-    const resetForecastVisible = columnCount > baseColumnCount;
+    const resetForecastVisible = host.dataset.resetForecast !== "false";
     const columnWidths = [230, 230];
-    if (apiColumnsVisible) columnWidths.push(230, 170);
     if (resetForecastVisible) columnWidths.push(160);
+    if (quotaTokenVisible) columnWidths.push(400);
+    if (apiColumnsVisible) columnWidths.push(230, 170);
     while (columnWidths.length < columnCount) columnWidths.push(230);
     const columnWidthTotal = columnWidths.reduce((total, width) => total + width, 0);
     const renderedPopoverWidth = box(host.shadowRoot?.querySelector(".usage-popover"))?.width || 0;
@@ -158,7 +179,7 @@
     host.style.setProperty("--usage-column-widths", columnWidths.map((width) => `${width}px`).join(" "));
     host.style.setProperty("--usage-popover-width", `${popoverWidth}px`);
     host.style.setProperty("--usage-popover-shift", `${popoverShift}px`);
-    host.dataset.anchor = approval ? "approval" : widestGap ? "control-gap" : anchor ? "control" : "composer-left";
+    host.dataset.anchor = shiftedRight ? "right-control-gap" : approval ? "approval" : widestGap ? "control-gap" : anchor ? "control" : "composer-left";
     host.dataset.compact = String(available < 210);
     host.hidden = available < 104;
     return {

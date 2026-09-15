@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { createQuotaTokenObserver } from "./quota-token-observer.mjs";
 import {
   LOCAL_TOKEN_ACTIVE_SCAN_MS,
   LOCAL_TOKEN_IDLE_SCAN_MS,
@@ -695,10 +696,12 @@ export class LocalCodexTokenTracker {
     idleScanIntervalMs = LOCAL_TOKEN_IDLE_SCAN_MS,
     activeWindowMs = LOCAL_TOKEN_ACTIVE_WINDOW_MS,
     officialModelProviders = null,
+    onOfficialToken = () => {},
     now = () => Date.now(),
     onUpdate = () => {},
   } = {}) {
     this.sessionRoot = sessionRoot ? path.resolve(sessionRoot) : null;
+    this.onOfficialToken = onOfficialToken;
     this.counterPath = counterPath ? path.resolve(counterPath) : null;
     this.scanIntervalMs = Math.max(500, Number(scanIntervalMs) || LOCAL_TOKEN_ACTIVE_SCAN_MS);
     this.idleScanIntervalMs = Math.max(1000, Number(idleScanIntervalMs) || LOCAL_TOKEN_IDLE_SCAN_MS);
@@ -713,6 +716,7 @@ export class LocalCodexTokenTracker {
     this.seenEvents = new Set();
     this.threadLatest = new Map();
     this.threadExecutions = new Map();
+    this.turnCacheStats = new Map();
     this.officialModelProviders = new Set(
       Array.isArray(officialModelProviders)
         ? officialModelProviders.map((value) => String(value).trim().toLowerCase()).filter(Boolean)
@@ -748,6 +752,7 @@ export class LocalCodexTokenTracker {
       executionTimeRunning: false,
       executionTimeUpdatedAt: null,
       cacheHitRate: null,
+      lastTurnCacheHitRate: null,
       contextCompactions: null,
       quotaExceeded: null,
       autoResumeTasks: {},
@@ -773,6 +778,7 @@ export class LocalCodexTokenTracker {
     this.fileStates.clear();
     this.threadLatest.clear();
     this.threadExecutions.clear();
+    this.turnCacheStats.clear();
   }
 
   officialProviderKey() {
@@ -835,6 +841,7 @@ export class LocalCodexTokenTracker {
       && this.view.executionTimeRunning === view.executionTimeRunning
       && (!view.executionTimeRunning || this.view.executionTimeUpdatedAt === view.executionTimeUpdatedAt)
       && this.view.cacheHitRate === view.cacheHitRate
+      && this.view.lastTurnCacheHitRate === view.lastTurnCacheHitRate
       && this.view.contextCompactions === view.contextCompactions
       && this.view.quotaExceeded?.eventId === view.quotaExceeded?.eventId
       && JSON.stringify(this.view.autoResumeTasks) === JSON.stringify(view.autoResumeTasks)
@@ -942,6 +949,7 @@ export class LocalCodexTokenTracker {
       this.fileStates.clear();
       this.threadLatest.clear();
       this.threadExecutions.clear();
+      this.turnCacheStats.clear();
     }
     this.refresh().catch(() => {});
     return true;
@@ -1020,6 +1028,48 @@ export class LocalCodexTokenTracker {
     };
   }
 
+  observeTurnCache(state, event, completed = false) {
+    if (completed && event.turnId && state.currentTurnId && event.turnId !== state.currentTurnId) return;
+    const threadId = state.executionThreadId || state.threadId;
+    const turnId = event.turnId || state.currentTurnId;
+    if (!threadId || (state.executionForked && event.timestamp < state.executionSessionTimestamp)) return;
+    const stats = this.turnCacheStats.get(threadId) || { events: new Map(), completions: new Map(), dirty: true };
+    if (completed && turnId) stats.completions.set(turnId, Math.max(stats.completions.get(turnId) || 0, event.timestamp));
+    else if (!completed) stats.events.set(event.identity, { ...event, turnId });
+    stats.dirty = true;
+    this.turnCacheStats.set(threadId, stats);
+  }
+
+  taskTokenView(threadId) {
+    const stats = this.turnCacheStats.get(threadId);
+    if (!stats) return { tokens: null, cacheRate: null, lastTokens: null, lastCacheRate: null };
+    if (!stats.dirty) return stats.view;
+    let previousTotal = null, tokens = 0, input = 0, cached = 0;
+    const turns = new Map();
+    for (const event of [...stats.events.values()].sort((a, b) => a.timestamp - b.timestamp)) {
+      if (event.totalTokens !== null && event.totalTokens === previousTotal) continue;
+      if (event.totalTokens !== null) previousTotal = event.totalTokens;
+      tokens += event.tokens;
+      if (Number.isSafeInteger(event.inputTokens)) input += event.inputTokens;
+      if (Number.isSafeInteger(event.cachedInputTokens)) cached += event.cachedInputTokens;
+      if (!event.turnId || event.timestamp > (stats.completions.get(event.turnId) ?? Infinity)) continue;
+      const turn = turns.get(event.turnId) || { tokens: 0, input: 0, cached: 0, valid: true };
+      turn.tokens += event.tokens;
+      if (Number.isSafeInteger(event.inputTokens) && Number.isSafeInteger(event.cachedInputTokens)) {
+        turn.input += event.inputTokens; turn.cached += event.cachedInputTokens;
+      } else turn.valid = false;
+      turns.set(event.turnId, turn);
+    }
+    const last = [...stats.completions.entries()].sort((a, b) => b[1] - a[1])[0];
+    const turn = last ? turns.get(last[0]) : null;
+    stats.view = { tokens: stats.events.size && Number.isSafeInteger(tokens) ? tokens : null,
+      cacheRate: input > 0 ? Math.min(100, 100 * cached / input) : null,
+      lastTokens: last ? (turn?.tokens ?? 0) : null,
+      lastCacheRate: turn?.valid && turn.input > 0 ? Math.min(100, 100 * turn.cached / turn.input) : null };
+    stats.dirty = false;
+    return stats.view;
+  }
+
   async refresh() {
     if (this.refreshing) return this.refreshing;
     this.refreshing = Promise.resolve().then(() => {
@@ -1075,6 +1125,7 @@ export class LocalCodexTokenTracker {
                 // copied ancestor metadata must never change that identity.
                 if (!state.executionThreadId && context.sessionId) {
                   state.executionThreadId = context.sessionId;
+                  state.threadId = context.sessionId;
                   state.executionForked = context.forked;
                   state.executionSessionTimestamp = uuidV7Timestamp(context.sessionId) ?? context.timestamp;
                 }
@@ -1160,6 +1211,7 @@ export class LocalCodexTokenTracker {
             }
             const taskComplete = parseLocalTaskCompleteEvent(line);
             if (taskComplete) {
+              this.observeTurnCache(state, taskComplete, true);
               this.observeExecution(state, taskComplete, "complete");
               const quotaExceeded = parseLocalQuotaExceededEvent(line);
               state.quotaExceeded = quotaExceeded
@@ -1231,6 +1283,7 @@ export class LocalCodexTokenTracker {
             }
             if (event.totalTokens !== null) state.lastTotalTokens = event.totalTokens;
             const delta = totalChanged ? event.tokens : 0;
+            if (totalChanged) this.observeTurnCache(state, event);
             if (totalChanged) {
               const nextSessionTokens = (state.sessionTokens ?? 0) + event.tokens;
               if (Number.isSafeInteger(nextSessionTokens)) state.sessionTokens = nextSessionTokens;
@@ -1271,6 +1324,8 @@ export class LocalCodexTokenTracker {
               : `${identityScope}:epoch:${state.totalEpoch}:total:${event.totalTokens}`;
             const modelProvider = state.currentProvider || state.fallbackProvider;
             const officialUsage = delta !== null && delta > 0 && this.officialModelProviders.has(modelProvider);
+            if (officialUsage) this.onOfficialToken({ identity, timestamp: event.timestamp, tokens: delta,
+              inputTokens: event.inputTokens, cachedInputTokens: event.cachedInputTokens });
             if (officialUsage
               && Number.isSafeInteger(this.officialLifetimeTokens)
               && Number.isFinite(this.officialLifetimeCheckpointAt)
@@ -1312,10 +1367,8 @@ export class LocalCodexTokenTracker {
       const last7DaysTokens = this.currentLast7DaysTokens();
       const lifetimeTokens = this.currentLifetimeTokens();
       const currentTask = this.currentThreadId ? this.threadLatest.get(this.currentThreadId) || null : null;
-      const cacheHitRate = Number.isSafeInteger(currentTask?.sessionInputTokens) && currentTask.sessionInputTokens > 0
-        && Number.isSafeInteger(currentTask?.sessionCachedInputTokens) && currentTask.sessionCachedInputTokens >= 0
-        ? Math.min(100, (currentTask.sessionCachedInputTokens / currentTask.sessionInputTokens) * 100)
-        : null;
+      const taskTokens = this.taskTokenView(this.currentThreadId);
+      const cacheHitRate = taskTokens.cacheRate;
       if (this.counterDirty) {
         this.saveCounter(now);
       }
@@ -1327,8 +1380,9 @@ export class LocalCodexTokenTracker {
         last7DaysTokens,
         lifetimeTokens,
         currentThreadId: this.currentThreadId,
-        currentTaskTokens: currentTask?.sessionTokens ?? currentTask?.totalTokens ?? null,
-        lastTurnTokens: currentTask?.tokens ?? null,
+        currentTaskTokens: taskTokens.tokens,
+        lastTurnTokens: taskTokens.lastTokens,
+        lastTurnCacheHitRate: taskTokens.lastCacheRate,
         currentStatus: SESSION_STATUS_VALUES.has(currentTask?.currentStatus) ? currentTask.currentStatus : null,
         ...this.executionView(this.currentThreadId, now),
         cacheHitRate,
@@ -1464,6 +1518,8 @@ export function mergeOfficialLocalUsage(officialView, localView, now = new Date(
     currentThreadId: typeof localView?.currentThreadId === "string" ? localView.currentThreadId : null,
     currentTaskTokens: Number.isSafeInteger(localView?.currentTaskTokens) && localView.currentTaskTokens >= 0 ? localView.currentTaskTokens : null,
     lastTurnTokens: Number.isSafeInteger(localView?.lastTurnTokens) && localView.lastTurnTokens >= 0 ? localView.lastTurnTokens : null,
+    lastTurnCacheHitRate: Number.isFinite(localView?.lastTurnCacheHitRate)
+      ? Math.max(0, Math.min(100, localView.lastTurnCacheHitRate)) : null,
     currentStatus: SESSION_STATUS_VALUES.has(localView?.currentStatus) ? localView.currentStatus : null,
     executionTimeMs: Number.isSafeInteger(localView?.executionTimeMs) && localView.executionTimeMs >= 0 ? localView.executionTimeMs : null,
     executionTimeEstimated: localView?.executionTimeEstimated === true,
@@ -1676,10 +1732,18 @@ export function toSessionUsageSource(view, now = Date.now(), refreshMs = DEFAULT
       },
       {
         id: "cacheHitRate",
-        label: "缓存命中率",
-        display: `缓存 ${cacheHitValue}`,
-        detail: `缓存命中率：${cacheHitValue}`,
+        label: "总缓存命中率",
+        display: `总缓存 ${cacheHitValue}`,
+        detail: `总缓存命中率：${cacheHitValue}`,
         value: cacheHitValue,
+        defaultVisible: false,
+      },
+      {
+        id: "lastTurnCacheHitRate",
+        label: "上次回答缓存命中率",
+        value: Number.isFinite(view?.lastTurnCacheHitRate) ? `${Number(view.lastTurnCacheHitRate.toFixed(1))}%` : "--",
+        display: `上次缓存 ${Number.isFinite(view?.lastTurnCacheHitRate) ? `${Number(view.lastTurnCacheHitRate.toFixed(1))}%` : "--"}`,
+        detail: "最近一次已完成回答的缓存输入 Token / 输入 Token；生成中保留上次完成值。",
         defaultVisible: false,
       },
       {
@@ -2527,6 +2591,29 @@ export class ResetForecastClient {
   }
 }
 
+export function toQuotaTokenSource(summary, now = Date.now(), refreshMs = DEFAULT_REFRESH_MS) {
+  const tokens = value => Number.isFinite(value) ? formatMetricTokens(value) : "--";
+  const points = value => Number(Number(value || 0).toFixed(2));
+  const metric = (id, label, value, detail) => ({ id, label, value, display: `${label} ${value}`, detail, defaultVisible: false });
+  return {
+    id: "quota-token", label: "额度对应 Token", accountType: "quota-token",
+    status: summary.error ? "error" : summary.estimateStale ? "stale" : summary.updatedAt ? "ready" : "loading",
+    error: summary.error ? "观测记录不可读，已保留原文件" : null,
+    fetchedAt: summary.updatedAt, nextRefreshAt: now + refreshMs,
+    metrics: [
+      metric("wholeEstimateTokens", "推算100% Token", Number.isFinite(summary.estimatedFullTokens) ? `≈${tokens(summary.estimatedFullTokens)}` : "--",
+        summary.estimateStale ? "观测已中断，保留旧估计；等待新有效样本" : summary.estimatedFullTokens == null ? `采样中，至少需要 ${summary.minPercentagePoints} 个百分点`
+          : `区间估计；${summary.missingBinCount}/10 区间按本周期均值补齐`),
+      metric("observedQuota", "已观测额度", `${points(summary.observedPercentagePoints)} 个百分点`,
+        `实测 ${tokens(summary.observedTokens)} Token；跨区间样本 ${summary.crossBinSamples}；断点 ${summary.discontinuityCount}`),
+      metric("tokensPerPoint", "每1%对应 Token", tokens(summary.tokensPerPercentagePoint), "总有效 Token / 总有效额度百分点"),
+      ...summary.bins.map(bin => metric(`band${bin.upper}To${bin.lower}Tokens`, `${bin.upper}%→${bin.lower}%`,
+        bin.estimatedTokens == null ? "--" : `≈${tokens(bin.estimatedTokens)}`,
+        `实测 ${tokens(bin.observedTokens)} / ${points(bin.observedPercentagePoints)} 个百分点`)),
+    ],
+  };
+}
+
 export class CombinedUsageClient {
   constructor({ command = resolveCodexExecutable(), provider = loadApiProviderConfig(), refreshMs = DEFAULT_REFRESH_MS, forecastFetch = globalThis.fetch, onUpdate = () => {} } = {}) {
     this.onUpdate = onUpdate;
@@ -2538,7 +2625,13 @@ export class CombinedUsageClient {
     this.accountView = normalizeApiAccountView(null, [], { refreshMs });
     this.apiView = normalizeApiUsageView(null, null, provider);
     this.forecastView = normalizeResetForecastView(null, { refreshMs: RESET_FORECAST_REFRESH_MS });
-    this.localOfficial = new LocalCodexTokenTracker({ onUpdate: (view) => { this.localOfficialView = view; this.emit(); } });
+    this.quotaObserver = createQuotaTokenObserver({ statePath: process.env.LOCALAPPDATA
+      ? path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor", "quota-token-observations.json") : null });
+    this.quotaObservationQueue = Promise.resolve();
+    this.localOfficial = new LocalCodexTokenTracker({
+      onOfficialToken: event => this.quotaObserver.ingestToken(event),
+      onUpdate: (view) => { this.localOfficialView = view; this.emit(); },
+    });
     this.official = new UsageClient({
       command,
       refreshMs,
@@ -2554,6 +2647,21 @@ export class CombinedUsageClient {
         if (view?.officialModelProvidersResolved) {
           this.localOfficial.setOfficialModelProviders(view?.officialModelProviders);
         }
+        this.quotaObservationQueue = this.quotaObservationQueue.then(async () => {
+          const weekly = view.windows?.find(item => (!item.limitId || item.limitId === "codex")
+            && item.windowDurationMins >= 6 * 24 * 60 && item.windowDurationMins <= 8 * 24 * 60);
+          if (view.status !== "ready" || !weekly?.resetsAt || !this.localOfficial.classificationReady) {
+            this.quotaObserver.markDiscontinuity("official-source-unavailable");
+          } else {
+            const wasScanning = Boolean(this.localOfficial.refreshing);
+            let local = await this.localOfficial.refresh();
+            if (wasScanning) local = await this.localOfficial.refresh();
+            if (local.status !== "ready") this.quotaObserver.markDiscontinuity("local-source-unavailable");
+            else this.quotaObserver.observeQuota({ remainingPercent: weekly.remainingPercent,
+              resetAt: weekly.resetsAt, timestamp: Date.parse(view.fetchedAt) || Number(view.fetchedAt) || Date.now() });
+          }
+          this.emit();
+        }).catch(() => { this.quotaObserver.markDiscontinuity("observation-failed"); });
         this.emit();
       },
     });
@@ -2574,6 +2682,7 @@ export class CombinedUsageClient {
         "api-account": this.accountView,
         [this.apiView.id]: this.apiView,
         "reset-forecast": this.forecastView,
+        "quota-token": toQuotaTokenSource(this.quotaObserver.getSummary(), Date.now(), this.refreshMs),
       },
     });
   }
@@ -2602,6 +2711,8 @@ export class CombinedUsageClient {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     await Promise.all([this.official.stop(), this.localOfficial.stop(), this.account.stop(), this.api.stop(), this.forecast.stop()]);
+    await this.quotaObservationQueue;
+    this.quotaObserver.flush();
   }
 }
 
@@ -2669,7 +2780,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.0.8" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.0" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");
