@@ -34,6 +34,7 @@ try {
     unifiedMetricsVersion: 1,
     minimalMode: true,
     countdownVisualization: false,
+    refreshEvery30Seconds: false,
     englishUi: true,
     updateNotifications: false,
     metricOrder: ["official:secondaryRemaining", "bad", "official:secondaryRemaining", "api-account:balance"],
@@ -47,6 +48,7 @@ try {
     unifiedMetricsVersion: 1,
     minimalMode: true,
     countdownVisualization: false,
+    refreshEvery30Seconds: false,
     englishUi: true,
     updateNotifications: false,
     autoResume: false,
@@ -65,6 +67,7 @@ try {
     unifiedMetricsVersion: 1,
     minimalMode: false,
     countdownVisualization: true,
+    refreshEvery30Seconds: true,
     englishUi: false,
     updateNotifications: true,
     autoResume: true,
@@ -83,6 +86,7 @@ try {
     "api-account": [],
   });
   assert.equal(restarted.current.countdownVisualization, true);
+  assert.equal(restarted.current.refreshEvery30Seconds, true);
   assert.equal(restarted.current.updateNotifications, true);
   assert.equal(restarted.current.autoResume, true);
   assert.equal(restarted.current.showApiColumns, false);

@@ -301,6 +301,7 @@
         unifiedMetricsVersion: Number(value?.unifiedMetricsVersion) || 0,
         minimalMode: Boolean(value?.minimalMode),
         countdownVisualization: Boolean(value?.countdownVisualization),
+        refreshEvery30Seconds: Boolean(value?.refreshEvery30Seconds),
         englishUi: Boolean(value?.englishUi),
         updateNotifications: Boolean(value?.updateNotifications),
         autoResume: Boolean(value?.autoResume),
@@ -318,7 +319,7 @@
     } catch {
       return {
         metrics: {}, metricOrder: [], apiKeyMetricsVersion: 0, officialMetricsVersion: 0, unifiedMetricsVersion: 0,
-        minimalMode: false, countdownVisualization: false, englishUi: false, updateNotifications: false, autoResume: false,
+        minimalMode: false, countdownVisualization: false, refreshEvery30Seconds: false, englishUi: false, updateNotifications: false, autoResume: false,
         showApiColumns: false,
         showResetForecast: true,
         showQuotaToken: true,
@@ -1021,7 +1022,7 @@
     }));
     const ring = host.shadowRoot.querySelector(".usage-refresh-ring");
     if (ring) {
-      const progress = remainingMs === null ? 0 : Math.max(0, Math.min(1, 1 - remainingMs / REFRESH_INTERVAL_MS));
+      const progress = remainingMs === null ? 0 : Math.max(0, Math.min(1, 1 - remainingMs / (settings.refreshEvery30Seconds ? 30000 : REFRESH_INTERVAL_MS)));
       ring.style.setProperty("--usage-refresh-progress", `${Math.round(progress * 360)}deg`);
     }
   };
@@ -1550,6 +1551,7 @@
           for (const [setting, labelText] of [
             ["minimalMode", t("minimalMode")],
             ["countdownVisualization", t("countdownVisualization")],
+            ["refreshEvery30Seconds", t("refreshEvery30Seconds")],
             ["englishUi", t("englishUi")],
             ["updateNotifications", t("updateNotifications")],
             ["showApiColumns", t("showApiColumns")],
@@ -1780,7 +1782,7 @@
         if (input.type !== "checkbox") return;
         const state = window[STATE_KEY];
         const usage = normalizeUsage(state?.usage || window[USAGE_KEY]);
-        if (["minimalMode", "countdownVisualization", "englishUi", "updateNotifications", "autoResume", "autoResumeSharedMessage", "showApiColumns", "showResetForecast", "showQuotaToken"].includes(input.dataset.setting)) {
+        if (["minimalMode", "countdownVisualization", "refreshEvery30Seconds", "englishUi", "updateNotifications", "autoResume", "autoResumeSharedMessage", "showApiColumns", "showResetForecast", "showQuotaToken"].includes(input.dataset.setting)) {
           const settings = loadSettings();
           if (input.dataset.setting === "autoResume") {
             if (!usage.currentThreadId) return;

@@ -516,7 +516,7 @@ async function runWatch(options) {
     },
   });
   usageClient = new CombinedUsageClient({
-    refreshMs: 60000,
+    refreshMs: settingsStore.current?.refreshEvery30Seconds ? 30000 : 60000,
     onUpdate: (usage) => {
       latestBaseUsage = usage;
       publishUsage();
@@ -544,12 +544,14 @@ async function runWatch(options) {
       });
       await registerSettingsBinding(session, settingsStore, (value) => {
         autoUpdater.settingsChanged(value);
+        usageClient.setRefreshInterval(value?.refreshEvery30Seconds ? 30000 : 60000);
         usageClient.setAutoResumeThreadIds(Object.entries(value?.autoResumeThreads || {}).filter(([, config]) => config?.enabled === true).map(([id]) => id));
         return autoResumeController.settingsChanged(value);
       });
       await registerConfigurationBinding(session, options.port);
       await applyMonitor(session, latestUsage, settingsStore);
       autoUpdater.settingsChanged(settingsStore.current);
+      usageClient.setRefreshInterval(settingsStore.current?.refreshEvery30Seconds ? 30000 : 60000);
       usageClient.setAutoResumeThreadIds(Object.entries(settingsStore.current?.autoResumeThreads || {}).filter(([, config]) => config?.enabled === true).map(([id]) => id));
       await autoResumeController.settingsChanged(settingsStore.current);
       await syncCurrentThread(session, usageClient);

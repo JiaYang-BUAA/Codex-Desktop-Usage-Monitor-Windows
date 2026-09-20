@@ -2695,8 +2695,15 @@ export class CombinedUsageClient {
     return this.localOfficial.setAutoResumeThreadIds(values);
   }
 
-  async start() {
-    await Promise.all([this.official.start(), this.localOfficial.start(), this.account.start(), this.api.start(), this.forecast.start()]);
+  setRefreshInterval(refreshMs) {
+    if (![30000, 60000].includes(refreshMs) || refreshMs === this.refreshMs) return;
+    this.refreshMs = refreshMs;
+    for (const client of [this.official, this.account, this.api]) client.refreshMs = refreshMs;
+    if (this.timer) this.scheduleRefresh();
+  }
+
+  scheduleRefresh() {
+    if (this.timer) clearInterval(this.timer);
     this.nextRefreshAt = Date.now() + this.refreshMs;
     this.timer = setInterval(() => {
       this.nextRefreshAt = Date.now() + this.refreshMs;
@@ -2705,6 +2712,11 @@ export class CombinedUsageClient {
     }, this.refreshMs);
     this.timer.unref?.();
     this.emit();
+  }
+
+  async start() {
+    await Promise.all([this.official.start(), this.localOfficial.start(), this.account.start(), this.api.start(), this.forecast.start()]);
+    this.scheduleRefresh();
   }
 
   async stop() {
@@ -2780,7 +2792,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.0" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.1" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");

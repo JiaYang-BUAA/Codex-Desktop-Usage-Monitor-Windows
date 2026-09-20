@@ -1563,3 +1563,28 @@ assert.equal(forecastRequests, 1);
 await forecastClient.stop();
 
 console.log("PASS: official usage, reset forecast, API account aggregation, generic API mapping, provider validation, CCTQ compatibility, and sparse updates.");
+
+// Changing the interval replaces the timer, keeping all managed sources synchronized.
+{
+  const client = Object.create(CombinedUsageClient.prototype);
+  Object.assign(client, { refreshMs: 60000, timer: null, emit() {}, official: {}, account: {}, api: {}, forecast: { refreshMs: 300000 } });
+  try {
+    client.scheduleRefresh();
+    const previous = client.timer;
+    client.setRefreshInterval(30000);
+    assert.notEqual(client.timer, previous);
+    assert.equal(previous._destroyed, true);
+    assert.equal(client.timer._idleTimeout, 30000);
+    assert.ok(client.nextRefreshAt - Date.now() <= 30000);
+    for (const source of [client.official, client.account, client.api]) assert.equal(source.refreshMs, 30000);
+    assert.equal(client.forecast.refreshMs, 300000);
+    const timer = client.timer;
+    client.setRefreshInterval(30000);
+    assert.equal(client.timer, timer);
+    client.setRefreshInterval(60000);
+    assert.equal(timer._destroyed, true);
+    assert.equal(client.timer._idleTimeout, 60000);
+    client.setRefreshInterval(0);
+    assert.equal(client.refreshMs, 60000);
+  } finally { clearInterval(client.timer); }
+}
