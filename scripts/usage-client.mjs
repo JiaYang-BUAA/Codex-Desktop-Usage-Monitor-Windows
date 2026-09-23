@@ -629,7 +629,8 @@ function discoverRecentSessionFiles(root, dayStart, trackedThreadIds = new Set()
     let entries;
     try {
       entries = readdirSync(directory, { withFileTypes: true });
-      directories.set(directory, statSync(directory).mtimeMs);
+      directories.set(directory, { modifiedAt: statSync(directory).mtimeMs,
+        names: entries.map(entry => entry.name).sort().join("\0") });
     } catch { continue; }
     for (const entry of entries) {
       const candidate = path.join(directory, entry.name);
@@ -648,11 +649,19 @@ function discoverRecentSessionFiles(root, dayStart, trackedThreadIds = new Set()
   return { files: files.sort(), directories };
 }
 
-function sessionDirectoriesChanged(directories, root) {
+function sessionDirectoriesChanged(discovery, root, now) {
+  const { directories, files } = discovery;
   if (!directories.size) return Boolean(root && existsSync(root));
-  for (const [directory, modifiedAt] of directories) {
+  const date = new Date(now);
+  const recentPath = root && path.join(root, String(date.getFullYear()),
+    String(date.getMonth() + 1).padStart(2, "0"), String(date.getDate()).padStart(2, "0"));
+  const watched = new Set([root, recentPath,
+    recentPath && path.dirname(recentPath),
+    root && path.join(root, String(date.getFullYear())), ...files.map(file => path.dirname(file))]);
+  for (const [directory, { modifiedAt, names }] of directories) {
     try {
       if (statSync(directory).mtimeMs !== modifiedAt) return true;
+      if (watched.has(directory) && readdirSync(directory).sort().join("\0") !== names) return true;
     } catch { return true; }
   }
   return false;
@@ -1102,7 +1111,7 @@ export class LocalCodexTokenTracker {
       const discoveryKey = `${scanStart}:${[...trackedThreadIds].sort().join(",")}`;
       if (!this.sessionDiscovery || this.sessionDiscovery.key !== discoveryKey
         || now - this.sessionDiscovery.at >= SESSION_DISCOVERY_FALLBACK_MS
-        || sessionDirectoriesChanged(this.sessionDiscovery.directories, this.sessionRoot)) {
+        || sessionDirectoriesChanged(this.sessionDiscovery, this.sessionRoot, now)) {
         this.sessionDiscovery = { ...discoverRecentSessionFiles(this.sessionRoot, scanStart, trackedThreadIds),
           key: discoveryKey, at: now };
       }

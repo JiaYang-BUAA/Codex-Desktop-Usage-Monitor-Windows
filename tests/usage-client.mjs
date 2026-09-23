@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -856,7 +856,9 @@ try {
   assert.equal(merged.lastTurnTokens, 40);
   assert.ok(Math.abs(merged.cacheHitRate - 126 / 216 * 100) < 1e-9);
   const overlapPath = path.join(sessionRoot, `rollout-overlap-${threadId}_${uuidAt(trackerNow, 29)}.jsonl`);
+  const directoryTimes = statSync(sessionRoot);
   writeFileSync(overlapPath, readFileSync(sessionPath, "utf8"));
+  utimesSync(sessionRoot, directoryTimes.atime, directoryTimes.mtime);
   assert.equal((await restoredCacheTracker.refresh()).currentTaskTokens, 270,
     "replayed history in a second runtime file does not duplicate task totals");
   const splitTurn = uuidAt(trackerNow, 30);
