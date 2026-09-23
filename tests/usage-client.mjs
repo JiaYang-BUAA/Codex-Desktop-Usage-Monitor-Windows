@@ -760,7 +760,9 @@ try {
   assert.equal(tracked.autoResumeTasks[missingId], undefined);
   assert.equal(tracked.todayTokens, 13, "old background history does not count towards today");
   const emitted = updates.length;
+  const discovery = tracker.sessionDiscovery;
   await tracker.refresh();
+  assert.equal(tracker.sessionDiscovery, discovery, "unchanged directories reuse the discovered file list");
   assert.equal(updates.length, emitted, "unchanged background snapshots do not emit repeatedly");
   assert.deepEqual(mergeOfficialLocalUsage({}, tracked, new Date(trackerNow)).autoResumeTasks, tracked.autoResumeTasks);
 
@@ -778,6 +780,7 @@ try {
   ].join("\n"));
   assert.equal((await tracker.refresh()).autoResumeTasks[backgroundId].currentStatus, "paused",
     "rediscovered older quota history cannot resurrect a cancelled task");
+  assert.notEqual(tracker.sessionDiscovery, discovery, "new files refresh the directory inventory immediately");
   const nextTurn = uuidAt(trackerNow - 4000, 89);
   appendFileSync(backgroundPath, `${turnContext(trackerNow - 4000, nextTurn)}\n`);
   assert.equal((await tracker.refresh()).autoResumeTasks[backgroundId].currentStatus, "running");

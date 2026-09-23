@@ -617,14 +617,20 @@ function sessionThreadIdFromPath(filePath) {
   return path.basename(filePath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)?.[1]?.toLowerCase() || null;
 }
 
+const SESSION_DISCOVERY_FALLBACK_MS = 30000;
+
 function discoverRecentSessionFiles(root, dayStart, trackedThreadIds = new Set()) {
-  if (!root || !existsSync(root)) return [];
+  if (!root || !existsSync(root)) return { files: [], directories: new Map() };
   const files = [];
+  const directories = new Map();
   const pending = [root];
   while (pending.length) {
     const directory = pending.pop();
     let entries;
-    try { entries = readdirSync(directory, { withFileTypes: true }); } catch { continue; }
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+      directories.set(directory, statSync(directory).mtimeMs);
+    } catch { continue; }
     for (const entry of entries) {
       const candidate = path.join(directory, entry.name);
       if (entry.isDirectory()) {
@@ -639,7 +645,17 @@ function discoverRecentSessionFiles(root, dayStart, trackedThreadIds = new Set()
       } catch {}
     }
   }
-  return files.sort();
+  return { files: files.sort(), directories };
+}
+
+function sessionDirectoriesChanged(directories, root) {
+  if (!directories.size) return Boolean(root && existsSync(root));
+  for (const [directory, modifiedAt] of directories) {
+    try {
+      if (statSync(directory).mtimeMs !== modifiedAt) return true;
+    } catch { return true; }
+  }
+  return false;
 }
 
 function readAppendedUsageLines(filePath, fileState, onLine) {
@@ -713,6 +729,7 @@ export class LocalCodexTokenTracker {
     this.lastActivityAt = null;
     this.refreshing = null;
     this.fileStates = new Map();
+    this.sessionDiscovery = null;
     this.seenEvents = new Set();
     this.threadLatest = new Map();
     this.threadExecutions = new Map();
@@ -1082,7 +1099,14 @@ export class LocalCodexTokenTracker {
       const scanStart = checkpoints.length ? Math.min(dayStart, ...checkpoints) : dayStart;
       const trackedThreadIds = new Set(this.autoResumeThreadIds);
       if (this.currentThreadId) trackedThreadIds.add(this.currentThreadId);
-      const files = discoverRecentSessionFiles(this.sessionRoot, scanStart, trackedThreadIds);
+      const discoveryKey = `${scanStart}:${[...trackedThreadIds].sort().join(",")}`;
+      if (!this.sessionDiscovery || this.sessionDiscovery.key !== discoveryKey
+        || now - this.sessionDiscovery.at >= SESSION_DISCOVERY_FALLBACK_MS
+        || sessionDirectoriesChanged(this.sessionDiscovery.directories, this.sessionRoot)) {
+        this.sessionDiscovery = { ...discoverRecentSessionFiles(this.sessionRoot, scanStart, trackedThreadIds),
+          key: discoveryKey, at: now };
+      }
+      const files = this.sessionDiscovery.files;
       let activityDetected = false;
       for (const filePath of files) {
         const state = this.fileStates.get(filePath) || {
@@ -2792,7 +2816,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.1" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.2" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");
