@@ -11,7 +11,7 @@
     MAX_MINIMAL_SELECTED_METRICS,
   } = modules.constants;
   const { createTranslator } = modules.i18n;
-  const { findPlacement, configurePosition } = modules.placement;
+  const { findPlacement, configurePosition, clearPlacement } = modules.placement;
   const isVisible = (node) => {
     const rect = node?.getBoundingClientRect?.();
     return Boolean(rect && rect.width > 0 && rect.height > 0);
@@ -1628,6 +1628,7 @@
     if (preferredComposer && (!preferredComposer.isConnected || !isVisible(preferredComposer))) preferredComposer = null;
     const placement = findPlacement(HOST_ID, preferredComposer);
     if (!placement.composer) {
+      clearPlacement();
       document.getElementById(HOST_ID)?.remove();
       if (state) {
         state.host = null;
@@ -1960,6 +1961,7 @@
       window.removeEventListener("pointerdown", outsideHandler, true);
       document.removeEventListener("visibilitychange", visibilityHandler);
       document.getElementById(HOST_ID)?.remove();
+      clearPlacement();
       delete window[USAGE_KEY];
       delete window[STATE_KEY];
       delete window.__CODEX_USAGE_MONITOR_MODULES__;

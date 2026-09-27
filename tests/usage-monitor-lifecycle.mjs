@@ -343,7 +343,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.1.3", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.1.4", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -738,6 +738,37 @@ try {
   window.__CODEX_USAGE_MONITOR_STATE__.ensure();
   assert.equal(host.dataset.anchor, 'approval');
   assert.equal(host.style.getPropertyValue('--usage-left'), '234px');
+
+  // A question card puts the editable into the toolbar gap. Reserve a real
+  // row beneath it and undo the reservation when the layout returns to normal.
+  const questionComposer = window.document.querySelector('.composer-surface-chrome');
+  const questionEditable = questionComposer.querySelector('[contenteditable="true"]');
+  questionComposer.style.setProperty('padding-bottom', '6px', 'important');
+  questionComposer.getBoundingClientRect = () => {
+    const extra = Number.parseFloat(questionComposer.style.paddingBottom) - 6;
+    return { x: 100, y: 100, width: 700, height: 100 + extra, right: 800, bottom: 200 + extra };
+  };
+  questionEditable.getBoundingClientRect = () =>
+    ({ x: 234, y: 164, width: 380, height: 28, right: 614, bottom: 192 });
+  for (let repeat = 0; repeat < 3; repeat += 1) {
+    window.__CODEX_USAGE_MONITOR_STATE__.ensure();
+    assert.equal(host.hidden, false);
+    assert.equal(host.dataset.anchor, 'reserved-composer-row');
+    assert.equal(questionComposer.style.paddingBottom, '42px', 'reservation must not accumulate');
+    const top = Number.parseFloat(host.style.getPropertyValue('--usage-top'));
+    assert.ok(top >= 192 + 4, 'monitor must be below the editable and buttons');
+    assert.ok(top + 28 <= questionComposer.getBoundingClientRect().bottom - 6);
+  }
+  window.__CODEX_USAGE_MONITOR_STATE__.cleanup();
+  assert.equal(questionComposer.style.paddingBottom, '6px', 'cleanup restores native spacing');
+  assert.equal(questionComposer.style.getPropertyPriority('padding-bottom'), 'important');
+  window.eval(payload);
+  host = window.document.getElementById('codex-usage-monitor');
+  assert.equal(host.dataset.anchor, 'reserved-composer-row');
+  delete questionEditable.getBoundingClientRect;
+  window.__CODEX_USAGE_MONITOR_STATE__.ensure();
+  assert.equal(questionComposer.style.paddingBottom, '6px', 'normal input restores native spacing');
+  assert.equal(host.dataset.anchor, 'approval');
 
   window.document.getElementById("composer-wrapper").innerHTML = updatedComposerMarkup();
   await new Promise((resolve) => setTimeout(resolve, 250));

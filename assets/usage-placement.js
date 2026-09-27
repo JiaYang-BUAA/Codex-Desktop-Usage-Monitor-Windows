@@ -22,6 +22,14 @@
   const controlText = (node) => `${node?.getAttribute?.("aria-label") || ""} ${node?.getAttribute?.("title") || ""} ${node?.textContent || ""}`.trim();
   const isApprovalControl = (node) => APPROVAL_PATTERN.test(controlText(node));
   const composerSelector = COMPOSER_SELECTORS.join(", ");
+  let reservedComposer = null;
+  const clearPlacement = () => {
+    if (!reservedComposer) return;
+    const { node, value, priority } = reservedComposer;
+    if (value) node.style.setProperty("padding-bottom", value, priority);
+    else node.style.removeProperty("padding-bottom");
+    reservedComposer = null;
+  };
 
   // ChatGPT Chat and Work share ComposerLayoutRoot and the top-level mode.
   // Use field metadata, never message contents or the global ChatGPT selector.
@@ -100,7 +108,8 @@
   };
 
   const configurePosition = (host, composer, hostId) => {
-    const composerBox = box(composer);
+    if (reservedComposer && reservedComposer.node !== composer) clearPlacement();
+    let composerBox = box(composer);
     if (!composerBox) return { ok: false, reason: "composer-box-unavailable" };
     const controls = [...composer.querySelectorAll(CONTROL_SELECTOR)]
       .filter((node) => isVisible(node) && !node.closest(`#${hostId}`));
@@ -117,7 +126,7 @@
     }, null);
     let anchor = approval || widestGap?.left.node || bottomRow[0]?.node || null;
     let anchorBox = box(anchor);
-    const rowCenter = anchorBox ? anchorBox.y + anchorBox.height / 2 : composerBox.bottom - 22;
+    let rowCenter = anchorBox ? anchorBox.y + anchorBox.height / 2 : composerBox.bottom - 22;
     const controlsToRight = controls
       .map((node) => ({ node, rect: box(node) }))
       .filter(({ node, rect }) => rect && node !== anchor && rect.x >= (anchorBox?.right ?? composerBox.x)
@@ -146,7 +155,30 @@
         break;
       }
     }
-    const available = Math.max(0, Math.floor(rightBoundary - placementX - 8));
+    let available = Math.max(0, Math.floor(rightBoundary - placementX - 8));
+    const hostHeight = box(host)?.height || 28;
+    // Question cards put an editable in the same row as the toolbar buttons.
+    // That apparent button gap is input space, not a safe monitor location.
+    const inlineInput = [...composer.querySelectorAll(EDITABLE_SELECTOR)].map(box)
+      .some((rect) => rect && rect.width > 0 && rect.height > 0
+        && rect.y < rowCenter + hostHeight / 2 && rect.bottom > rowCenter - hostHeight / 2
+        && rect.x < rightBoundary && rect.right > placementX);
+    if (inlineInput) {
+      if (!reservedComposer) {
+        reservedComposer = { node: composer,
+          value: composer.style.getPropertyValue("padding-bottom"),
+          priority: composer.style.getPropertyPriority("padding-bottom"),
+          base: Number.parseFloat(getComputedStyle(composer).paddingBottom) || 0 };
+      }
+      composer.style.setProperty("padding-bottom", `${reservedComposer.base + hostHeight + 8}px`, "important");
+      composerBox = box(composer);
+      placementX = composerBox.x + 12;
+      available = Math.max(0, Math.floor(composerBox.width - 24));
+      rowCenter = composerBox.bottom - reservedComposer.base - 4 - hostHeight / 2;
+    } else if (reservedComposer) {
+      clearPlacement();
+      return configurePosition(host, composer, hostId);
+    }
     const reference = anchor || controls.find((node) => /(?:\b5\.\d|model|极高|high)/i.test(controlText(node))) || controls[0];
     if (reference) {
       const referenceStyle = getComputedStyle(reference);
@@ -155,7 +187,6 @@
       const surface = getComputedStyle(composer).backgroundColor;
       host.style.setProperty("--usage-surface", surface && surface !== "rgba(0, 0, 0, 0)" ? surface : "rgba(255, 255, 255, .96)");
     }
-    const hostHeight = box(host)?.height || 28;
     const placementY = Math.max(8, Math.min(window.innerHeight - hostHeight - 8, rowCenter - hostHeight / 2));
     host.style.setProperty("--usage-left", `${Math.round(placementX)}px`);
     host.style.setProperty("--usage-top", `${Math.round(placementY)}px`);
@@ -179,7 +210,8 @@
     host.style.setProperty("--usage-column-widths", columnWidths.map((width) => `${width}px`).join(" "));
     host.style.setProperty("--usage-popover-width", `${popoverWidth}px`);
     host.style.setProperty("--usage-popover-shift", `${popoverShift}px`);
-    host.dataset.anchor = shiftedRight ? "right-control-gap" : approval ? "approval" : widestGap ? "control-gap" : anchor ? "control" : "composer-left";
+    host.dataset.anchor = inlineInput ? "reserved-composer-row"
+      : shiftedRight ? "right-control-gap" : approval ? "approval" : widestGap ? "control-gap" : anchor ? "control" : "composer-left";
     host.dataset.compact = String(available < 210);
     host.hidden = available < 104;
     return {
@@ -191,5 +223,5 @@
     };
   };
 
-  registry.placement = Object.freeze({ box, findPlacement, configurePosition });
+  registry.placement = Object.freeze({ box, findPlacement, configurePosition, clearPlacement });
 })();
