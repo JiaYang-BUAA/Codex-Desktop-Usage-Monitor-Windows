@@ -39,7 +39,10 @@ export function selectCurrentCodexThread(rootDocument) {
           : 0;
       return { candidate, distance };
     }).sort((left, right) => left.distance - right.distance)[0]?.candidate || null;
-    const active = anchored || visible.at(-1) || candidates.at(-1) || null;
+    // Empty composer markers are hidden in both the main task and side chat.
+    // The main task is mounted first; the later side-chat marker must not
+    // replace it when neither marker has a measurable rectangle.
+    const active = anchored || visible.at(-1) || candidates[0] || null;
     if (active) return { threadId: active.threadId, auxiliaryConversationPresent };
   }
 

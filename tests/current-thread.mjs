@@ -67,6 +67,24 @@ function createDom(markup) {
 }
 
 {
+  const sideThreadId = "01a0e0de-7c51-7bf0-b364-3bc4a5292696";
+  const dom = createDom(`
+    <div id="codex-usage-monitor"></div>
+    <div data-above-composer-conversation-id="${codexThreadId}"></div>
+    <div data-above-composer-conversation-id="${sideThreadId}"></div>
+  `);
+  try {
+    // Codex hides empty composer markers even while both task panes exist.
+    assert.deepEqual(selectCurrentCodexThread(dom.window.document), {
+      threadId: codexThreadId,
+      auxiliaryConversationPresent: false,
+    });
+  } finally {
+    dom.window.close();
+  }
+}
+
+{
   const dom = createDom(`<div data-conversation-id="CHATGPT: ${chatGptThreadId}"></div>`);
   try {
     assert.deepEqual(selectCurrentCodexThread(dom.window.document), {
