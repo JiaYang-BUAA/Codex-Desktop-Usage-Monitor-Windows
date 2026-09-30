@@ -22,6 +22,39 @@ function createDom(markup) {
 }
 
 {
+  const otherThreadId = "01a0f260-c8d0-7890-8c72-81e0efc8ace9";
+  const dom = createDom(`
+    <div data-app-shell-active-page="false"><div data-above-composer-conversation-id="${codexThreadId}"></div></div>
+    <div data-app-shell-active-page="true"><div data-above-composer-conversation-id="${otherThreadId}"></div></div>
+  `);
+  try {
+    const pages = dom.window.document.querySelectorAll('[data-app-shell-active-page]');
+    assert.equal(selectCurrentCodexThread(dom.window.document).threadId, otherThreadId);
+    assert.equal(JSON.parse(JSON.stringify(dom.window.eval(currentThreadSelectionExpression()))).threadId, otherThreadId);
+    pages[0].setAttribute('data-app-shell-active-page', 'true');
+    pages[1].setAttribute('data-app-shell-active-page', 'false');
+    assert.equal(selectCurrentCodexThread(dom.window.document).threadId, codexThreadId, 'switching cached pages changes task');
+    pages[0].setAttribute('data-app-shell-active-page', 'false');
+    assert.equal(selectCurrentCodexThread(dom.window.document).threadId, null, 'no active task must not read cached pages');
+    pages[0].setAttribute('data-app-shell-active-page', 'true');
+    pages[0].setAttribute('inert', '');
+    assert.equal(selectCurrentCodexThread(dom.window.document).threadId, null);
+    pages[0].removeAttribute('inert');
+    pages[0].setAttribute('aria-hidden', 'true');
+    assert.equal(selectCurrentCodexThread(dom.window.document).threadId, null);
+    pages[0].removeAttribute('aria-hidden');
+    const calls = [];
+    const session = { evaluate: expression => dom.window.eval(expression) };
+    const client = { setCurrentThreadId: id => calls.push(id) };
+    await syncCurrentThread(session, client);
+    pages[0].setAttribute('data-app-shell-active-page', 'false');
+    pages[1].setAttribute('data-app-shell-active-page', 'true');
+    await syncCurrentThread(session, client);
+    assert.deepEqual(calls, [codexThreadId, otherThreadId], 'backend switches to the active task');
+  } finally { dom.window.close(); }
+}
+
+{
   const dom = createDom(`
     <div data-above-composer-conversation-id="${codexThreadId}"></div>
     <div data-above-composer-conversation-id="chatgpt:${chatGptThreadId}"></div>

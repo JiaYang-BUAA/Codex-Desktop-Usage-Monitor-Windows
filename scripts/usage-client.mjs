@@ -14,7 +14,6 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { createQuotaTokenObserver } from "./quota-token-observer.mjs";
 import {
   LOCAL_TOKEN_ACTIVE_SCAN_MS,
   LOCAL_TOKEN_IDLE_SCAN_MS,
@@ -721,12 +720,10 @@ export class LocalCodexTokenTracker {
     idleScanIntervalMs = LOCAL_TOKEN_IDLE_SCAN_MS,
     activeWindowMs = LOCAL_TOKEN_ACTIVE_WINDOW_MS,
     officialModelProviders = null,
-    onOfficialToken = () => {},
     now = () => Date.now(),
     onUpdate = () => {},
   } = {}) {
     this.sessionRoot = sessionRoot ? path.resolve(sessionRoot) : null;
-    this.onOfficialToken = onOfficialToken;
     this.counterPath = counterPath ? path.resolve(counterPath) : null;
     this.scanIntervalMs = Math.max(500, Number(scanIntervalMs) || LOCAL_TOKEN_ACTIVE_SCAN_MS);
     this.idleScanIntervalMs = Math.max(1000, Number(idleScanIntervalMs) || LOCAL_TOKEN_IDLE_SCAN_MS);
@@ -1357,8 +1354,6 @@ export class LocalCodexTokenTracker {
               : `${identityScope}:epoch:${state.totalEpoch}:total:${event.totalTokens}`;
             const modelProvider = state.currentProvider || state.fallbackProvider;
             const officialUsage = delta !== null && delta > 0 && this.officialModelProviders.has(modelProvider);
-            if (officialUsage) this.onOfficialToken({ identity, timestamp: event.timestamp, tokens: delta,
-              inputTokens: event.inputTokens, cachedInputTokens: event.cachedInputTokens });
             if (officialUsage
               && Number.isSafeInteger(this.officialLifetimeTokens)
               && Number.isFinite(this.officialLifetimeCheckpointAt)
@@ -2624,29 +2619,6 @@ export class ResetForecastClient {
   }
 }
 
-export function toQuotaTokenSource(summary, now = Date.now(), refreshMs = DEFAULT_REFRESH_MS) {
-  const tokens = value => Number.isFinite(value) ? formatMetricTokens(value) : "--";
-  const points = value => Number(Number(value || 0).toFixed(2));
-  const metric = (id, label, value, detail) => ({ id, label, value, display: `${label} ${value}`, detail, defaultVisible: false });
-  return {
-    id: "quota-token", label: "额度对应 Token", accountType: "quota-token",
-    status: summary.error ? "error" : summary.estimateStale ? "stale" : summary.updatedAt ? "ready" : "loading",
-    error: summary.error ? "观测记录不可读，已保留原文件" : null,
-    fetchedAt: summary.updatedAt, nextRefreshAt: now + refreshMs,
-    metrics: [
-      metric("wholeEstimateTokens", "推算100% Token", Number.isFinite(summary.estimatedFullTokens) ? `≈${tokens(summary.estimatedFullTokens)}` : "--",
-        summary.estimateStale ? "观测已中断，保留旧估计；等待新有效样本" : summary.estimatedFullTokens == null ? `采样中，至少需要 ${summary.minPercentagePoints} 个百分点`
-          : `区间估计；${summary.missingBinCount}/10 区间按本周期均值补齐`),
-      metric("observedQuota", "已观测额度", `${points(summary.observedPercentagePoints)} 个百分点`,
-        `实测 ${tokens(summary.observedTokens)} Token；跨区间样本 ${summary.crossBinSamples}；断点 ${summary.discontinuityCount}`),
-      metric("tokensPerPoint", "每1%对应 Token", tokens(summary.tokensPerPercentagePoint), "总有效 Token / 总有效额度百分点"),
-      ...summary.bins.map(bin => metric(`band${bin.upper}To${bin.lower}Tokens`, `${bin.upper}%→${bin.lower}%`,
-        bin.estimatedTokens == null ? "--" : `≈${tokens(bin.estimatedTokens)}`,
-        `实测 ${tokens(bin.observedTokens)} / ${points(bin.observedPercentagePoints)} 个百分点`)),
-    ],
-  };
-}
-
 export class CombinedUsageClient {
   constructor({ command = resolveCodexExecutable(), provider = loadApiProviderConfig(), refreshMs = DEFAULT_REFRESH_MS, forecastFetch = globalThis.fetch, onUpdate = () => {} } = {}) {
     this.onUpdate = onUpdate;
@@ -2658,11 +2630,7 @@ export class CombinedUsageClient {
     this.accountView = normalizeApiAccountView(null, [], { refreshMs });
     this.apiView = normalizeApiUsageView(null, null, provider);
     this.forecastView = normalizeResetForecastView(null, { refreshMs: RESET_FORECAST_REFRESH_MS });
-    this.quotaObserver = createQuotaTokenObserver({ statePath: process.env.LOCALAPPDATA
-      ? path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor", "quota-token-observations.json") : null });
-    this.quotaObservationQueue = Promise.resolve();
     this.localOfficial = new LocalCodexTokenTracker({
-      onOfficialToken: event => this.quotaObserver.ingestToken(event),
       onUpdate: (view) => { this.localOfficialView = view; this.emit(); },
     });
     this.official = new UsageClient({
@@ -2680,21 +2648,6 @@ export class CombinedUsageClient {
         if (view?.officialModelProvidersResolved) {
           this.localOfficial.setOfficialModelProviders(view?.officialModelProviders);
         }
-        this.quotaObservationQueue = this.quotaObservationQueue.then(async () => {
-          const weekly = view.windows?.find(item => (!item.limitId || item.limitId === "codex")
-            && item.windowDurationMins >= 6 * 24 * 60 && item.windowDurationMins <= 8 * 24 * 60);
-          if (view.status !== "ready" || !weekly?.resetsAt || !this.localOfficial.classificationReady) {
-            this.quotaObserver.markDiscontinuity("official-source-unavailable");
-          } else {
-            const wasScanning = Boolean(this.localOfficial.refreshing);
-            let local = await this.localOfficial.refresh();
-            if (wasScanning) local = await this.localOfficial.refresh();
-            if (local.status !== "ready") this.quotaObserver.markDiscontinuity("local-source-unavailable");
-            else this.quotaObserver.observeQuota({ remainingPercent: weekly.remainingPercent,
-              resetAt: weekly.resetsAt, timestamp: Date.parse(view.fetchedAt) || Number(view.fetchedAt) || Date.now() });
-          }
-          this.emit();
-        }).catch(() => { this.quotaObserver.markDiscontinuity("observation-failed"); });
         this.emit();
       },
     });
@@ -2715,7 +2668,6 @@ export class CombinedUsageClient {
         "api-account": this.accountView,
         [this.apiView.id]: this.apiView,
         "reset-forecast": this.forecastView,
-        "quota-token": toQuotaTokenSource(this.quotaObserver.getSummary(), Date.now(), this.refreshMs),
       },
     });
   }
@@ -2756,8 +2708,6 @@ export class CombinedUsageClient {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     await Promise.all([this.official.stop(), this.localOfficial.stop(), this.account.stop(), this.api.stop(), this.forecast.stop()]);
-    await this.quotaObservationQueue;
-    this.quotaObserver.flush();
   }
 }
 
@@ -2825,7 +2775,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.5" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.6" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");

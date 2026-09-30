@@ -202,13 +202,11 @@
     host.style.setProperty("--usage-top", `${Math.round(placementY)}px`);
     host.style.setProperty("--usage-max-width", `${available}px`);
     const apiColumnsVisible = host.dataset.apiColumns !== "false";
-    const quotaTokenVisible = host.dataset.quotaToken !== "false";
-    const baseColumnCount = (apiColumnsVisible ? 4 : 2) + (quotaTokenVisible ? 1 : 0);
-    const columnCount = Math.max(baseColumnCount, Number.parseInt(host.dataset.columnCount, 10) || baseColumnCount);
     const resetForecastVisible = host.dataset.resetForecast !== "false";
+    const baseColumnCount = (apiColumnsVisible ? 4 : 2) + (resetForecastVisible ? 1 : 0);
+    const columnCount = Math.max(baseColumnCount, Number.parseInt(host.dataset.columnCount, 10) || baseColumnCount);
     const columnWidths = [230, 230];
     if (resetForecastVisible) columnWidths.push(160);
-    if (quotaTokenVisible) columnWidths.push(400);
     if (apiColumnsVisible) columnWidths.push(230, 170);
     while (columnWidths.length < columnCount) columnWidths.push(230);
     const columnWidthTotal = columnWidths.reduce((total, width) => total + width, 0);

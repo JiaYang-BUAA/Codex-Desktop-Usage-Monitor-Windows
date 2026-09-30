@@ -21,7 +21,7 @@ export function normalizeUiSettings(value) {
   const metrics = {};
   if (value.metrics && typeof value.metrics === "object" && !Array.isArray(value.metrics)) {
     for (const [sourceId, ids] of Object.entries(value.metrics).slice(0, 16)) {
-      if (!SOURCE_ID_PATTERN.test(sourceId) || !Array.isArray(ids)) continue;
+      if (!SOURCE_ID_PATTERN.test(sourceId) || sourceId === "quota-token" || !Array.isArray(ids)) continue;
       metrics[sourceId] = [...new Set(ids
         .filter((id) => typeof id === "string" && METRIC_ID_PATTERN.test(id))
         .map((id) => ["session", "official"].includes(sourceId) && id === "currentStatus" ? "executionTime" : id))]
@@ -33,7 +33,8 @@ export function normalizeUiSettings(value) {
         if (typeof key !== "string" || key.length > 82) return false;
         const separator = key.indexOf(":");
         if (separator <= 0 || separator !== key.lastIndexOf(":")) return false;
-        return SOURCE_ID_PATTERN.test(key.slice(0, separator)) && METRIC_ID_PATTERN.test(key.slice(separator + 1));
+        return key.slice(0, separator) !== "quota-token"
+          && SOURCE_ID_PATTERN.test(key.slice(0, separator)) && METRIC_ID_PATTERN.test(key.slice(separator + 1));
       }).map((key) => key.replace(/^(session|official):currentStatus$/, "$1:executionTime")))].slice(0, 64)
     : [];
   const normalized = { schemaVersion: UI_SETTINGS_SCHEMA_VERSION, metrics, metricOrder };
@@ -47,9 +48,6 @@ export function normalizeUiSettings(value) {
     : true;
   normalized.showResetForecast = Object.prototype.hasOwnProperty.call(value, "showResetForecast")
     ? Boolean(value.showResetForecast)
-    : true;
-  normalized.showQuotaToken = Object.prototype.hasOwnProperty.call(value, "showQuotaToken")
-    ? Boolean(value.showQuotaToken)
     : true;
   normalized.autoResumeMessage = normalizeAutoResumeMessage(value.autoResumeMessage, AUTO_RESUME_MESSAGE);
   normalized.autoResumeThreads = {};

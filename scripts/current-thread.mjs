@@ -14,6 +14,9 @@ export function selectCurrentCodexThread(rootDocument) {
   for (const attribute of attributes) {
     const candidates = [];
     for (const node of rootDocument.querySelectorAll(`[${attribute}]`)) {
+      // Desktop keeps previously opened pages mounted. Their empty task
+      // markers have no geometry, just like the active main/side-chat markers.
+      if (node.closest?.('[data-app-shell-active-page="false"], [aria-hidden="true"], [inert]')) continue;
       const value = String(node.getAttribute(attribute) || "").trim();
       if (/^chatgpt\s*:/i.test(value)) {
         auxiliaryConversationPresent = true;
@@ -40,7 +43,7 @@ export function selectCurrentCodexThread(rootDocument) {
       return { candidate, distance };
     }).sort((left, right) => left.distance - right.distance)[0]?.candidate || null;
     // Empty composer markers are hidden in both the main task and side chat.
-    // The main task is mounted first; the later side-chat marker must not
+    // Within the active page the main task is mounted first; the side-chat marker must not
     // replace it when neither marker has a measurable rectangle.
     const active = anchored || visible.at(-1) || candidates[0] || null;
     if (active) return { threadId: active.threadId, auxiliaryConversationPresent };

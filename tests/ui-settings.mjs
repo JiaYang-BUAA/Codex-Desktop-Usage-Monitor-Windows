@@ -55,7 +55,6 @@ try {
     autoResumeSharedMessage: false,
     showApiColumns: true,
     showResetForecast: true,
-    showQuotaToken: true,
     autoResumeMessage: "继续",
     autoResumeThreads: {},
   });
@@ -63,7 +62,7 @@ try {
   const first = await createUiSettingsStore(settingsPath);
   assert.equal(first.current, null);
   await first.save({
-    metrics: { official: ["secondaryRemaining", "currentTaskTokens"], "api-account": [] },
+    metrics: { official: ["secondaryRemaining", "currentTaskTokens"], "api-account": [], "quota-token": ["wholeEstimateTokens"] },
     unifiedMetricsVersion: 1,
     minimalMode: false,
     countdownVisualization: true,
@@ -74,7 +73,7 @@ try {
     showApiColumns: false,
     showResetForecast: false,
     showQuotaToken: false,
-    metricOrder: ["official:secondaryRemaining", "api-account:balance"],
+    metricOrder: ["official:secondaryRemaining", "quota-token:wholeEstimateTokens", "api-account:balance"],
     autoResumeMessage: "请继续完成当前任务",
     autoResumeThreads: { [threadId]: { enabled: true, message: "请继续完成当前任务" }, invalid: { enabled: true, message: "bad" } },
   });
@@ -91,10 +90,7 @@ try {
   assert.equal(restarted.current.autoResume, true);
   assert.equal(restarted.current.showApiColumns, false);
   assert.equal(restarted.current.showResetForecast, false);
-  assert.equal(restarted.current.showQuotaToken, false);
-  assert.equal(normalizeUiSettings({ metrics: {} }).showQuotaToken, true, "existing settings without the new switch keep the quota column visible");
-  await restarted.save({ ...restarted.current, showQuotaToken: true });
-  assert.equal((await createUiSettingsStore(settingsPath)).current.showQuotaToken, true, "quota visibility can be re-enabled and survives restart");
+  assert.equal(Object.hasOwn(restarted.current, "showQuotaToken"), false, "the retired feature switch is dropped while loading old settings");
   assert.deepEqual(restarted.current.metricOrder, ["official:secondaryRemaining", "api-account:balance"]);
   assert.equal(restarted.current.autoResumeMessage, "请继续完成当前任务");
   await restarted.save({ ...restarted.current, autoResumeSharedMessage: true });

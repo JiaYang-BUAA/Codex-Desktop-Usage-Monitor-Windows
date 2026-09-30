@@ -153,11 +153,14 @@ window.localStorage.setItem("codex-usage-monitor-settings-v1", JSON.stringify({
     official: ["primaryRemaining", "currentTaskTokens"],
     "api-account": ["balance"],
     acme: ["usedAmount", "quotaLimit"],
+    "quota-token": ["wholeEstimateTokens"],
   },
   minimalMode: false,
   countdownVisualization: false,
   autoResume: false,
   unifiedMetricsVersion: 1,
+  showQuotaToken: true,
+  metricOrder: ["quota-token:wholeEstimateTokens"],
 }));
 window.__CODEX_USAGE_MONITOR_CONFIGURATION__ = {
   account: { configured: true, baseUrl: "https://www.cctq.ai", userId: "10530", baselineConfigured: true, initialTokens: "123456" },
@@ -180,6 +183,10 @@ try {
   const result = window.eval(payload);
   assert.equal(result.installed, true);
   assert.equal(window.localStorage.getItem("codex-usage-monitor-settings-v1"), null);
+  const migratedSettings = JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2"));
+  assert.equal(migratedSettings.showQuotaToken, undefined);
+  assert.equal(migratedSettings.metrics["quota-token"], undefined);
+  assert.equal(migratedSettings.metricOrder.some(key => key.startsWith("quota-token:")), false);
   let host = window.document.getElementById("codex-usage-monitor");
   assert.ok(host?.shadowRoot);
   assert.equal(host.parentElement, window.document.body);
@@ -266,14 +273,14 @@ try {
   host.shadowRoot.querySelector(".usage-summary").click();
   assert.equal(host.shadowRoot.querySelector(".usage-popover").hidden, false);
   const columns = [...host.shadowRoot.querySelectorAll(".usage-column")];
-  assert.equal(columns.length, 6);
-  assert.equal(host.dataset.columnCount, "6");
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 400px 230px 170px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1460px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-698px");
-  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "额度对应 Token", "API 账户", "API Key"]);
-  assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "ready", "ready", "loading", "loading", "error"]);
-  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [7, 6, 4, 1, 8, 4]);
+  assert.equal(columns.length, 5);
+  assert.equal(host.dataset.columnCount, "5");
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 230px 170px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1060px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-298px");
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "API 账户", "API Key"]);
+  assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "ready", "ready", "loading", "error"]);
+  assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [7, 6, 4, 8, 4]);
   const tiboActivity = columns[2].querySelector(".usage-tibo-activity");
   assert.equal(tiboActivity.querySelector(".usage-tibo-activity-label").textContent, "Tibo 最新动态");
   assert.equal(host.shadowRoot.querySelector(".usage-reset-method").textContent, "预告方式：发放重置卡");
@@ -293,25 +300,15 @@ try {
   assert.equal(columns[0].querySelector('[data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "总缓存命中率");
   assert.equal(columns[0].querySelector('[data-metric="cacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "95.3%");
   assert.equal(columns[0].querySelector('[data-metric="lastTurnCacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-label").textContent, "上次回答缓存命中率");
-  const quotaUsage = structuredClone(usage);
-  quotaUsage.sources["quota-token"] = {
+  const previousVersionUsage = structuredClone(usage);
+  previousVersionUsage.sources["quota-token"] = {
     id: "quota-token", accountType: "quota-token", status: "ready",
-    metrics: [
-      { id: "wholeEstimateTokens", label: "推算 100% 周额度 Token", value: "≈4000万", detail: "按已观测比例外推；覆盖 5 个百分点" },
-      ...Array.from({ length: 10 }, (_, index) => ({ id: `band${100-index*10}To${90-index*10}Tokens`,
-        label: `${100-index*10}%→${90-index*10}%`, value: "≈400万", detail: "实测 200万 / 5 个百分点" })),
-    ],
+    metrics: [{ id: "wholeEstimateTokens", label: "推算 100% 周额度 Token", value: "≈4000万" }],
   };
-  quotaUsage.sources.session.metrics.push({ id: "lastTurnCacheHitRate", label: "上次回答缓存命中率", value: "97.24%" });
-  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(quotaUsage), true);
-  const quotaColumn = host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]');
-  const bandColumns = [...quotaColumn.querySelectorAll('.usage-quota-bands > .usage-column-rows')];
-  assert.deepEqual(bandColumns.map(column => column.querySelectorAll('.usage-detail-row').length), [5, 5]);
-  assert.equal(bandColumns[0].querySelector('input').dataset.metric, "band100To90Tokens");
-  assert.equal(bandColumns[1].querySelector('input').dataset.metric, "band50To40Tokens");
-  assert.equal(quotaColumn.querySelector('[data-metric="band80To70Tokens"]').closest(".usage-detail-row").querySelector(".usage-quota-detail").textContent, "实测 200万 / 5 个百分点");
-  assert.equal(quotaColumn.querySelector('[data-metric="wholeEstimateTokens"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "≈4000万");
-  assert.match(quotaColumn.querySelector(".usage-quota-note").textContent, /非官方上限/);
+  previousVersionUsage.sources.session.metrics.push({ id: "lastTurnCacheHitRate", label: "上次回答缓存命中率", value: "97.24%" });
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(previousVersionUsage), true);
+  assert.equal(host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]'), null);
+  assert.equal(host.shadowRoot.querySelector('[data-metric="wholeEstimateTokens"]'), null);
   assert.equal(host.shadowRoot.querySelector('[data-metric="lastTurnCacheHitRate"]').closest(".usage-detail-row").querySelector(".usage-detail-value").textContent, "97.24%");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
 
@@ -334,7 +331,7 @@ try {
   assert.equal(unavailableSessionColumn.querySelector(".usage-status").getAttribute("aria-label"), "暂无数据");
   assert.deepEqual([...unavailableSessionColumn.querySelectorAll(".usage-detail-value")].map((item) => item.textContent), ["--", "--", "--", "--", "--", "--"]);
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
-  assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "正常", "正常", "请求中", "请求中", "请求失败"]);
+  assert.deepEqual(columns.map((column) => column.querySelector(".usage-status").getAttribute("aria-label")), ["正常", "正常", "正常", "请求中", "请求失败"]);
   const limitedUsage = structuredClone(usage);
   limitedUsage.sources.acme.status = "rate-limited";
   limitedUsage.sources.acme.error = "Acme API 请求受限（HTTP 429），稍后自动重试";
@@ -343,7 +340,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.1.5", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.1.6", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -356,16 +353,16 @@ try {
   assert.equal(host.shadowRoot.querySelector("[data-toggle-settings]").textContent, "设置");
   host.shadowRoot.querySelector("[data-toggle-settings]").click();
   assert.equal(host.shadowRoot.querySelector(".usage-mode-switches").hidden, false);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "30 秒刷新", "English UI", "自动更新", "API 栏", "重置概率预测栏", "额度对应 Token 栏"]);
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 8);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 8);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "30 秒刷新", "English UI", "自动更新", "API 栏", "重置概率预测栏"]);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 7);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 7);
   assert.equal(host.shadowRoot.querySelector(".usage-mode-toggle-api"), null);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').title, "自动续跑已启用");
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').closest(".usage-column").querySelector(".usage-column-heading").textContent, "本会话");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "继续");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').closest(".usage-auto-resume-field").querySelector(".usage-auto-resume-label").textContent, "续跑发送内容");
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-column:nth-child(2) .usage-mode-toggle input[type="checkbox"]').length, 8);
+  assert.equal(host.shadowRoot.querySelectorAll('.usage-column:nth-child(2) .usage-mode-toggle input[type="checkbox"]').length, 7);
   const refreshToggle = () => host.shadowRoot.querySelector('input[data-setting="refreshEvery30Seconds"]');
   assert.equal(refreshToggle().checked, false);
   refreshToggle().click();
@@ -400,40 +397,34 @@ try {
   assert.equal(columns[1].querySelector(".usage-column-footer").nextElementSibling, columns[1].querySelector(".usage-column-brand"));
   host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "额度对应 Token"]);
-  assert.equal(host.shadowRoot.querySelector(".usage-columns").style.getPropertyValue("--usage-column-count"), "4");
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 400px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1060px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-298px");
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）"]);
+  assert.equal(host.shadowRoot.querySelector(".usage-columns").style.getPropertyValue("--usage-column-count"), "3");
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "660px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-176px");
   assert.equal(host.shadowRoot.querySelector('.usage-column[data-status="ready"] + .usage-column .usage-column-footer') !== null, true);
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showApiColumns, false);
   host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "额度对应 Token"]);
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 400px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "900px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-138px");
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅"]);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "500px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-16px");
   host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "额度对应 Token", "API 账户", "API Key"]);
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 400px 230px 170px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1300px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-538px");
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "API 账户", "API Key"]);
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 230px 170px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "900px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-138px");
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showApiColumns, true);
   host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').click();
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 6);
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 400px 230px 170px");
-  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showResetForecast, true);
-  host.shadowRoot.querySelector('input[data-setting="showQuotaToken"]').click();
-  await new Promise(resolve => setTimeout(resolve, 250));
-  assert.equal(host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]'), null);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
   assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 230px 170px");
-  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showQuotaToken, false);
-  host.shadowRoot.querySelector('input[data-setting="showQuotaToken"]').click();
-  await new Promise(resolve => setTimeout(resolve, 250));
-  assert.ok(host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]'));
-  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showQuotaToken, true);
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showResetForecast, true);
+  assert.equal(host.shadowRoot.querySelector('input[data-setting="showQuotaToken"]'), null);
+  assert.equal(host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]'), null);
+  assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showQuotaToken, undefined);
   assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-config-trigger")].map((button) => button.textContent), ["配置", "配置"]);
   host.shadowRoot.querySelector('[data-configure-source="api-account"]').click();
   let accountForm = host.shadowRoot.querySelector('[data-config-source="api-account"]');
@@ -678,7 +669,7 @@ try {
   host.shadowRoot.querySelector('input[data-setting="englishUi"]').click();
   assert.deepEqual(
     [...host.shadowRoot.querySelectorAll(".usage-column")].map((column) => column.querySelector(".usage-column-heading").textContent),
-    ["Session", "Official Subscription", "Reset Probability (FYI)", "Quota to Tokens", "API Account", "API Key"],
+    ["Session", "Official Subscription", "Reset Probability (FYI)", "API Account", "API Key"],
   );
   assert.equal(host.shadowRoot.querySelector(".usage-tibo-activity-label").textContent, "Latest from Tibo");
   assert.equal(host.shadowRoot.querySelector(".usage-reset-method").textContent, "Announced type: Reset credit");
@@ -890,12 +881,12 @@ try {
   assert.equal(window.eval(payload).installed, true);
   host = window.document.getElementById("codex-usage-monitor");
   host.shadowRoot.querySelector(".usage-summary").click();
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "额度对应 Token"]);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-column-heading")].map((item) => item.textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）"]);
   host.shadowRoot.querySelector("[data-toggle-settings]").click();
   assert.equal(host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').checked, false);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').checked, true);
   host.shadowRoot.querySelector('input[data-setting="showApiColumns"]').click();
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 6);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
   host.shadowRoot.querySelector('[data-configure-source="acme"]').click();
   const beginnerForm = host.shadowRoot.querySelector('[data-config-source="acme"]');
   assert.equal(beginnerForm.querySelector('[data-config-field="preset"]'), null);
