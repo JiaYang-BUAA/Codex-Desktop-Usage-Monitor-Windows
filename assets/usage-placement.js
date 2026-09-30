@@ -46,11 +46,20 @@
     return false;
   };
 
+  const isDotComposer = (node) => {
+    for (let current = node; current; current = current.parentElement) {
+      if (current.style.getPropertyValue("--orbit-message-link-color")
+        || current.style.getPropertyValue("--orbit-messages-content-x")) return true;
+    }
+    return false;
+  };
+
   const findPlacement = (hostId, preferredComposer = null) => {
-    const composers = [...document.querySelectorAll(composerSelector)].filter((node) => isVisible(node) && !isChatGptComposer(node));
+    const composers = [...document.querySelectorAll(composerSelector)]
+      .filter((node) => isVisible(node) && !isChatGptComposer(node) && !isDotComposer(node));
     const visibleEditables = [...document.querySelectorAll(EDITABLE_SELECTOR)]
       .filter((node) => isVisible(node) && !node.closest(`#${hostId}`));
-    const editables = visibleEditables.filter((node) => !isChatGptComposer(node));
+    const editables = visibleEditables.filter((node) => !isChatGptComposer(node) && !isDotComposer(node));
     const nearestComposer = (editable) => {
       const explicit = editable.closest(composerSelector);
       if (explicit && isVisible(explicit)) return { composer: explicit, strategy: "explicit-editable" };
@@ -98,7 +107,8 @@
       return {
         composer: null,
         strategy: "none",
-        reason: visibleEditables.length && !editables.length ? "chatgpt-composer"
+        reason: visibleEditables.length && !editables.length
+          ? visibleEditables.some(isDotComposer) ? "dot-composer" : "chatgpt-composer"
           : editables.length ? "composer-not-found-for-editable" : "visible-editable-not-found",
         editableCount: editables.length,
         composerCount: composers.length,

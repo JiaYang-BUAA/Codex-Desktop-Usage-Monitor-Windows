@@ -343,7 +343,7 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-source="acme"][data-metric="requestStatus"]')?.closest(".usage-detail-row")?.querySelector(".usage-detail-value")?.textContent, "请求受限");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage), true);
   assert.equal(host.shadowRoot.querySelectorAll('input[data-metric]:checked').length, 5);
-  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.1.4", "—— Designed by +羊 and Codex"]);
+  assert.deepEqual([...columns[1].querySelectorAll(".usage-column-brand > *")].map((item) => item.textContent), ["Codex Usage Monitor for Windows v3.1.5", "—— Designed by +羊 and Codex"]);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column-brand\s*\{[\s\S]*?align-self:\s*flex-end;[\s\S]*?width:\s*fit-content;[\s\S]*?margin:\s*0 8px 0 0;[\s\S]*?font-weight:\s*450;[\s\S]*?opacity:\s*\.55;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-product\s*\{[^}]*font-size:\s*12px;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-brand-credit\s*\{\s*font-size:\s*9px;\s*font-weight:\s*450;\s*text-align:\s*right;/);
@@ -841,6 +841,25 @@ try {
   const placement = placementModule.findPlacement("codex-usage-monitor");
   assert.ok(wrapper.contains(placement.composer), "fresh selection must exclude the ChatGPT side composer");
   chatSide.remove();
+  assert.equal(JSON.stringify(window.__CODEX_USAGE_MONITOR_STATE__.getSettings()), savedModeSettings);
+
+  // Dot shares the composer layout, but its page has Orbit-specific variables.
+  wrapper.style.setProperty('--orbit-message-link-color', 'var(--color-text-chat-accent-slate)');
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().reason, 'dot-composer');
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage);
+  assert.equal(window.document.getElementById('codex-usage-monitor'), null, 'refresh must not mount in Dot');
+  assert.equal(window.eval(payload).installed, false, 'fresh injection in Dot must stay hidden');
+  wrapper.style.removeProperty('--orbit-message-link-color');
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), 'leaving Dot restores the monitor');
+  const dotSide = window.document.createElement('div');
+  dotSide.style.setProperty('--orbit-messages-content-x', '0px');
+  dotSide.innerHTML = composerMarkup();
+  window.document.body.prepend(dotSide);
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), 'a Dot side composer must not hide the main monitor');
+  assert.ok(wrapper.contains(placementModule.findPlacement('codex-usage-monitor').composer));
+  dotSide.remove();
   assert.equal(JSON.stringify(window.__CODEX_USAGE_MONITOR_STATE__.getSettings()), savedModeSettings);
 
   window.document.getElementById("composer-wrapper").replaceChildren();
