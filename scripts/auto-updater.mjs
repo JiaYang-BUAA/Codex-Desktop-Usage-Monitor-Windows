@@ -185,9 +185,16 @@ export function createAutoUpdater({
           const script = path.join(root, "scripts", "auto-update.ps1");
           const args = ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
             "-ArchivePath", archivePath, "-ExpectedSha256", asset.sha256, "-Version", asset.version, "-Port", String(port)];
-          const child = spawnImpl(powerShell, args, { detached: true, windowsHide: true, stdio: "ignore" });
-          child.unref?.();
           await writeStatus("installing", { latestVersion: asset.version });
+          const worker = path.join(root, "scripts", "auto-update-worker.mjs");
+          const child = spawnImpl(process.execPath, [worker, statePath, asset.version, powerShell, ...args], {
+            detached: true, windowsHide: true, stdio: "ignore",
+          });
+          await new Promise((resolve, reject) => {
+            child.once("spawn", resolve);
+            child.once("error", reject);
+          });
+          child.unref?.();
           return { status: "installing", version: asset.version };
         } catch (error) {
           await fs.rm(archivePath, { force: true }).catch(() => {});

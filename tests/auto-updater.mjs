@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import {
   compareVersions,
   createAutoUpdater,
@@ -61,13 +63,20 @@ try {
     statePath,
     spawnImpl: (command, args, options) => {
       spawnCall = { command, args, options };
-      return { unref() {} };
+      assert.equal(JSON.parse(readFileSync(statePath, "utf8")).status, "installing");
+      const child = new EventEmitter();
+      child.unref = () => {};
+      queueMicrotask(() => child.emit("spawn"));
+      return child;
     },
   });
   const result = await updater.check({ force: true });
   assert.deepEqual(result, { status: "installing", version: "2.1.3" });
   assert.equal(calls.length, 3);
   assert.equal(spawnCall.options.detached, true);
+  assert.equal(spawnCall.command, process.execPath);
+  assert.equal(spawnCall.args[0], path.join(temporaryRoot, "scripts", "auto-update-worker.mjs"));
+  assert.equal(spawnCall.args[1], statePath);
   assert.ok(spawnCall.args.includes("2.1.3"));
   assert.ok(spawnCall.args.includes("9345"));
   assert.equal(JSON.parse(await fs.readFile(statePath, "utf8")).status, "installing");
@@ -95,6 +104,21 @@ try {
   assert.equal(badResult.status, "error");
   assert.match(badResult.error, /size|SHA-256/);
   assert.equal(spawnCall, null);
+
+  const launchFailureState = path.join(temporaryRoot, "launch-failure.json");
+  const launchFailure = createAutoUpdater({
+    root: temporaryRoot, port: 9345, settingsStore, fetchImpl, statePath: launchFailureState,
+    spawnImpl: () => {
+      const child = new EventEmitter();
+      queueMicrotask(() => child.emit("error", new Error("worker launch failed")));
+      return child;
+    },
+  });
+  assert.equal((await launchFailure.check({ force: true })).status, "error");
+  assert.match(JSON.parse(await fs.readFile(launchFailureState, "utf8")).error, /worker launch failed/);
+  // The first successful mock launch retains its archive; the failed launch must not.
+  assert.equal((await fs.readdir(path.join(temporaryRoot, "state", "updates"))).length, 1);
+  assert.equal((await fs.readdir(path.join(temporaryRoot, "updates"))).length, 0);
 } finally {
   await fs.rm(temporaryRoot, { recursive: true, force: true });
 }

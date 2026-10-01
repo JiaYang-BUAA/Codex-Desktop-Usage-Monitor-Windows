@@ -52,7 +52,7 @@ foreach ($file in $powerShellFiles) {
 $javascriptFiles = @(
   'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js',
   'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\current-thread.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\validate-provider.mjs',
-  'scripts\ui-settings.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-resume.mjs', 'scripts\desktop-request.mjs', 'tests\current-thread.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs', 'tests\auto-updater.mjs', 'tests\auto-resume.mjs', 'tests\desktop-request.mjs', 'tests\auto-resume-integration.mjs'
+  'scripts\ui-settings.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-update-worker.mjs', 'scripts\auto-resume.mjs', 'scripts\desktop-request.mjs', 'tests\current-thread.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs', 'tests\auto-updater.mjs', 'tests\auto-update-worker.mjs', 'tests\auto-resume.mjs', 'tests\desktop-request.mjs', 'tests\auto-resume-integration.mjs'
 )
 foreach ($relative in $javascriptFiles) {
   & $node --check (Join-Path $root $relative)
@@ -73,6 +73,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Renderer lifecycle tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'UI settings persistence tests failed.' }
 & $node (Join-Path $root 'tests\auto-updater.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Automatic updater tests failed.' }
+& $node (Join-Path $root 'tests\auto-update-worker.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Automatic update worker tests failed.' }
 & $node (Join-Path $root 'tests\auto-resume.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Quota recovery auto-resume tests failed.' }
 & $node (Join-Path $root 'tests\desktop-request.mjs')
@@ -168,7 +170,7 @@ if ($successProbe.TimedOut -or $successProbe.ExitCode -ne 0 -or $successProbe.St
 
 $runtimeFiles = @(
   'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js',
-  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\current-thread.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-resume.mjs', 'scripts\desktop-request.mjs', 'scripts\auto-update.ps1', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1',
+  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\current-thread.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-update-worker.mjs', 'scripts\auto-resume.mjs', 'scripts\desktop-request.mjs', 'scripts\auto-update.ps1', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\monitor-utils.ps1',
   'scripts\start-monitor.ps1', 'scripts\launch-codex-monitor.ps1', 'scripts\launch-codex-monitor-hidden.vbs',
   'scripts\install-monitor-launcher.ps1', 'scripts\configure-api-provider.ps1', 'scripts\clear-api-provider.ps1',
   'scripts\configure-api-account.ps1', 'scripts\clear-api-account.ps1', 'scripts\configure-token-baseline.ps1', 'scripts\clear-token-baseline.ps1'
