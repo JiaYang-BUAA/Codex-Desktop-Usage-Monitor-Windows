@@ -27,6 +27,11 @@ if ($PSVersionTable.PSVersion.Major -ge 6) {
 $version = (Get-Content -LiteralPath (Join-Path $root 'VERSION') -Raw).Trim()
 if ($package.name -ne 'codex-usage-monitor-windows') { throw 'Unexpected package name.' }
 if ($package.version -ne $version -or $lockVersion -ne $version) { throw 'VERSION, package.json, and package-lock.json must match.' }
+$rendererConstants = Get-Content -LiteralPath (Join-Path $root 'assets\usage-constants.js') -Raw
+$rendererVersionMatch = [regex]::Match($rendererConstants, 'VERSION:\s*"([^"]+)"')
+if (-not $rendererVersionMatch.Success -or $rendererVersionMatch.Groups[1].Value -ne $version) {
+  throw 'The displayed monitor version must match VERSION.'
+}
 $dependencyNames = @($package.devDependencies.PSObject.Properties.Name)
 if ($dependencyNames.Count -ne 1 -or $dependencyNames[0] -ne 'jsdom') { throw 'Only jsdom should remain as a development dependency.' }
 $lockText = Get-Content -LiteralPath $lockPath -Raw
