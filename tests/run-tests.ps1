@@ -56,7 +56,7 @@ foreach ($file in $powerShellFiles) {
 
 $javascriptFiles = @(
   'assets\usage-constants.js', 'assets\usage-i18n.js', 'assets\usage-placement.js',
-  'assets\usage-inject.js', 'scripts\injector.mjs', 'scripts\current-thread.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\validate-provider.mjs',
+  'assets\usage-inject.js', 'assets\usage-history.js', 'scripts\injector.mjs', 'scripts\current-thread.mjs', 'scripts\usage-client.mjs', 'scripts\usage\scheduling.mjs', 'scripts\usage\history.mjs', 'tests\usage-history.mjs', 'scripts\validate-provider.mjs',
   'scripts\ui-settings.mjs', 'scripts\auto-updater.mjs', 'scripts\auto-update-worker.mjs', 'scripts\auto-resume.mjs', 'scripts\desktop-request.mjs', 'tests\current-thread.mjs', 'tests\usage-client.mjs', 'tests\usage-monitor-lifecycle.mjs', 'tests\ui-settings.mjs', 'tests\auto-updater.mjs', 'tests\auto-update-worker.mjs', 'tests\auto-resume.mjs', 'tests\desktop-request.mjs', 'tests\auto-resume-integration.mjs'
 )
 foreach ($relative in $javascriptFiles) {
@@ -72,6 +72,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Backend heartbeat verification tests failed.' 
 if ($LASTEXITCODE -ne 0) { throw 'Slow startup recovery tests failed.' }
 & $node (Join-Path $root 'tests\usage-client.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Usage client tests failed.' }
+& $node (Join-Path $root 'tests\usage-history.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Usage history tests failed.' }
 & $node (Join-Path $root 'tests\usage-monitor-lifecycle.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Renderer lifecycle tests failed.' }
 & $node (Join-Path $root 'tests\ui-settings.mjs')

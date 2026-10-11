@@ -176,6 +176,7 @@
     }
     return {
       schemaVersion: finiteNumber(source.schemaVersion) ? Number(source.schemaVersion) : 1,
+      usageHistory: source.usageHistory && typeof source.usageHistory === "object" ? source.usageHistory : null,
       currentThreadId: THREAD_ID_PATTERN.test(String(source.currentThreadId || ""))
         ? String(source.currentThreadId).toLowerCase()
         : null,
@@ -1582,6 +1583,7 @@
     }
     updateCountdowns(host, usage);
     host.dataset.rendered = "true";
+    modules.history?.render(host, usage.usageHistory, settings.englishUi);
     if (host.dataset.open === "true") {
       requestAnimationFrame(() => {
         const state = window[STATE_KEY];

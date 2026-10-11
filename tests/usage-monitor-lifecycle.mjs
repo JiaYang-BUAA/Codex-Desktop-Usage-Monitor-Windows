@@ -12,6 +12,7 @@ const payload = (await Promise.all([
   "usage-constants.js",
   "usage-i18n.js",
   "usage-placement.js",
+  "usage-history.js",
   "usage-inject.js",
 ].map((name) => fs.readFile(path.join(root, "assets", name), "utf8")))).join("\n");
 

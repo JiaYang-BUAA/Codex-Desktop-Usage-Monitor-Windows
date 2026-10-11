@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { UsageHistory } from "./usage/history.mjs";
 import {
   LOCAL_TOKEN_ACTIVE_SCAN_MS,
   LOCAL_TOKEN_IDLE_SCAN_MS,
@@ -479,6 +480,7 @@ export function parseLocalTokenUsageEvent(line, expectedDate = null) {
     totalCachedInputTokens,
     inputTokens,
     cachedInputTokens,
+    outputTokens: readTokenField(last, "outputTokens", "output_tokens"),
     identity: createHash("sha256").update(text).digest("hex").slice(0, 32),
   };
 }
@@ -720,11 +722,13 @@ export class LocalCodexTokenTracker {
     idleScanIntervalMs = LOCAL_TOKEN_IDLE_SCAN_MS,
     activeWindowMs = LOCAL_TOKEN_ACTIVE_WINDOW_MS,
     officialModelProviders = null,
+    history = null,
     now = () => Date.now(),
     onUpdate = () => {},
   } = {}) {
     this.sessionRoot = sessionRoot ? path.resolve(sessionRoot) : null;
     this.counterPath = counterPath ? path.resolve(counterPath) : null;
+    this.history = history;
     this.scanIntervalMs = Math.max(500, Number(scanIntervalMs) || LOCAL_TOKEN_ACTIVE_SCAN_MS);
     this.idleScanIntervalMs = Math.max(1000, Number(idleScanIntervalMs) || LOCAL_TOKEN_IDLE_SCAN_MS);
     this.activeWindowMs = Math.max(this.scanIntervalMs, Number(activeWindowMs) || LOCAL_TOKEN_ACTIVE_WINDOW_MS);
@@ -1354,6 +1358,7 @@ export class LocalCodexTokenTracker {
               : `${identityScope}:epoch:${state.totalEpoch}:total:${event.totalTokens}`;
             const modelProvider = state.currentProvider || state.fallbackProvider;
             const officialUsage = delta !== null && delta > 0 && this.officialModelProviders.has(modelProvider);
+            if (officialUsage) this.history?.recordToken(event, identity);
             if (officialUsage
               && Number.isSafeInteger(this.officialLifetimeTokens)
               && Number.isFinite(this.officialLifetimeCheckpointAt)
@@ -1400,6 +1405,7 @@ export class LocalCodexTokenTracker {
       if (this.counterDirty) {
         this.saveCounter(now);
       }
+      this.history?.flush();
       const available = Boolean(this.sessionRoot && existsSync(this.sessionRoot));
       this.emit({
         status: available ? "ready" : todayTokens > 0 ? "stale" : "unavailable",
@@ -2622,6 +2628,7 @@ export class ResetForecastClient {
 export class CombinedUsageClient {
   constructor({ command = resolveCodexExecutable(), provider = loadApiProviderConfig(), refreshMs = DEFAULT_REFRESH_MS, forecastFetch = globalThis.fetch, onUpdate = () => {} } = {}) {
     this.onUpdate = onUpdate;
+    this.history = new UsageHistory({ filePath: process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor", "usage-history.json") : null });
     this.refreshMs = refreshMs;
     this.timer = null;
     this.nextRefreshAt = null;
@@ -2631,6 +2638,7 @@ export class CombinedUsageClient {
     this.apiView = normalizeApiUsageView(null, null, provider);
     this.forecastView = normalizeResetForecastView(null, { refreshMs: RESET_FORECAST_REFRESH_MS });
     this.localOfficial = new LocalCodexTokenTracker({
+      history: this.history,
       onUpdate: (view) => { this.localOfficialView = view; this.emit(); },
     });
     this.official = new UsageClient({
@@ -2639,6 +2647,8 @@ export class CombinedUsageClient {
       managed: true,
       onUpdate: (view) => {
         this.officialView = view;
+        this.history.recordQuota(view);
+        this.history.flush();
         if (Number.isSafeInteger(view?.lifetimeTokens) && view.lifetimeTokens >= 0) {
           this.localOfficial.setOfficialLifetimeTokens(view.lifetimeTokens, view.fetchedAt);
         }
@@ -2661,6 +2671,7 @@ export class CombinedUsageClient {
     this.onUpdate({
       ...officialView,
       schemaVersion: 2,
+      usageHistory: this.history?.snapshot() || null,
       nextRefreshAt: this.nextRefreshAt,
       sources: {
         session: toSessionUsageSource(officialView, Date.now(), this.refreshMs),
@@ -2708,6 +2719,7 @@ export class CombinedUsageClient {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     await Promise.all([this.official.stop(), this.localOfficial.stop(), this.account.stop(), this.api.stop(), this.forecast.stop()]);
+    this.history?.flush(true);
   }
 }
 
@@ -2775,7 +2787,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.6" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.8" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");
@@ -2927,6 +2939,8 @@ export class UsageClient {
     this.rateLimits = { ...(this.rateLimits || {}), rateLimits, rateLimitsByLimitId: Object.keys(byId).length ? byId : null };
     this.emit({
       ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),
+      quotaObservedAt: (!params.rateLimits.limitId || params.rateLimits.limitId === "codex")
+        && (params.rateLimits.primary || params.rateLimits.secondary) ? Date.now() : null,
       officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
       officialModelProvidersResolved: officialModelProviderResolutionReady(this.accountSnapshot, this.configSnapshot),
     });
@@ -2959,6 +2973,7 @@ export class UsageClient {
         if (limitsResult.status === "rejected" && usageResult.status === "rejected") throw limitsResult.reason;
         this.emit({
           ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),
+          quotaObservedAt: limitsResult.status === "fulfilled" ? Date.now() : null,
           officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
           officialModelProvidersResolved: officialModelProviderResolutionReady(this.accountSnapshot, this.configSnapshot),
         });

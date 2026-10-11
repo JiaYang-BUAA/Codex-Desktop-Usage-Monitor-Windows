@@ -19,6 +19,7 @@
   "assets/usage-i18n.js",
   "assets/usage-inject.js",
   "assets/usage-placement.js",
+  "assets/usage-history.js",
   "config/package-files.json",
   "config/providers/cctq.example.json",
   "config/providers/custom.example.json",
@@ -46,6 +47,7 @@
   "scripts/ui-settings.mjs",
   "scripts/usage-client.mjs",
   "scripts/usage/scheduling.mjs",
+  "scripts/usage/history.mjs",
   "scripts/validate-provider.mjs",
   "tests/provider-persistence.ps1",
   "tests/auto-updater.mjs",
@@ -60,6 +62,7 @@
   "tests/injector-health.mjs",
   "tests/startup-wait.ps1",
   "tests/usage-client.mjs",
+  "tests/usage-history.mjs",
   "tests/usage-monitor-lifecycle.mjs",
   "tests/ui-settings.mjs"
 ]

@@ -15,6 +15,7 @@ const usageAssets = [
   "usage-constants.js",
   "usage-i18n.js",
   "usage-placement.js",
+  "usage-history.js",
   "usage-inject.js",
 ].map((name) => path.join(root, "assets", name));
 const HOST_ID = "codex-usage-monitor";
