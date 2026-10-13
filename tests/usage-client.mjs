@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
+import { PassThrough } from "node:stream";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +13,7 @@ import {
   TIBO_ACTIVITY_REFRESH_MS,
   LocalCodexTokenTracker,
   CombinedUsageClient,
+  UsageClient,
   accountLogIdentity,
   loadApiProviderConfig,
   mergeRateLimitSnapshot,
@@ -45,6 +50,60 @@ assert.deepEqual(parseAppServerLine('{"id":1,"result":{}}'), { id: 1, result: {}
 assert.equal(parseAppServerLine("  "), null);
 assert.throws(() => parseAppServerLine("[]"), /JSON object/);
 assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
+
+// A rejected initialization leaves the process alive unless the connection
+// owner explicitly closes it. Use a pipe transport without launching Codex.
+{
+  const originalSpawn = childProcess.spawn;
+  const children = [];
+  let rejectInitialize = true;
+  childProcess.spawn = () => {
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    const exit = () => {
+      if (child.exitCode !== null) return;
+      child.exitCode = 0;
+      child.emit("exit", 0, null);
+    };
+    child.stdin.on("data", (data) => {
+      const message = JSON.parse(String(data));
+      if (!Object.hasOwn(message, "id")) return;
+      const response = rejectInitialize && message.method === "initialize"
+        ? { id: message.id, error: { message: "initialize rejected" } }
+        : { id: message.id, result: {} };
+      queueMicrotask(() => child.stdout.write(`${JSON.stringify(response)}\n`));
+    });
+    child.stdin.on("finish", exit);
+    child.kill = exit;
+    children.push(child);
+    return child;
+  };
+  syncBuiltinESMExports();
+  const client = new UsageClient({ command: "fixture-only" });
+  try {
+    await client.refresh();
+    assert.equal(client.view.status, "error");
+    assert.equal(client.rpc, null);
+    assert.equal(children[0].exitCode, 0, "failed initialize closes its child before retrying");
+    rejectInitialize = false;
+    await client.refresh();
+    assert.equal(children.length, 2);
+    assert.equal(children[1].exitCode, null, "a subsequent connection can initialize normally");
+    const pending = client.rpc.request("account/rateLimits/read");
+    assert.doesNotThrow(() => children[1].stdin.emit("error", new Error("pipe closed")));
+    await assert.rejects(pending, /pipe closed/);
+    await client.stop();
+    assert.ok(children.every((child) => child.exitCode === 0), "stop releases every test transport");
+  } finally {
+    await client.stop();
+    for (const child of children) child.kill();
+    childProcess.spawn = originalSpawn;
+    syncBuiltinESMExports();
+  }
+}
 
 const quotaObservedAt = new Date(2026, 7, 30, 14, 0, 0).getTime();
 assert.equal(
@@ -141,6 +200,40 @@ assert.deepEqual(view.windows, [
 assert.equal(view.todayTokens, 18400);
 assert.equal(view.last7DaysTokens, 27400);
 assert.equal(view.lifetimeTokens, 1250000);
+for (const invalidPercent of [null, undefined, "", "   ", false, [], [0], {}]) {
+  const missingPercent = normalizeUsageView({ rateLimits: {
+    limitId: "codex", primary: { usedPercent: invalidPercent, windowDurationMins: 300 },
+  } }, null, now);
+  assert.equal(missingPercent.windows.length, 0, "unknown usage must not become 100% remaining");
+}
+{
+  const main = rateLimits.rateLimits;
+  const spark = { limitId: "codex_bengalfox", primary: { usedPercent: 90, windowDurationMins: 300 } };
+  const keyedFirst = normalizeUsageView({
+    rateLimits: { ...main, primary: { ...main.primary, usedPercent: 99 } },
+    rateLimitsByLimitId: rateLimits.rateLimitsByLimitId,
+  }, null, now);
+  assert.equal(keyedFirst.windows[0].remainingPercent, 68, "keyed quota takes precedence over legacy data");
+  const keyedWithoutEmbeddedId = normalizeUsageView({
+    rateLimits: { ...spark, secondary: { usedPercent: 95, windowDurationMins: 10080 } },
+    rateLimitsByLimitId: { codex: { primary: main.primary, secondary: main.secondary } },
+  }, null, now);
+  assert.equal(toOfficialUsageSource(keyedWithoutEmbeddedId).metrics.find((item) => item.id === "secondaryRemaining").value, "42%",
+    "the main pool survives a model-specific legacy snapshot and a missing embedded ID");
+  assert.equal(keyedWithoutEmbeddedId.windows.length, 4, "raw consumers retain all quota windows");
+  const notificationClient = new UsageClient({ command: "fixture-only" });
+  notificationClient.rateLimits = { rateLimits: main };
+  notificationClient.handleNotification("account/rateLimits/updated", { rateLimits: spark });
+  assert.equal(notificationClient.rateLimits.rateLimitsByLimitId.codex.secondary.usedPercent, 58);
+  assert.equal(notificationClient.rateLimits.rateLimitsByLimitId.codex_bengalfox.secondary, undefined,
+    "model-specific notifications cannot inherit a main-pool window");
+  assert.equal(toOfficialUsageSource(notificationClient.view).metrics.find((item) => item.id === "secondaryRemaining").value, "42%");
+  notificationClient.handleNotification("account/rateLimits/updated", { rateLimits: { secondary: { usedPercent: 60 } } });
+  const source = toOfficialUsageSource(notificationClient.view);
+  assert.equal(source.metrics.find((item) => item.id === "primaryRemaining").value, "68%");
+  assert.equal(source.metrics.find((item) => item.id === "secondaryRemaining").value, "40%",
+    "sparse main-pool updates resume from the main pool after Spark");
+}
 const official = toOfficialUsageSource(view, now.getTime(), 45000);
 const primaryResetDate = new Date(view.windows[0].resetsAt * 1000);
 const secondaryResetDate = new Date(view.windows[1].resetsAt * 1000);
@@ -1357,12 +1450,12 @@ try {
   assert.equal(accountUpdates.at(-1).nextRefreshAt - accountUpdates.at(-1).fetchedAt, 60000);
   assert.deepEqual(requestedLogPages, [1, 2, 3]);
   await accountClient.refresh();
-  assert.deepEqual(requestedLogPages, [1, 2, 3, 1]);
+  assert.deepEqual(requestedLogPages, [1, 2, 3, 1, 2]);
   assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
   assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "36");
   assert.equal(accountUpdates.at(-1).error, null);
   await accountClient.refresh();
-  assert.deepEqual(requestedLogPages, [1, 2, 3, 1, 1]);
+  assert.deepEqual(requestedLogPages, [1, 2, 3, 1, 2, 1, 2]);
   assert.equal(accountUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
 
   const restartedUpdates = [];
@@ -1384,6 +1477,28 @@ try {
   assert.equal(incompleteUpdates.at(-1).metrics.find((item) => item.id === "totalTokens").value, "36");
   assert.equal(incompleteUpdates.at(-1).metrics.find((item) => item.id === "todayTokens").value, "36");
   assert.match(incompleteUpdates.at(-1).error, /账本保留原值/);
+
+  const boundaryClient = new ApiAccountUsageClient({ token: "fixture", userId: "1", counterPath: automaticCounterPath, now: () => accountNow });
+  const checkpointSecond = Math.floor(accountNow / 1000);
+  const pages = [];
+  boundaryClient.requestJson = async (_pathname, { p }) => {
+    pages.push(p);
+    return { data: { total: 3, page_size: 1, items: [{ id: p, created_at: p < 3 ? checkpointSecond : checkpointSecond - 1 }] } };
+  };
+  const sameSecond = await boundaryClient.readLogs();
+  assert.deepEqual(pages, [1, 2, 3], "same-second records across a page boundary are all fetched");
+  assert.deepEqual(sameSecond.items.map((item) => item.id), [1, 2, 3]);
+  assert.equal(sameSecond.complete, true);
+  boundaryClient.requestJson = async (_pathname, { p }) => ({
+    data: { total: 2, page_size: 1, items: [{ id: p, created_at: checkpointSecond + 1 }] },
+  });
+  assert.equal((await boundaryClient.readLogs()).complete, true,
+    "exhausting all available pages is complete even when the provider removed older logs");
+  boundaryClient.requestJson = async () => ({
+    data: { total: 200000, page_size: 1000, items: [{ created_at: checkpointSecond - 1 }] },
+  });
+  assert.equal((await boundaryClient.readLogs()).truncated, false,
+    "an old history larger than the cap is harmless once the checkpoint has been covered");
 } finally {
   rmSync(automaticCounterRoot, { recursive: true, force: true });
 }

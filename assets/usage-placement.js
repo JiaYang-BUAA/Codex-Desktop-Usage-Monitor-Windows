@@ -211,10 +211,15 @@
     while (columnWidths.length < columnCount) columnWidths.push(230);
     const columnWidthTotal = columnWidths.reduce((total, width) => total + width, 0);
     const renderedPopoverWidth = box(host.shadowRoot?.querySelector(".usage-popover"))?.width || 0;
-    const popoverWidth = Math.max(280, renderedPopoverWidth, columnWidthTotal + 40);
+    const historyOpen = host.dataset.historyOpen === "true";
+    const popoverWidth = historyOpen
+      ? renderedPopoverWidth || Math.min(450, Math.max(0, window.innerWidth - 24))
+      : Math.max(280, renderedPopoverWidth, columnWidthTotal + 40);
     const desiredLeftExtension = resetForecastVisible ? -160 : 0;
     const rightEdgeShift = window.innerWidth - 12 - placementX - popoverWidth;
-    const popoverShift = Math.min(desiredLeftExtension, rightEdgeShift) - 16;
+    const popoverShift = historyOpen
+      ? Math.max(12 - placementX, Math.min(-16, rightEdgeShift))
+      : Math.min(desiredLeftExtension, rightEdgeShift) - 16;
     host.style.setProperty("--usage-column-widths", columnWidths.map((width) => `${width}px`).join(" "));
     host.style.setProperty("--usage-popover-width", `${popoverWidth}px`);
     host.style.setProperty("--usage-popover-shift", `${popoverShift}px`);

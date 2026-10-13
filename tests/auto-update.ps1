@@ -28,6 +28,18 @@ try {
   & (Join-Path $root 'scripts\auto-update.ps1') -ArchivePath $archivePath -ExpectedSha256 $digest -Version '9.8.7' -ValidateOnly
   if (Test-Path -LiteralPath $archivePath) { throw 'Validated update archive was not cleaned up.' }
 
+  # The launcher supports machines without PowerShell 7. Validate a real ZIP
+  # with the actual Windows PowerShell runtime, not a mocked installer script.
+  $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  if (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf) {
+    $legacyArchivePath = Join-Path $testRoot 'windows-powershell.zip'
+    New-TestArchive '9.8.7' $legacyArchivePath
+    $legacyDigest = (Get-FileHash -LiteralPath $legacyArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\auto-update.ps1') -ArchivePath $legacyArchivePath -ExpectedSha256 $legacyDigest -Version '9.8.7' -ValidateOnly
+    if ($LASTEXITCODE -ne 0) { throw 'Update ZIP validation failed under Windows PowerShell.' }
+    if (Test-Path -LiteralPath $legacyArchivePath) { throw 'Windows PowerShell did not clean up the validated archive.' }
+  }
+
   $badArchivePath = Join-Path $testRoot 'bad-hash.zip'
   New-TestArchive '9.8.7' $badArchivePath
   $rejected = $false
@@ -59,6 +71,27 @@ try {
     & (Join-Path $root 'scripts\auto-update.ps1') -ArchivePath $unsafeArchivePath -ExpectedSha256 $unsafeDigest -Version '9.8.7' -ValidateOnly
   } catch { $unsafeRejected = $_.Exception.Message -match 'Unsafe update archive path' }
   if (-not $unsafeRejected) { throw 'A Windows alternate-data-stream update path was not rejected.' }
+
+  # Evaluate only the restart command against a mock. Start-Process joins its
+  # argument array into a command line, so the script path must retain quotes.
+  & {
+    $tokens = $null
+    $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts\auto-update.ps1'), [ref]$tokens, [ref]$errors)
+    $restart = $ast.Find({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-Process' }, $true)
+    $installedRoot = Join-Path $testRoot 'installed with spaces\9.8.7'
+    $pwsh = 'mock-powershell'
+    $Port = 9345
+    function Start-Process {
+      param($FilePath, $ArgumentList, $WindowStyle)
+      if ($FilePath -ne 'mock-powershell' -or $WindowStyle -ne 'Hidden') { throw 'Update restart must stay hidden.' }
+      $index = [Array]::IndexOf($ArgumentList, '-File')
+      $expected = '"' + (Join-Path $installedRoot 'scripts\start-monitor.ps1') + '"'
+      if ($index -lt 0 -or $ArgumentList[$index + 1] -ne $expected) { throw 'Update restart lost the quoted script path.' }
+      if (($ArgumentList -join ' ') -notmatch '-Port 9345 -Replace$') { throw 'Update restart lost the selected port or replacement flag.' }
+    }
+    & ([scriptblock]::Create($restart.Extent.Text))
+  }
   Write-Host 'PASS: automatic update ZIP validation, digest verification, cleanup, and failure state.'
 } finally {
   $env:LOCALAPPDATA = $originalLocalAppData

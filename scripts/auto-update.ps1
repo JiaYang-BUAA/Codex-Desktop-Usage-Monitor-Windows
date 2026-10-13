@@ -36,7 +36,7 @@ try {
   Add-Type -AssemblyName System.IO.Compression
   $stream = [IO.File]::Open($ArchivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
   $sha = [Security.Cryptography.SHA256]::Create()
-  try { $actual = [Convert]::ToHexString($sha.ComputeHash($stream)).ToLowerInvariant() } finally { $sha.Dispose() }
+  try { $actual = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
   if ($actual -ne $ExpectedSha256.ToLowerInvariant()) { throw 'Downloaded update SHA-256 changed before installation.' }
   $stream.Position = 0
   $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $false)
@@ -95,7 +95,7 @@ try {
   Write-UpdateState 'installed'
   $pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
   if (-not $pwsh) { $pwsh = (Get-Command powershell.exe -ErrorAction Stop).Source }
-  Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $installedRoot 'scripts\start-monitor.ps1'),'-Port',"$Port",'-Replace') -WindowStyle Hidden
+  Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f (Join-Path $installedRoot 'scripts\start-monitor.ps1')),'-Port',"$Port",'-Replace') -WindowStyle Hidden
 } catch {
   Write-UpdateState 'error' $_.Exception.Message
   throw

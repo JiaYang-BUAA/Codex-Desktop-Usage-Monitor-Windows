@@ -70,6 +70,24 @@ $parseTokens = $null
 $parseErrors = $null
 $startupAst = [Management.Automation.Language.Parser]::ParseFile($startupSource, [ref]$parseTokens, [ref]$parseErrors)
 Assert-Startup ($parseErrors.Count -eq 0) 'Startup script must parse.'
+# Exercise only the shell-selection statements, with command discovery mocked.
+# This never starts a monitor or imports the user's stored provider credentials.
+& {
+  $originalPowerShell = $env:CODEX_USAGE_POWERSHELL_PATH
+  $shellSelection = [scriptblock]::Create((@($startupAst.EndBlock.Statements | Where-Object {
+    $_.Extent.Text -match '^\$powerShellCommand\s*=' -or $_.Extent.Text -match '^if\s*\(\$powerShellCommand\)'
+  } | ForEach-Object { $_.Extent.Text }) -join "`n"))
+  function Get-Command { param($Name, $ErrorAction) return $script:availableTestShell }
+  try {
+    $script:availableTestShell = $null
+    $env:CODEX_USAGE_POWERSHELL_PATH = 'stale-pwsh.exe'
+    . $shellSelection
+    Assert-Startup ($env:CODEX_USAGE_POWERSHELL_PATH -eq (Get-CodexUsageWindowsPowerShellPath)) 'Without PowerShell 7, the updater must receive the real Windows PowerShell path.'
+    $script:availableTestShell = [pscustomobject]@{ Source = 'C:\test\PowerShell 7\pwsh.exe' }
+    . $shellSelection
+    Assert-Startup ($env:CODEX_USAGE_POWERSHELL_PATH -eq $script:availableTestShell.Source) 'An available PowerShell 7 should remain preferred.'
+  } finally { $env:CODEX_USAGE_POWERSHELL_PATH = $originalPowerShell }
+}
 $probeAst = $startupAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-MonitorInjection' }, $true)
 . ([scriptblock]::Create($probeAst.Extent.Text))
 $node = 'mock-node'

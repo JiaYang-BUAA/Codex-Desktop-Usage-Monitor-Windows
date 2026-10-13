@@ -1028,6 +1028,61 @@ try {
     delete window.__CODEX_USAGE_MONITOR_BACKEND__;
     delete window.__CODEX_USAGE_MONITOR_PERSISTED_SETTINGS__;
   }
+  // History is narrower than the five-column panel. Refreshes also replace its
+  // entry button, so neither positioning nor focus may keep those old nodes.
+  window.localStorage.clear();
+  window.document.getElementById("composer-wrapper").innerHTML = composerMarkup();
+  const historyNow = new Date(2026, 9, 13, 12).getTime();
+  const historyUsage = { ...usage, usageHistory: {
+    updatedAt: historyNow,
+    tokenBuckets: [{ start: historyNow - 3600000, totalTokens: 12000000 }],
+    quotaSamples: [{ at: historyNow - 300000, secondaryRemaining: 42, secondaryResetsAt: 123 }],
+  } };
+  const historyOriginalNow = window.Date.now;
+  const historyOriginalWidth = window.innerWidth;
+  window.Date.now = () => historyNow;
+  try {
+    window.__CODEX_USAGE_MONITOR__ = historyUsage;
+    assert.equal(window.eval(payload).installed, true);
+    host = window.document.getElementById("codex-usage-monitor");
+    const monitor = window.__CODEX_USAGE_MONITOR_STATE__;
+    const shadow = host.shadowRoot;
+    shadow.querySelector('.usage-popover').getBoundingClientRect = () => {
+      const width = host.dataset.historyOpen === 'true' ? 450 : 1060;
+      return { x: 0, y: 0, width, height: 300, right: width, bottom: 300 };
+    };
+    shadow.querySelector('.usage-summary').click();
+    monitor.ensure();
+    const originalEntry = shadow.querySelector('[data-history-open]');
+    originalEntry.click();
+    assert.equal(host.style.getPropertyValue('--usage-popover-width'), '450px', 'history must use its own rendered width');
+    for (const viewport of [1024, 480]) {
+      window.innerWidth = viewport;
+      monitor.ensure();
+      const left = Number.parseFloat(host.style.getPropertyValue('--usage-left')) + Number.parseFloat(host.style.getPropertyValue('--usage-popover-shift'));
+      assert.ok(left >= 12 && left + 450 <= viewport - 12, 'history chart stays inside both window edges');
+    }
+    window.innerWidth = historyOriginalWidth;
+    const originalBack = shadow.querySelector('[data-history-close]');
+    monitor.updateUsage(historyUsage);
+    assert.equal(shadow.querySelector('[data-history-close]'), originalBack, 'unchanged history should retain its chart DOM');
+    assert.equal(originalEntry.isConnected, false, 'ordinary refresh replaces the column entry button');
+    originalBack.click();
+    assert.equal(shadow.activeElement, shadow.querySelector('[data-history-open]'), 'Back focuses the live entry button after refresh');
+    assert.equal(host.style.getPropertyValue('--usage-popover-width'), '1060px', 'returning restores the column placement');
+
+    shadow.querySelector('[data-history-open]').click();
+    let revision = historyNow;
+    for (const selector of ['[data-history-close]', '.usage-history-bar', '.usage-history-dot']) {
+      shadow.querySelector(selector).focus();
+      monitor.updateUsage({ ...historyUsage, usageHistory: { ...historyUsage.usageHistory, updatedAt: ++revision } });
+      assert.equal(shadow.activeElement, shadow.querySelector(selector), 'live history refresh preserves keyboard focus');
+    }
+  } finally {
+    window.__CODEX_USAGE_MONITOR_STATE__?.cleanup();
+    window.Date.now = historyOriginalNow;
+    window.innerWidth = historyOriginalWidth;
+  }
 } finally {
   dom.window.close();
 }

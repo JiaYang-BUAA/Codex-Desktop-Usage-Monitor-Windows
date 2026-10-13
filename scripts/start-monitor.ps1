@@ -14,6 +14,7 @@ $injector = Join-Path $PSScriptRoot 'injector.mjs'
 $node = Resolve-CodexUsageNodePath
 $powerShellCommand = Get-Command pwsh -ErrorAction SilentlyContinue
 if ($powerShellCommand) { $env:CODEX_USAGE_POWERSHELL_PATH = $powerShellCommand.Source }
+else { $env:CODEX_USAGE_POWERSHELL_PATH = Get-CodexUsageWindowsPowerShellPath }
 $cliPath = Resolve-CodexUsageCliPath
 if ($cliPath) { $env:CODEX_USAGE_CODEX_PATH = Resolve-CodexUsageRunnableCliPath -CliPath $cliPath }
 try {

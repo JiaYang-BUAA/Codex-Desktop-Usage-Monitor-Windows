@@ -119,6 +119,122 @@ try {
   // The first successful mock launch retains its archive; the failed launch must not.
   assert.equal((await fs.readdir(path.join(temporaryRoot, "state", "updates"))).length, 1);
   assert.equal((await fs.readdir(path.join(temporaryRoot, "updates"))).length, 0);
+
+  const fixtureUpdater = (name, fetchImpl, extra = {}) => createAutoUpdater({
+    root: temporaryRoot, port: 9345,
+    settingsStore: { current: { updateNotifications: true } },
+    statePath: path.join(temporaryRoot, `${name}.json`),
+    fetchImpl,
+    spawnImpl: () => { throw new Error("A rejected or cancelled update must not launch a worker."); },
+    ...extra,
+  });
+
+  let timedOutBodyCancelled = false;
+  const bodyTimeout = fixtureUpdater("metadata-timeout", async () => new Response(new ReadableStream({
+    // Headers arrive successfully, but the server never finishes the body.
+    cancel() { timedOutBodyCancelled = true; },
+  })), { metadataTimeoutMs: 20 });
+  const timeoutResult = await bodyTimeout.check();
+  assert.equal(timeoutResult.status, "error");
+  assert.match(timeoutResult.error, /metadata timed out/);
+  assert.equal(timedOutBodyCancelled, true);
+
+  let oversizedReads = 0;
+  let oversizedBodyCancelled = false;
+  const oversized = fixtureUpdater("metadata-oversized", async () => new Response(new ReadableStream({
+    pull(controller) {
+      oversizedReads += 1;
+      controller.enqueue(new Uint8Array(600 * 1024));
+    },
+    cancel() { oversizedBodyCancelled = true; },
+  }, { highWaterMark: 0 })));
+  const oversizedResult = await oversized.check();
+  assert.equal(oversizedResult.status, "error");
+  assert.match(oversizedResult.error, /size limit/);
+  assert.equal(oversizedReads, 2, "a body without Content-Length is stopped at the byte limit");
+  assert.equal(oversizedBodyCancelled, true);
+
+  let declaredBodyCancelled = false;
+  const declaredOversize = fixtureUpdater("metadata-declared-oversized", async () => new Response(new ReadableStream({
+    cancel() { declaredBodyCancelled = true; },
+  }), { headers: { "content-length": String(1024 * 1024 + 1) } }));
+  assert.match((await declaredOversize.check()).error, /metadata is too large/);
+  assert.equal(declaredBodyCancelled, true);
+
+  for (const action of ["disable", "stop"]) {
+    for (const stage of ["metadata", "metadata-body", "download", "download-body"]) {
+      const settings = { current: { updateNotifications: true } };
+      let announceStarted;
+      const started = new Promise(resolve => { announceStarted = resolve; });
+      let requestSignal;
+      let bodyCancelled = false;
+      let workerLaunches = 0;
+      const cancellable = fixtureUpdater(`${action}-${stage}`, async (url, options) => {
+        const metadataRequest = String(url).includes("api.github.com");
+        if ((metadataRequest && stage === "metadata-body") || (!metadataRequest && stage === "download-body")) {
+          requestSignal = options.signal;
+          return new Response(new ReadableStream({
+            pull() { announceStarted(); },
+            cancel() { bodyCancelled = true; },
+          }, { highWaterMark: 0 }));
+        }
+        if ((metadataRequest && stage === "metadata") || (!metadataRequest && stage === "download")) {
+          requestSignal = options.signal;
+          announceStarted();
+          // Deliberately ignore AbortSignal in this mock: cancellation must
+          // release the updater even when the pending request never resolves.
+          return new Promise(() => {});
+        }
+        return metadataRequest ? new Response(JSON.stringify(release())) : new Response(bytes);
+      }, {
+        settingsStore: settings,
+        spawnImpl: () => { workerLaunches += 1; throw new Error("must not spawn"); },
+      });
+      const checking = cancellable.check();
+      await started;
+      if (action === "disable") {
+        settings.current.updateNotifications = false;
+        cancellable.settingsChanged(settings.current);
+      } else {
+        cancellable.stop();
+      }
+      assert.deepEqual(await checking, { status: "cancelled" }, `${action} cancels ${stage}`);
+      assert.equal(requestSignal.aborted, true);
+      assert.equal(workerLaunches, 0);
+      if (stage.endsWith("-body")) assert.equal(bodyCancelled, true);
+      assert.equal((await cancellable.check()).status, "disabled");
+      assert.equal((await fs.readdir(path.join(temporaryRoot, "updates"))).length, 0,
+        "cancelled downloads do not retain a partial archive");
+    }
+  }
+
+  const toggledSettings = { current: { updateNotifications: true } };
+  let announceInitial;
+  let announceRetry;
+  const initialStarted = new Promise(resolve => { announceInitial = resolve; });
+  const retryStarted = new Promise(resolve => { announceRetry = resolve; });
+  let toggleRequests = 0;
+  const toggled = fixtureUpdater("quick-toggle", async () => {
+    toggleRequests += 1;
+    if (toggleRequests === 1) { announceInitial(); return new Promise(() => {}); }
+    announceRetry();
+    return new Response(JSON.stringify(release({ tag_name: "v2.1.0" })));
+  }, { settingsStore: toggledSettings });
+  const initialCheck = toggled.check();
+  await initialStarted;
+  toggledSettings.current.updateNotifications = false;
+  toggled.settingsChanged(toggledSettings.current);
+  toggledSettings.current.updateNotifications = true;
+  toggled.settingsChanged(toggledSettings.current);
+  assert.equal((await initialCheck).status, "cancelled");
+  let retryDeadline;
+  try {
+    await Promise.race([retryStarted, new Promise((_, reject) => {
+      retryDeadline = setTimeout(() => reject(new Error("Re-enabling must retry after cancellation settles.")), 2000);
+    })]);
+  } finally { clearTimeout(retryDeadline); }
+  assert.equal((await toggled.check()).status, "up-to-date");
+  assert.equal(toggleRequests, 2);
 } finally {
   await fs.rm(temporaryRoot, { recursive: true, force: true });
 }

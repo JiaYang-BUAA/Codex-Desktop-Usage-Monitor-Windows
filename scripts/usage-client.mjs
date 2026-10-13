@@ -232,6 +232,7 @@ export function parseAppServerLine(line) {
 }
 
 function clampPercent(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return null;
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.min(100, Math.round(number))) : null;
 }
@@ -1468,9 +1469,15 @@ export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = 
   const planTypeValue = rateLimitResponse?.rateLimitsByLimitId?.codex?.planType
     ?? rateLimitResponse?.rateLimits?.planType ?? accountResponse?.account?.planType;
   const planType = typeof planTypeValue === "string" ? planTypeValue.trim().toLowerCase() : null;
-  const windows = windowsFromSnapshot(rateLimitResponse?.rateLimits);
-  const seen = new Set(windows.map((item) => `${item.limitId || ""}:${item.position}:${item.windowDurationMins || ""}`));
-  for (const snapshot of Object.values(rateLimitResponse?.rateLimitsByLimitId || {})) {
+  const windows = [];
+  const seen = new Set();
+  // The keyed snapshots are authoritative; the legacy snapshot may refer to
+  // the last model-specific notification rather than the subscription pool.
+  const snapshots = Object.entries(rateLimitResponse?.rateLimitsByLimitId || {})
+    .filter(([, snapshot]) => snapshot && typeof snapshot === "object")
+    .map(([limitId, snapshot]) => ({ ...snapshot, limitId }));
+  snapshots.push(rateLimitResponse?.rateLimits);
+  for (const snapshot of snapshots) {
     for (const item of windowsFromSnapshot(snapshot)) {
       const key = `${item.limitId || ""}:${item.position}:${item.windowDurationMins || ""}`;
       if (!seen.has(key)) {
@@ -1509,7 +1516,7 @@ export function normalizeUsageView(rateLimitResponse, tokenUsageResponse, now = 
   return {
     status: windows.length || todayTokens !== null ? "ready" : "unavailable",
     planType,
-    windows: windows.slice(0, 2).map(({ position, ...item }) => item),
+    windows: windows.map(({ position, ...item }) => item),
     todayTokens,
     last7DaysTokens,
     tokenUsageAvailable,
@@ -2371,7 +2378,9 @@ export class ApiAccountUsageClient {
     const requiredCheckpoint = this.requiredLogCheckpoint();
     const reachesCheckpoint = (pageItems) => requiredCheckpoint > 0 && pageItems.some((item) => {
       const timestamp = normalizeLogTimestamp(item?.created_at);
-      return timestamp > 0 && timestamp <= requiredCheckpoint;
+      // Read past the checkpoint second: more unseen records at exactly that
+      // timestamp can be on the next page.
+      return timestamp > 0 && timestamp < requiredCheckpoint;
     });
     let reachedCheckpoint = reachesCheckpoint(items);
     let historyFailed = false;
@@ -2388,10 +2397,8 @@ export class ApiAccountUsageClient {
         }
       }
     }
-    const complete = !historyFailed && (requiredCheckpoint === 0
-      ? availablePages === pageCount
-      : reachedCheckpoint || availablePages === 1);
-    return { items, truncated: !complete || pageCount > CCTQ_ACCOUNT_MAX_PAGES, complete };
+    const complete = !historyFailed && (reachedCheckpoint || availablePages === pageCount);
+    return { items, truncated: !complete, complete };
   }
 
   async refresh() {
@@ -2777,6 +2784,7 @@ class AppServerRpc {
       const lines = String(chunk).trim().split(/\r?\n/).filter(Boolean);
       if (lines.length) this.lastStderr = lines.at(-1).slice(0, 300);
     });
+    child.stdin.on("error", (error) => this.failAll(error));
     child.on("error", (error) => this.failAll(error));
     child.on("exit", (code, signal) => {
       const detail = this.lastStderr || `app-server exited (${code ?? signal ?? "unknown"})`;
@@ -2787,7 +2795,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.8" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.1.9" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");
@@ -2925,17 +2933,29 @@ export class UsageClient {
         this.emitFailure(error);
       },
     });
-    await rpc.start();
     this.rpc = rpc;
-    return rpc;
+    try {
+      await rpc.start();
+      return rpc;
+    } catch (error) {
+      if (this.rpc === rpc) this.rpc = null;
+      await rpc.stop().catch(() => {});
+      throw error;
+    }
   }
 
   handleNotification(method, params) {
     if (method !== "account/rateLimits/updated" || !params?.rateLimits) return;
-    const previous = this.rateLimits?.rateLimits || null;
-    const rateLimits = mergeRateLimitSnapshot(previous, params.rateLimits);
     const byId = { ...(this.rateLimits?.rateLimitsByLimitId || {}) };
-    if (rateLimits?.limitId) byId[rateLimits.limitId] = mergeRateLimitSnapshot(byId[rateLimits.limitId], rateLimits);
+    const legacy = this.rateLimits?.rateLimits;
+    if (legacy) {
+      const legacyId = legacy.limitId || "codex";
+      byId[legacyId] = mergeRateLimitSnapshot(legacy, byId[legacyId]);
+    }
+    const limitId = params.rateLimits.limitId || "codex";
+    // Sparse notifications must only inherit fields from their own quota pool.
+    const rateLimits = mergeRateLimitSnapshot(byId[limitId], { ...params.rateLimits, limitId });
+    byId[limitId] = rateLimits;
     this.rateLimits = { ...(this.rateLimits || {}), rateLimits, rateLimitsByLimitId: Object.keys(byId).length ? byId : null };
     this.emit({
       ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),

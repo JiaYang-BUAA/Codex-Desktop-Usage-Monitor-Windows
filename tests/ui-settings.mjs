@@ -4,9 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import {
   createUiSettingsStore,
+  MAX_UI_SETTINGS_BYTES,
   normalizeUiSettings,
   readUiSettingsFile,
   resolveUiSettingsPath,
+  writeUiSettingsFile,
 } from "../scripts/ui-settings.mjs";
 
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-usage-ui-settings-"));
@@ -102,6 +104,37 @@ try {
 
   await fs.writeFile(settingsPath, "not-json", "utf8");
   assert.equal(await readUiSettingsFile(settingsPath), null);
+
+  const blockedDirectory = path.join(root, "blocked");
+  await fs.writeFile(blockedDirectory, "temporarily unavailable directory");
+  const retryPath = path.join(blockedDirectory, "ui-settings.json");
+  const retryStore = await createUiSettingsStore(retryPath);
+  const retryValue = { englishUi: true };
+  await assert.rejects(retryStore.save(retryValue));
+  await fs.unlink(blockedDirectory);
+  await fs.mkdir(blockedDirectory);
+  await retryStore.save(retryValue);
+  assert.equal((await readUiSettingsFile(retryPath)).englishUi, true,
+    "an identical save retries after a transient persistence failure");
+  await Promise.all([retryStore.save({ englishUi: false }), retryStore.save({ englishUi: true })]);
+  assert.equal((await readUiSettingsFile(retryPath)).englishUi, true,
+    "queued saves still persist the newest settings");
+
+  // Exercise both ordinary Chinese and the longest possible JSON encoding of
+  // a valid 500-character message, rather than relying on ASCII fixtures.
+  for (const message of ["继".repeat(500), "\ud800".repeat(500)]) {
+    const autoResumeThreads = Object.fromEntries(Array.from({ length: 128 }, (_, index) => [
+      `019fb3b1-2638-7bb0-9a90-${String(index).padStart(12, "0")}`,
+      { enabled: true, message },
+    ]));
+    const largeSettings = normalizeUiSettings({ autoResumeThreads, autoResumeMessage: message });
+    assert.ok(Buffer.byteLength(JSON.stringify(largeSettings, null, 2), "utf8") <= MAX_UI_SETTINGS_BYTES);
+    await writeUiSettingsFile(settingsPath, largeSettings);
+    assert.deepEqual(await readUiSettingsFile(settingsPath), largeSettings,
+      "every accepted per-thread message survives a restart at maximum capacity");
+  }
+  await fs.writeFile(settingsPath, " ".repeat(MAX_UI_SETTINGS_BYTES + 1));
+  assert.equal(await readUiSettingsFile(settingsPath), null, "oversized input is still rejected");
   console.log("PASS: monitor-owned UI settings validation, atomic persistence, and restart recovery.");
 } finally {
   await fs.rm(root, { recursive: true, force: true });

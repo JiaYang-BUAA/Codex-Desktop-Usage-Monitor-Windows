@@ -4,7 +4,10 @@ import { AUTO_RESUME_MESSAGE, normalizeAutoResumeMessage } from "./auto-resume.m
 
 export const UI_SETTINGS_SCHEMA_VERSION = 2;
 export const UI_SETTINGS_FILE_NAME = "ui-settings.json";
-export const MAX_UI_SETTINGS_BYTES = 64 * 1024;
+// All 128 per-thread messages can contain 500 UTF-16 characters, including
+// characters JSON escapes to six bytes. Keep the read/binding limit large
+// enough to round-trip every settings object accepted by the normalizer.
+export const MAX_UI_SETTINGS_BYTES = 512 * 1024;
 
 const SOURCE_ID_PATTERN = /^[a-zA-Z0-9_-]{1,32}$/;
 const METRIC_ID_PATTERN = /^[a-zA-Z0-9_-]{1,48}$/;
@@ -110,7 +113,13 @@ export async function createUiSettingsStore(filePath = resolveUiSettingsPath()) 
       if (nextSerialized === serialized) return pending;
       current = normalized;
       serialized = nextSerialized;
-      const write = pending.catch(() => {}).then(() => writeUiSettingsFile(filePath, normalized));
+      const write = pending.catch(() => {}).then(() => writeUiSettingsFile(filePath, normalized)).catch((error) => {
+        // A failed attempt is not a persisted value. Let the same settings be
+        // retried after a transient filesystem error, without invalidating a
+        // newer save already queued behind this one.
+        if (pending === write) serialized = null;
+        throw error;
+      });
       pending = write;
       return write;
     },

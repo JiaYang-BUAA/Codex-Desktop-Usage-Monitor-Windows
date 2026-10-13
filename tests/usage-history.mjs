@@ -38,6 +38,47 @@ try {
   assert.equal(restored.snapshot().tokenBuckets.length,0);
   assert.equal(restored.snapshot().quotaSamples.length,0);
 
+  // A damaged entry must not leave aggregates loaded without their event ledger.
+  now=Date.now();
+  const saved=JSON.parse(await fs.readFile(filePath,'utf8'));
+  const malformed=[
+    {...saved,tokenBuckets:[...saved.tokenBuckets,null]},
+    {...saved,seen:[['invalid-identity',at]]},
+    {...saved,quotaSamples:[null]},
+  ];
+  for (const data of malformed) {
+    await fs.writeFile(filePath,JSON.stringify(data));
+    const damaged=new UsageHistory({filePath,now:()=>now});
+    assert.match(damaged.snapshot().error,/历史文件不可读/);
+    assert.equal(damaged.snapshot().tokenBuckets.length,0,'discard all partial aggregates');
+    assert.equal(damaged.seen.size,0,'discard all partial deduplication state');
+    assert.equal(damaged.recordToken(event,'turn:1'),true);
+    assert.equal(damaged.snapshot().tokenBuckets[0].totalTokens,120,'replaying a damaged file must not double count');
+  }
+
+  // A failed atomic replace is throttled, keeps the in-memory data, removes its
+  // temporary file, and clears the warning after a later successful save.
+  const blockedPath=path.join(temp,'blocked-history.json');
+  await fs.mkdir(blockedPath);
+  const retry=new UsageHistory({filePath:blockedPath,now:()=>now});
+  retry.recordToken(event,'retry-event');
+  retry.flush();
+  assert.match(retry.snapshot().error,/历史记录保存失败/);
+  assert.equal(retry.dirty,true);
+  assert.equal((await fs.readdir(temp)).some(name=>name.startsWith('blocked-history.json.') && name.endsWith('.tmp')),false);
+  await fs.rmdir(blockedPath);
+  now+=1000;
+  retry.flush();
+  await assert.rejects(fs.stat(blockedPath),{code:'ENOENT'},'do not retry the full ledger every scan');
+  now+=30000;
+  retry.flush();
+  assert.equal(retry.dirty,false);
+  assert.equal(retry.snapshot().error,null,'a recovered write must clear its warning');
+  assert.equal(new UsageHistory({filePath:blockedPath,now:()=>now}).recordToken(event,'retry-event'),false);
+  retry.recordToken(event,'shutdown-event');
+  retry.flush(true);
+  assert.equal(JSON.parse(await fs.readFile(blockedPath,'utf8')).tokenBuckets[0].totalTokens,240,'shutdown bypasses the save throttle');
+
   // Integration with existing incremental parser: unchanged scans and tracker restart.
   now=Date.now();
   const sessions=path.join(temp,'sessions');await fs.mkdir(sessions);

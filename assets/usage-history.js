@@ -30,7 +30,7 @@
     if (!shadow.querySelector('[data-history-style]')) { const style=document.createElement('style');style.dataset.historyStyle='';style.textContent=css;shadow.append(style); }
     if (footer && !footer.querySelector('[data-history-open]')) {
       const button=document.createElement('button');button.type='button';button.className='usage-history-button';button.dataset.historyOpen='';
-      button.onclick=()=>{host.dataset.historyOpen='true';const s=host._usageHistory;render(host,s.data,s.english);shadow.querySelector('.usage-popover').scrollTop=0;shadow.querySelector('[data-history-close]')?.focus();};
+      button.onclick=()=>{host.dataset.historyOpen='true';const s=host._usageHistory;render(host,s.data,s.english);shadow.querySelector('.usage-popover').scrollTop=0;window.__CODEX_USAGE_MONITOR_STATE__?.ensure?.();shadow.querySelector('[data-history-close]')?.focus();};
       footer.insertBefore(button,footer.querySelector('.usage-column-meta'));
     }
     const openButton=shadow.querySelector('[data-history-open]');
@@ -46,7 +46,10 @@
     const signature=JSON.stringify([data?.updatedAt,data?.error,range,windowKey,english,today.getTime(),Math.floor(now/60000)]);
     if(panel.dataset.signature===signature)return;
     panel.dataset.signature=signature;
-    const focusKey=shadow.activeElement?.getAttribute?.('data-history-choice');
+    const focused=shadow.activeElement;
+    const focusKey=focused?.getAttribute?.('data-history-choice');
+    const focusPoint=focused?.getAttribute?.('data-history-focus');
+    const focusClose=focused?.hasAttribute?.('data-history-close');
     const hourly=range==='1'; const buckets=[];
     for(let i=0;i<(hourly?24:Number(range));i++) {const d=new Date(start);hourly?d.setHours(i):d.setDate(d.getDate()+i);const end=new Date(d);hourly?end.setHours(end.getHours()+1):end.setDate(end.getDate()+1);buckets.push({start:+d,end:+end,total:0,known:false});}
     for(const b of (Array.isArray(data?.tokenBuckets)?data.tokenBuckets:[]).slice(-800)) {if(!num(b.start)||!num(b.totalTokens)||b.totalTokens<0)continue;const bucket=buckets.find(v=>b.start>=v.start&&b.start<v.end);if(bucket){bucket.total+=b.totalTokens;bucket.known=true;}}
@@ -57,7 +60,7 @@
     let tokenSvg=grid+`<text x="0" y="16">${esc(compact(max))}</text><text x="18" y="${B}">0</text>`;
     for(const [i,b] of buckets.entries()) {const x=L+i*plotW/buckets.length+2,w=Math.max(2,plotW/buckets.length-4),height=(B-T)*b.total/max;
       const label=`${dateLabel(b.start,hourly)} · ${b.known?tokenDetail(b.total,english)+' Token':text('无记录','No record')}`;
-      if(b.known)tokenSvg+=`<rect class="usage-history-bar" tabindex="0" role="img" aria-label="${esc(label)}" data-history-detail="${esc(label)}" x="${x}" y="${B-Math.max(1,height)}" width="${w}" height="${Math.max(1,height)}" rx="2"><title>${esc(label)}</title></rect>`;
+      if(b.known)tokenSvg+=`<rect class="usage-history-bar" tabindex="0" role="img" aria-label="${esc(label)}" data-history-detail="${esc(label)}" data-history-focus="token:${b.start}" x="${x}" y="${B-Math.max(1,height)}" width="${w}" height="${Math.max(1,height)}" rx="2"><title>${esc(label)}</title></rect>`;
       else if(b.start<=now)tokenSvg+=`<path d="M${x},${B}h${w}" stroke="currentColor" opacity=".25"><title>${esc(label)}</title></path>`;
     }
     tokenSvg+=`<text x="${L}" y="104">${esc(dateLabel(+start,hourly))}</text><text x="${R}" y="104" text-anchor="end">${esc(dateLabel(buckets.at(-1).start,hourly))}</text>`;
@@ -71,7 +74,7 @@
     for(const s of samples){if(!valid(s)){if(part.length)paths.push(part);part=[];prev=null;continue;}const reset=prev&&s[resetKey]!==prev[resetKey];if(prev&&(s.at-prev.at>600000||reset)){if(part.length)paths.push(part);part=[];}if(reset)resets.push(s);part.push(s);prev=s;}
     if(part.length)paths.push(part);
     const stride=Math.max(1,Math.ceil(samples.length/300));
-    for(const segment of paths){const points=segment.filter((s,i)=>i===0||i===segment.length-1||i%stride===0);let d='';for(const [i,s]of points.entries())d+=i?`H${x(s.at).toFixed(2)}V${y(s[valueKey]).toFixed(2)}`:`M${x(s.at).toFixed(2)},${y(s[valueKey]).toFixed(2)}`;quotaSvg+=`<path class="usage-history-line" d="${d}"/>`;for(const s of points){const label=`${new Date(s.at).toLocaleString()} · ${s[valueKey].toFixed(1)}%`;quotaSvg+=`<circle class="usage-history-dot" cx="${x(s.at)}" cy="${y(s[valueKey])}" r="2.5" tabindex="0" role="img" aria-label="${esc(label)}" data-history-detail="${esc(label)}"><title>${esc(label)}</title></circle>`;}}
+    for(const segment of paths){const points=segment.filter((s,i)=>i===0||i===segment.length-1||i%stride===0);let d='';for(const [i,s]of points.entries())d+=i?`H${x(s.at).toFixed(2)}V${y(s[valueKey]).toFixed(2)}`:`M${x(s.at).toFixed(2)},${y(s[valueKey]).toFixed(2)}`;quotaSvg+=`<path class="usage-history-line" d="${d}"/>`;for(const s of points){const label=`${new Date(s.at).toLocaleString()} · ${s[valueKey].toFixed(1)}%`;quotaSvg+=`<circle class="usage-history-dot" cx="${x(s.at)}" cy="${y(s[valueKey])}" r="2.5" tabindex="0" role="img" aria-label="${esc(label)}" data-history-detail="${esc(label)}" data-history-focus="quota:${windowKey}:${s.at}"><title>${esc(label)}</title></circle>`;}}
     for(const s of resets.slice(-30))quotaSvg+=`<line class="usage-history-reset" x1="${x(s.at)}" x2="${x(s.at)}" y1="${T}" y2="${B}"><title>${text('重置时间变化','Reset time changed')}</title></line>`;
     quotaSvg+=`<text x="${L}" y="104">${esc(dateLabel(+start,hourly))}</text><text x="${R}" y="104" text-anchor="end">${esc(dateLabel(hourly?end-60000:end,hourly))}</text>`;
     const known=samples.filter(valid);const last=known.at(-1);
@@ -79,11 +82,13 @@
       <div class="usage-history-controls">${['1','7','30'].map(v=>button(v==='1'?text('今日','Today'):v+text(' 天',' days'),'range',v,range===v)).join('')}</div>
       <div class="usage-history-card"><div class="usage-history-heading"><strong>${text('Token · 本机记录','Tokens · local records')}</strong><span>${esc(compact(total))}</span></div>${buckets.some(b=>b.known)?`<svg class="usage-history-chart" viewBox="0 0 ${W} ${H}" aria-label="${text('Token 用量柱状图','Token usage bar chart')}">${tokenSvg}</svg>`:`<div class="usage-history-empty">${text('此时段暂无已采集的 Token 记录','No collected token records in this period')}</div>`}<div class="usage-history-detail">${text('悬停或键盘聚焦查看数值；短横线表示无记录。','Hover or focus for values; dashes mean no records.')}</div></div>
       <div class="usage-history-card"><div class="usage-history-heading"><strong>${text('额度剩余','Quota remaining')}</strong><span>${last?last[valueKey].toFixed(1)+'%':'--'}</span></div><div class="usage-history-controls">${button(text('5 小时','5 hours'),'window','primary',windowKey==='primary')}${button(text('7 天','7 days'),'window','secondary',windowKey==='secondary')}</div>${known.length?`<svg class="usage-history-chart" viewBox="0 0 ${W} ${H}" aria-label="${text('额度剩余阶梯图','Remaining quota step chart')}">${quotaSvg}</svg>`:`<div class="usage-history-empty">${text('暂无此周期的额度记录','No quota samples for this window')}</div>`}<div class="usage-history-detail">${text('从启用后开始记录；断线留空，虚线标记重置时间变化。','Recorded since enabled; gaps stay blank, dashed markers indicate reset-time changes.')}</div></div>
-      <p class="usage-history-caption">${text('本机时区 · 仅已采集记录，可能不完整；不含其他设备用量。','Local timezone · collected records may be incomplete; tokens exclude other devices.')}</p>${data?.error?`<p class="usage-history-caption">${esc(data.error)}</p>`:''}`;
-    panel.querySelector('[data-history-close]').onclick=()=>{host.dataset.historyOpen='false';render(host,data,english);openButton?.focus();};
+      <p class="usage-history-caption">${text('本机时区 · 仅已采集记录，可能不完整；Token 不含其他设备用量。','Local timezone · collected records may be incomplete; tokens exclude other devices.')}</p>${data?.error?`<p class="usage-history-caption">${esc(data.error)}</p>`:''}`;
+    panel.querySelector('[data-history-close]').onclick=()=>{host.dataset.historyOpen='false';const s=host._usageHistory;render(host,s.data,s.english);window.__CODEX_USAGE_MONITOR_STATE__?.ensure?.();shadow.querySelector('[data-history-open]')?.focus();};
     panel.querySelectorAll('[data-history-choice]').forEach(b=>b.onclick=()=>{const[k,v]=b.dataset.historyChoice.split(':');host.dataset[k==='range'?'historyRange':'historyWindow']=v;render(host,host._usageHistory.data,english);panel.querySelector(`[data-history-choice="${k}:${v}"]`)?.focus();});
     for(const node of panel.querySelectorAll('[data-history-detail]')){const show=()=>{node.closest('.usage-history-card').querySelector('.usage-history-detail').textContent=node.dataset.historyDetail;};node.onmouseenter=show;node.onfocus=show;}
     if(focusKey)panel.querySelector(`[data-history-choice="${focusKey}"]`)?.focus();
+    else if(focusPoint)panel.querySelector(`[data-history-focus="${focusPoint}"]`)?.focus();
+    else if(focusClose)panel.querySelector('[data-history-close]')?.focus();
   }
   registry.history={render};
 })();

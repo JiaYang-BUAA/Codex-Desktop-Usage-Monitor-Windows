@@ -1,9 +1,15 @@
-import { readFileSync, writeFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
 const HOUR = 3600000;
 const RETENTION = 31 * 24 * HOUR;
+const MAX_BUCKETS = 800;
+const MAX_EVENTS = 200000;
+const MAX_QUOTA_SAMPLES = 10000;
+const SAVE_INTERVAL = 30000;
+const SAVE_ERROR = "历史记录保存失败，重启后可能丢失本次记录";
+const CAPACITY_ERROR = "历史记录已达容量上限，部分新增 Token 暂未计入";
 const validCount = (v) => Number.isSafeInteger(v) && v >= 0;
 const percent = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100 ? v : null;
 
@@ -18,7 +24,7 @@ export class UsageHistory {
     this.updatedAt = null;
     this.error = null;
     this.dirty = false;
-    this.lastSave = 0;
+    this.lastSaveAttempt = null;
     this.cached = null;
     this.lastPrune = 0;
     if (filePath) {
@@ -28,22 +34,37 @@ export class UsageHistory {
         if (data.schemaVersion !== 1) throw new Error("schema");
         if (!Array.isArray(data.tokenBuckets) || !Array.isArray(data.seen) || !Array.isArray(data.quotaSamples)
           || (data.tokenBuckets.length > 0 && data.seen.length === 0)) throw new Error("incomplete");
-        for (const b of (data.tokenBuckets || []).slice(-800)) {
-          if (Number.isFinite(b.start) && validCount(b.totalTokens)) this.buckets.set(b.start, {
+        if (data.tokenBuckets.length > MAX_BUCKETS || data.seen.length > MAX_EVENTS
+          || data.quotaSamples.length > MAX_QUOTA_SAMPLES) throw new Error("capacity");
+        // Load aggregates and their deduplication ledger together. A partial load
+        // could replay an already counted event after a later entry fails validation.
+        const buckets = new Map();
+        const seen = new Map();
+        for (const b of data.tokenBuckets) {
+          if (!b || !Number.isFinite(b.start) || !validCount(b.totalTokens)) throw new Error("bucket");
+          buckets.set(b.start, {
             start: b.start, totalTokens: b.totalTokens,
             inputTokens: validCount(b.inputTokens) ? b.inputTokens : null,
             cachedInputTokens: validCount(b.cachedInputTokens) ? b.cachedInputTokens : null,
             outputTokens: validCount(b.outputTokens) ? b.outputTokens : null,
           });
         }
-        for (const pair of (data.seen || []).slice(-200000)) {
-          if (Array.isArray(pair) && /^[a-f0-9]{32}$/.test(pair[0]) && Number.isFinite(pair[1])) this.seen.set(...pair);
+        for (const pair of data.seen) {
+          if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string"
+            || !/^[a-f0-9]{32}$/.test(pair[0]) || !Number.isFinite(pair[1])) throw new Error("identity");
+          seen.set(pair[0], pair[1]);
         }
-        this.quotaSamples = (data.quotaSamples || []).slice(-10000).filter(s => Number.isFinite(s.at)).map(s => ({
-          at: s.at, primaryRemaining: percent(s.primaryRemaining), secondaryRemaining: percent(s.secondaryRemaining),
-          primaryResetsAt: Number.isFinite(s.primaryResetsAt) ? s.primaryResetsAt : null,
-          secondaryResetsAt: Number.isFinite(s.secondaryResetsAt) ? s.secondaryResetsAt : null,
-        })).sort((a,b) => a.at-b.at);
+        const quotaSamples = data.quotaSamples.map(s => {
+          if (!s || !Number.isFinite(s.at)) throw new Error("quota sample");
+          return {
+            at: s.at, primaryRemaining: percent(s.primaryRemaining), secondaryRemaining: percent(s.secondaryRemaining),
+            primaryResetsAt: Number.isFinite(s.primaryResetsAt) ? s.primaryResetsAt : null,
+            secondaryResetsAt: Number.isFinite(s.secondaryResetsAt) ? s.secondaryResetsAt : null,
+          };
+        }).sort((a,b) => a.at-b.at);
+        this.buckets = buckets;
+        this.seen = seen;
+        this.quotaSamples = quotaSamples;
         this.updatedAt = Number.isFinite(data.updatedAt) ? data.updatedAt : null;
       } catch (e) {
         if (e.code !== "ENOENT") this.error = "历史文件不可读，当前仅显示本次采集记录";
@@ -59,8 +80,8 @@ export class UsageHistory {
     const cutoff = now - RETENTION;
     for (const [key,b] of this.buckets) if (b.start < cutoff || b.start > now + HOUR) { this.buckets.delete(key); this.changed(); }
     for (const [key,at] of this.seen) if (at < cutoff || at > now + HOUR) { this.seen.delete(key); this.changed(); }
-    if (this.seen.size < 200000 && this.error === "历史记录已达容量上限，部分新增 Token 暂未计入") { this.error = null; this.cached = null; }
-    const samples = this.quotaSamples.filter(s => s.at >= cutoff && s.at <= now).slice(-10000);
+    if (this.seen.size < MAX_EVENTS && this.error === CAPACITY_ERROR) { this.error = null; this.cached = null; }
+    const samples = this.quotaSamples.filter(s => s.at >= cutoff && s.at <= now).slice(-MAX_QUOTA_SAMPLES);
     if (samples.length !== this.quotaSamples.length) { this.quotaSamples = samples; this.changed(); }
   }
   recordToken(event, identity) {
@@ -69,7 +90,7 @@ export class UsageHistory {
     if (!Number.isFinite(event.timestamp) || event.timestamp < now - RETENTION || event.timestamp > now || !validCount(event.tokens) || !event.tokens) return false;
     const key = createHash("sha256").update(identity).digest("hex").slice(0,32);
     if (this.seen.has(key)) return false;
-    if (this.seen.size >= 200000) { this.error = "历史记录已达容量上限，部分新增 Token 暂未计入"; this.cached = null; return false; }
+    if (this.seen.size >= MAX_EVENTS) { this.error = CAPACITY_ERROR; this.cached = null; return false; }
     const date = new Date(event.timestamp); date.setMinutes(0,0,0);
     const start = date.getTime();
     const bucket = this.buckets.get(start) || { start, totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
@@ -102,7 +123,7 @@ export class UsageHistory {
     const keys = ["primaryRemaining", "secondaryRemaining", "primaryResetsAt", "secondaryResetsAt"];
     if (previous && keys.every(k => previous[k] === sample[k]) && at-previous.at < 300000) return;
     this.quotaSamples.push(sample);
-    if (this.quotaSamples.length > 10000) this.quotaSamples.shift();
+    if (this.quotaSamples.length > MAX_QUOTA_SAMPLES) this.quotaSamples.shift();
     this.changed(at);
   }
   snapshot() {
@@ -112,13 +133,20 @@ export class UsageHistory {
       quotaSamples: this.quotaSamples.slice(), error: this.error };
   }
   flush(force = false) {
-    if (!this.filePath || !this.dirty || (!force && this.now()-this.lastSave < 30000)) return;
+    const now = this.now();
+    if (!this.filePath || !this.dirty || (!force && this.lastSaveAttempt !== null
+      && now >= this.lastSaveAttempt && now - this.lastSaveAttempt < SAVE_INTERVAL)) return;
+    // Failed writes need the same throttle as successful ones, especially when
+    // a quota callback and a local scan both try to save the full event ledger.
+    this.lastSaveAttempt = now;
+    const temp = `${this.filePath}.${process.pid}.tmp`;
     try {
       mkdirSync(path.dirname(this.filePath),{recursive:true});
-      const temp = `${this.filePath}.${process.pid}.tmp`;
       writeFileSync(temp,JSON.stringify({...this.snapshot(),seen:[...this.seen]}));
       renameSync(temp,this.filePath);
-      this.lastSave = this.now(); this.dirty = false;
-    } catch { this.error = "历史记录保存失败，重启后可能丢失本次记录"; this.cached = null; }
+      this.dirty = false;
+      if (this.error === SAVE_ERROR) { this.error = null; this.cached = null; }
+    } catch { this.error = SAVE_ERROR; this.cached = null; }
+    finally { try { unlinkSync(temp); } catch {} }
   }
 }

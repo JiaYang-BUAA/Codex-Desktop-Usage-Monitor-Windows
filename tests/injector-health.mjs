@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import vm from "node:vm";
-import { backendHeartbeatExpression, backendVerificationExpression, nextEndpointLoss, runOnce } from "../scripts/injector.mjs";
+import { backendHeartbeatExpression, backendVerificationExpression, CdpSession, nextEndpointLoss, runOnce } from "../scripts/injector.mjs";
 
 const now = Date.now();
 const document = { getElementById: () => ({ shadowRoot: {} }) };
@@ -31,7 +31,10 @@ const originalLog = console.log;
 const originalExitCode = process.exitCode;
 const methods = [];
 class FakeSocket extends EventTarget {
-  constructor() { super(); setTimeout(() => this.dispatchEvent(new Event("open")), 0); }
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  constructor() { super(); this.readyState = 0; setTimeout(() => { this.readyState = FakeSocket.OPEN; this.dispatchEvent(new Event("open")); }, 0); }
   send(text) {
     const message = JSON.parse(text);
     methods.push(message.method);
@@ -39,7 +42,7 @@ class FakeSocket extends EventTarget {
     if (message.method === "Runtime.evaluate") result = { result: { value: evaluate(message.params.expression) } };
     queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ id: message.id, result }) })));
   }
-  close() { queueMicrotask(() => this.dispatchEvent(new Event("close"))); }
+  close() { this.readyState = FakeSocket.CLOSING; queueMicrotask(() => { this.readyState = FakeSocket.CLOSED; this.dispatchEvent(new Event("close")); }); }
 }
 try {
   globalThis.WebSocket = FakeSocket;
@@ -56,6 +59,19 @@ try {
   assert.equal(results.at(-1).verified, false);
   assert.equal(process.exitCode, 1);
   assert.equal(JSON.stringify(window.__CODEX_USAGE_MONITOR_STATE__), previousUsage);
+
+  const session = new CdpSession({ webSocketDebuggerUrl: "ws://127.0.0.1:9335/devtools/page/main" }, 1000);
+  await session.open();
+  session.ws.send = () => {}; // The renderer disappears with commands in flight.
+  const pending = session.send("Runtime.evaluate").then(() => "resolved", (error) => error.message);
+  await session.close();
+  let timeout;
+  const outcome = await Promise.race([pending, new Promise((resolve) => { timeout = setTimeout(() => resolve("still pending"), 100); })]);
+  clearTimeout(timeout);
+  assert.equal(outcome, "CDP session is closed", "closing a target must settle every in-flight command");
+  assert.equal(session.pending.size, 0);
+  await assert.rejects(session.send("Runtime.evaluate"), /session is closed/);
+  await session.close(); // Idempotent close must preserve rejection semantics.
 } finally {
   globalThis.fetch = originalFetch;
   globalThis.WebSocket = originalSocket;

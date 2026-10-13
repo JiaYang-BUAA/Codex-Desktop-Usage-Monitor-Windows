@@ -91,8 +91,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Quota recovery auto-resume integration tests f
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\auto-update.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Automatic update package validation tests failed.' }
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\provider-persistence.ps1')
-& $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\panel-configuration.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Provider persistence tests failed.' }
+& $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\panel-configuration.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Panel configuration tests failed.' }
 foreach ($relative in @('config\providers\cctq.example.json', 'config\providers\custom.example.json')) {
   & $node (Join-Path $root 'scripts\validate-provider.mjs') (Join-Path $root $relative) *> $null
   if ($LASTEXITCODE -ne 0) { throw "Provider validation failed: $relative" }

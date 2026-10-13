@@ -55,7 +55,7 @@ function parseArgs(argv) {
   return options;
 }
 
-class CdpSession {
+export class CdpSession {
   constructor(target, commandTimeoutMs) {
     this.target = target;
     this.commandTimeoutMs = commandTimeoutMs;
@@ -141,12 +141,14 @@ class CdpSession {
   }
 
   async close() {
-    for (const waiter of this.pending.values()) clearTimeout(waiter.timer);
-    this.pending.clear();
-    if (this.closed || this.ws.readyState === WebSocket.CLOSED) {
-      this.closed = true;
-      return;
+    const alreadyClosed = this.closed || this.ws.readyState === WebSocket.CLOSED;
+    this.closed = true;
+    for (const waiter of this.pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error("CDP session is closed"));
     }
+    this.pending.clear();
+    if (alreadyClosed) return;
     await new Promise((resolve) => {
       let settled = false;
       const finish = () => {
