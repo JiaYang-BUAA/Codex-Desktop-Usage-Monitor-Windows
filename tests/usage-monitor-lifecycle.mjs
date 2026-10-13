@@ -788,9 +788,15 @@ try {
   host.shadowRoot.querySelector(".usage-summary").click();
   modeSwitch.textContent = "ChatGPT";
   modeSwitch.setAttribute("aria-label", "切换模式，当前模式：ChatGPT");
-  chatEditable.setAttribute("aria-label", "使用 ChatGPT Work");
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.ok(window.document.getElementById("codex-usage-monitor"), "ChatGPT Work must stay mounted");
+  for (const attribute of ["aria-label", "placeholder", "data-placeholder"]) {
+    chatEditable.removeAttribute("aria-label");
+    for (const label of ["使用 ChatGPT Work", "Use ChatGPT Work", "Work with ChatGPT"]) {
+      chatEditable.setAttribute(attribute, label);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      assert.ok(window.document.getElementById("codex-usage-monitor"), `${attribute}=${label} must keep ChatGPT Work mounted`);
+    }
+    chatEditable.removeAttribute(attribute);
+  }
   chatEditable.setAttribute("aria-label", "给 ChatGPT 发送消息");
   await new Promise((resolve) => setTimeout(resolve, 250));
   assert.equal(window.document.getElementById("codex-usage-monitor"), null);
@@ -822,8 +828,10 @@ try {
   const wrapper = window.document.getElementById("composer-wrapper");
   wrapper.setAttribute("data-conversation-id", "chatgpt:test-conversation");
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null);
-  chatEditable.setAttribute("aria-label", "Use ChatGPT Work");
-  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), "explicit Work metadata wins over a shared ChatGPT namespace");
+  for (const label of ["Use ChatGPT Work", "Work with ChatGPT"]) {
+    chatEditable.setAttribute("aria-label", label);
+    assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), `${label} metadata wins over a shared ChatGPT namespace`);
+  }
   chatEditable.removeAttribute("aria-label");
   wrapper.removeAttribute("data-conversation-id");
   assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure());
