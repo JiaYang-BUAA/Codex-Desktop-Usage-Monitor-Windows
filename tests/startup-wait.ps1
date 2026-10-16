@@ -105,4 +105,111 @@ Assert-Startup (Wait-CodexUsageCdpPort 9335 1 0) 'A slow renderer should become 
 Assert-Startup ($script:cdpProbeCount -eq 3) 'The CDP wait should not stop after its first unsuccessful probe.'
 function Test-CodexUsageCdpPort([int]$Port) { return $false }
 Assert-Startup (-not (Wait-CodexUsageCdpPort 9335 0 0)) 'A CDP deadline should return unavailable, not success.'
+
+# A command-line flag proves intent, not that a process is still starting.
+# Keep all process/window boundaries mocked; this never touches a live Codex.
+& {
+  $script:pendingCdpProcesses = @()
+  $script:pendingCdpProbes = [Collections.Generic.List[int]]::new()
+  $script:pendingCdpSleeps = [Collections.Generic.List[int]]::new()
+  $script:pendingReadyPort = 0
+  $script:pendingCreateDuringDiscovery = $false
+  function Get-CimInstance($ClassName, $Filter, $ErrorAction) {
+    if ($Filter -match '^ProcessId = (\d+)$') {
+      return $script:pendingCdpProcesses | Where-Object { $_.ProcessId -eq [int]$Matches[1] }
+    }
+    if ($script:pendingCreateDuringDiscovery) {
+      # Simulate process creation while the CIM enumeration is in progress.
+      [Threading.Thread]::Sleep(2)
+      $script:pendingCdpProcesses = @([pscustomobject]@{
+        ProcessId = 507; CreationDate = [DateTime]::UtcNow
+        CommandLine = 'ChatGPT.exe --remote-debugging-port=9340'
+      })
+      $script:pendingCreateDuringDiscovery = $false
+    }
+    return $script:pendingCdpProcesses
+  }
+  function Test-CodexUsageCdpPort([int]$Port) {
+    $script:pendingCdpProbes.Add($Port)
+    return $Port -eq $script:pendingReadyPort
+  }
+  function Start-Sleep([int]$Milliseconds) {
+    $script:pendingCdpSleeps.Add($Milliseconds)
+    # Simulate the same process exiting between polls, without sleeping.
+    $script:pendingCdpProcesses = @()
+  }
+  $oldProcess = [pscustomobject]@{
+    ProcessId = 501; CreationDate = [DateTime]::UtcNow.AddHours(-2)
+    CommandLine = 'ChatGPT.exe --remote-debugging-port=9335'
+  }
+  $normalProcess = [pscustomobject]@{
+    ProcessId = 502; CreationDate = [DateTime]::UtcNow.AddSeconds(-1)
+    CommandLine = 'ChatGPT.exe'
+  }
+  $script:pendingCdpProcesses = @($oldProcess, $normalProcess)
+  $candidates = @(Get-CodexUsageProcessCdpCandidates)
+  Assert-Startup ($candidates.Count -eq 1 -and $candidates[0].ProcessId -eq 501 -and $candidates[0].CreationDate -eq $oldProcess.CreationDate) 'CDP candidates must retain process identity and creation time.'
+  foreach ($attempt in 1..2) {
+    $staleFailure = ''
+    try { [void](Wait-CodexUsagePendingCdpPort) } catch { $staleFailure = $_.Exception.Message }
+    Assert-Startup ($staleFailure -match '调试端口未就绪' -and $staleFailure -match '残留' -and $staleFailure -match 'PID 501') 'Repeated shortcut clicks must identify stale startup processes instead of waiting another 180 seconds.'
+  }
+  Assert-Startup ($script:pendingCdpProbes.Count -eq 0 -and $script:pendingCdpSleeps.Count -eq 0) 'Expired candidates should return without probing or sleeping.'
+
+  $freshProcess = [pscustomobject]@{
+    ProcessId = 503; CreationDate = [DateTime]::UtcNow.AddSeconds(-2)
+    CommandLine = 'ChatGPT.exe --remote-debugging-port 9336'
+  }
+  $childProcess = [pscustomobject]@{
+    ProcessId = 504; CreationDate = [DateTime]::UtcNow.AddSeconds(-1)
+    CommandLine = 'ChatGPT.exe --type=renderer --remote-debugging-port=9337'
+  }
+  $script:pendingCdpProcesses = @($oldProcess, $freshProcess, $childProcess)
+  $script:pendingReadyPort = 9336
+  Assert-Startup ((Wait-CodexUsagePendingCdpPort) -eq 9336) 'A fresh main process should be selected instead of an older residual process or renderer child.'
+  Assert-Startup (($script:pendingCdpProbes -join ',') -eq '9336') 'Only the current startup candidate should be awaited.'
+
+  $script:pendingCreateDuringDiscovery = $true
+  $script:pendingReadyPort = 9340
+  Assert-Startup ((Wait-CodexUsagePendingCdpPort) -eq 9340) 'A process created during discovery must not be misclassified as a future or stale process.'
+
+  $script:pendingReadyPort = 0
+  $script:pendingCdpProbes.Clear()
+  $budgetProcess = [pscustomobject]@{
+    ProcessId = 505; CreationDate = [DateTime]::UtcNow.AddSeconds(-18)
+    CommandLine = 'ChatGPT.exe --remote-debugging-port=9338'
+  }
+  $script:pendingCdpProcesses = @($budgetProcess)
+  $budgetCandidate = @(Get-CodexUsageProcessCdpCandidates)[0]
+  Assert-Startup (-not (Wait-CodexUsageCdpPort 9338 20 5000 $budgetCandidate)) 'A candidate that exits must end its wait.'
+  Assert-Startup ($script:pendingCdpSleeps.Count -eq 1 -and $script:pendingCdpSleeps[0] -gt 0 -and $script:pendingCdpSleeps[0] -le 2000) 'Only the remaining creation-time budget may be slept, not a new full timeout.'
+  Assert-Startup ($script:pendingCdpProbes.Count -eq 1) 'A process exit should stop before the next port probe.'
+
+  $script:pendingCdpProbes.Clear()
+  $script:pendingCdpSleeps.Clear()
+  $script:pendingCdpProcesses = @([pscustomobject]@{
+    ProcessId = 503; CreationDate = [DateTime]::UtcNow
+    CommandLine = 'ChatGPT.exe --remote-debugging-port=9336'
+  })
+  $script:pendingReadyPort = 9336
+  Assert-Startup (-not (Wait-CodexUsageCdpPort 9336 180 0 ([pscustomobject]@{ ProcessId = 503; CreationDate = $freshProcess.CreationDate }))) 'A reused PID must not inherit the original startup wait.'
+  Assert-Startup ($script:pendingCdpProbes.Count -eq 0) 'Process identity must be checked before probing a reused PID.'
+
+  $script:pendingCdpProcesses = @()
+  Assert-Startup (-not (Wait-CodexUsageCdpPort -Port 9339 -ProcessId 506)) 'A newly launched process that already exited must fail promptly.'
+  Assert-Startup ($script:pendingCdpProbes.Count -eq 0 -and $script:pendingCdpSleeps.Count -eq 0) 'A missing new process must not start an unbound 180-second wait.'
+  $script:pendingCdpProcesses = @($freshProcess)
+  Assert-Startup (Wait-CodexUsageCdpPort -Port 9336 -ProcessId 503) 'A new process should use its actual creation time and remain eligible once CDP is ready.'
+
+  # Age limits apply only to pending starts. An old healthy CDP process remains
+  # eligible for the normal port-resolution fast path used by both entrypoints.
+  $originalAppData = $env:APPDATA
+  function Get-CodexUsageState { return $null }
+  try {
+    $env:APPDATA = Join-Path $startupTestRoot 'unused-profile'
+    $script:pendingCdpProcesses = @($oldProcess)
+    $script:pendingReadyPort = 9335
+    Assert-Startup ((Resolve-CodexUsageCdpPort 9335) -eq 9335) 'An already-open CDP port must remain reusable regardless of process age.'
+  } finally { $env:APPDATA = $originalAppData }
+}
 Write-Host 'PASS: startup wait, pending reuse, safe replacement, and failure diagnostics.'

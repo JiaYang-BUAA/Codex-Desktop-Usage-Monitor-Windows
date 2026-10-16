@@ -71,13 +71,8 @@ try {
   if ($codexRunning -and -not $debugReady) {
     # A process launched with CDP can exist well before its renderer is ready.
     # Do not mistake that loading interval for a native launch without CDP.
-    $pendingPorts = @(Get-CodexUsageProcessCdpPorts)
-    if ($pendingPorts.Count -gt 0) {
-      $Port = $pendingPorts[0]
-      if (-not (Wait-CodexUsageCdpPort $Port)) { throw "Codex 仍在加载，180 秒内未能连接端口 $Port；未结束 Codex，请稍后再试。" }
-      $activePort = $Port
-      $debugReady = $true
-    }
+    $activePort = Wait-CodexUsagePendingCdpPort
+    $debugReady = [bool]$activePort
   }
   $plan = Get-CodexMonitorLaunchPlan $debugReady $codexRunning
   if ($plan -eq 'blocked-running-without-cdp') {
@@ -87,8 +82,8 @@ try {
   if ($debugReady) { $Port = $activePort }
   if (-not $debugReady) {
     $Port = Resolve-CodexUsageAvailablePort -PreferredPort $Port
-    [void](Start-CodexUsagePackagedCodex -Port $Port)
-    if (-not (Wait-CodexUsageCdpPort $Port)) { throw "Codex 未在 180 秒内开放端口 $Port；未结束 Codex，请等待加载完成后再试。" }
+    $launch = Start-CodexUsagePackagedCodex -Port $Port
+    if (-not (Wait-CodexUsageCdpPort -Port $Port -ProcessId $launch.ProcessId)) { throw "Codex 调试端口 $Port 未就绪（PID $($launch.ProcessId)）；启动进程已退出或超过 180 秒启动期限，可能存在启动残留。脚本未结束 Codex，请正常退出后重试。" }
   }
   & (Join-Path $PSScriptRoot 'start-monitor.ps1') -Port $Port
   # start-monitor.ps1 throws on failure. LASTEXITCODE may still contain a failed

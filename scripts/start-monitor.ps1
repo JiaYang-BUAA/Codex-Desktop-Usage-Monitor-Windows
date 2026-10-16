@@ -55,20 +55,15 @@ function Test-MonitorInjection([int]$CandidatePort, [int]$ExpectedPid, [int]$Tim
 
 $activePort = Resolve-CodexUsageCdpPort $Port
 if (-not $activePort) {
-  $pendingPorts = @(Get-CodexUsageProcessCdpPorts)
-  if ($pendingPorts.Count -gt 0) {
-    $Port = $pendingPorts[0]
-    if (-not (Wait-CodexUsageCdpPort $Port)) { throw "Codex 仍在加载，180 秒内未能连接端口 $Port；未结束 Codex，请稍后再试。" }
-    $activePort = $Port
-  }
+  $activePort = Wait-CodexUsagePendingCdpPort
 }
 if (-not $activePort) {
   if (-not $LaunchCodex) { throw '没有找到带 CDP 的 Codex。请先使用“Codex Usage Monitor”快捷方式启动 Codex。' }
   if (@(Get-Process ChatGPT -ErrorAction SilentlyContinue).Count -gt 0) {
     throw 'Codex 已经运行但未开放 CDP。请正常退出后再使用监视器启动器；脚本不会强制结束现有会话。'
   }
-  [void](Start-CodexUsagePackagedCodex -Port $Port)
-  if (-not (Wait-CodexUsageCdpPort $Port)) { throw "Codex 未在 180 秒内开放本机端口 $Port；未结束 Codex，请等待加载完成后再试。" }
+  $launch = Start-CodexUsagePackagedCodex -Port $Port
+  if (-not (Wait-CodexUsageCdpPort -Port $Port -ProcessId $launch.ProcessId)) { throw "Codex 调试端口 $Port 未就绪（PID $($launch.ProcessId)）；启动进程已退出或超过 180 秒启动期限，可能存在启动残留。脚本未结束 Codex，请正常退出后重试。" }
   $activePort = $Port
 }
 $Port = $activePort

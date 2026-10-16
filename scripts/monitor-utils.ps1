@@ -716,28 +716,78 @@ function Test-CodexUsageCdpPort([int]$Port) {
   return [bool](Get-CodexUsageTargets $Port | Where-Object { $_.type -eq 'page' -and [string]$_.url -like 'app://*' })
 }
 
-function Wait-CodexUsageCdpPort([int]$Port, [int]$TimeoutSeconds = 180, [int]$PollMilliseconds = 400) {
+function Wait-CodexUsageCdpPort([int]$Port, [int]$TimeoutSeconds = 180, [int]$PollMilliseconds = 400, $ProcessCandidate = $null, [int]$ProcessId = 0) {
   $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  if (-not $ProcessCandidate -and $ProcessId -gt 0) {
+    try {
+      $launchedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+      if (-not $launchedProcess -or -not $launchedProcess.CreationDate) { return $false }
+      $ProcessCandidate = [pscustomobject]@{ ProcessId = $ProcessId; CreationDate = $launchedProcess.CreationDate; Port = $Port }
+    } catch { return $false }
+  }
+  if ($ProcessCandidate) {
+    if (-not $ProcessCandidate.CreationDate -or $ProcessCandidate.ProcessId -le 0) { return $false }
+    $createdAt = ([DateTime]$ProcessCandidate.CreationDate).ToUniversalTime()
+    $deadline = $createdAt.AddSeconds($TimeoutSeconds)
+  }
   do {
+    if ($ProcessCandidate) {
+      if ([DateTime]::UtcNow -ge $deadline) { return $false }
+      try {
+        $liveProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$ProcessCandidate.ProcessId)" -ErrorAction Stop
+        if (-not $liveProcess -or -not $liveProcess.CreationDate -or
+          ([DateTime]$liveProcess.CreationDate).ToUniversalTime() -ne $createdAt) { return $false }
+      } catch { return $false }
+    }
     if (Test-CodexUsageCdpPort $Port) { return $true }
-    if ([DateTime]::UtcNow -ge $deadline) { return $false }
-    Start-Sleep -Milliseconds $PollMilliseconds
+    $remainingMilliseconds = [Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+    if ($remainingMilliseconds -le 0) { return $false }
+    Start-Sleep -Milliseconds ([Math]::Min($PollMilliseconds, $remainingMilliseconds))
   } while ($true)
 }
 
-function Get-CodexUsageProcessCdpPorts {
-  $processPorts = [Collections.Generic.List[int]]::new()
+function Get-CodexUsageProcessCdpCandidates {
+  $candidates = [Collections.Generic.List[object]]::new()
   try {
     foreach ($process in Get-CimInstance Win32_Process -Filter "Name = 'ChatGPT.exe'" -ErrorAction Stop) {
+      if ([string]$process.CommandLine -match '(?:^|\s)--type(?:=|\s)') { continue }
+      $createdAt = $null
+      if ($process.CreationDate) {
+        try { $createdAt = ([DateTime]$process.CreationDate).ToUniversalTime() } catch {}
+      }
+      $processPorts = [Collections.Generic.HashSet[int]]::new()
       foreach ($match in [regex]::Matches([string]$process.CommandLine, '--remote-debugging-port(?:=|\s+)(\d+)')) {
         $candidate = 0
-        if ([int]::TryParse($match.Groups[1].Value, [ref]$candidate) -and $candidate -ge 1024 -and $candidate -le 65535 -and -not $processPorts.Contains($candidate)) {
-          $processPorts.Add($candidate)
+        if ([int]::TryParse($match.Groups[1].Value, [ref]$candidate) -and $candidate -ge 1024 -and $candidate -le 65535 -and $processPorts.Add($candidate)) {
+          $candidates.Add([pscustomobject]@{ ProcessId = [int]$process.ProcessId; CreationDate = $createdAt; Port = $candidate })
         }
       }
     }
   } catch {}
-  return $processPorts.ToArray()
+  return $candidates.ToArray()
+}
+
+function Get-CodexUsageProcessCdpPorts {
+  return @(Get-CodexUsageProcessCdpCandidates | Select-Object -ExpandProperty Port -Unique)
+}
+
+function Wait-CodexUsagePendingCdpPort([int]$TimeoutSeconds = 180, [int]$PollMilliseconds = 400) {
+  $candidates = @(Get-CodexUsageProcessCdpCandidates)
+  $now = [DateTime]::UtcNow
+  $pending = @($candidates | Where-Object {
+    $_.CreationDate -and $_.ProcessId -gt 0 -and $_.CreationDate -le $now -and
+      $_.CreationDate.AddSeconds($TimeoutSeconds) -gt $now
+  } | Sort-Object CreationDate -Descending)
+  foreach ($candidate in $pending) {
+    if (Wait-CodexUsageCdpPort -Port $candidate.Port -TimeoutSeconds $TimeoutSeconds -PollMilliseconds $PollMilliseconds -ProcessCandidate $candidate) {
+      return $candidate.Port
+    }
+  }
+  if ($candidates.Count -gt 0) {
+    $details = ($candidates | Select-Object -First 3 | ForEach-Object { "PID $($_.ProcessId)，端口 $($_.Port)" }) -join '；'
+    throw "Codex 调试端口未就绪（$details）。调试启动进程已超过 $TimeoutSeconds 秒启动期限、已退出或状态无法确认，可能存在上次启动残留。脚本未结束 Codex，请正常退出后重试。"
+  }
+  return 0
 }
 
 function Test-CodexUsageTcpPortAvailable([int]$Port) {
