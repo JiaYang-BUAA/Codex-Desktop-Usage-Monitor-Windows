@@ -37,7 +37,7 @@
     const fields = node.matches(EDITABLE_SELECTOR) ? [node] : [...node.querySelectorAll(EDITABLE_SELECTOR)];
     const labels = fields.flatMap((field) => ["aria-label", "placeholder", "data-placeholder"]
       .map((attribute) => field.getAttribute(attribute) || ""));
-    if (labels.some((label) => /\bChatGPT\s+(?:Work\b|工作)/i.test(label))) return false;
+    if (labels.some((label) => /\bChatGPT\s+(?:Work\b|工作)|\bWork\s+with\s+ChatGPT\b/i.test(label))) return false;
     if (labels.some((label) => /\bChatGPT\b/i.test(label))) return true;
     for (let current = node; current; current = current.parentElement) {
       if (["data-above-composer-conversation-id", "data-conversation-id", "data-thread-id"]
