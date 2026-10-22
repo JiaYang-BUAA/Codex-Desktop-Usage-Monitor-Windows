@@ -328,12 +328,13 @@
       };
     }
   };
+  let applyingSettings = false;
   const saveSettings = (value) => {
     try {
       window[PERSISTED_SETTINGS_KEY] = value;
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(value));
       localStorage.removeItem(PREVIOUS_SETTINGS_KEY);
-      if (typeof window[SETTINGS_BINDING] === "function") window[SETTINGS_BINDING](JSON.stringify(value));
+      if (!applyingSettings && typeof window[SETTINGS_BINDING] === "function") window[SETTINGS_BINDING](JSON.stringify(value));
     } catch {}
   };
   const selectedMetrics = (source, settings) => {
@@ -1890,6 +1891,22 @@
     ensure,
     diagnose() { return { ...this.health }; },
     getSettings() { return loadSettings(); },
+    applySettings(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const previous = loadSettings();
+      window[PERSISTED_SETTINGS_KEY] = value;
+      const next = loadSettings();
+      if (JSON.stringify(previous) === JSON.stringify(next)) return true;
+      applyingSettings = true;
+      try {
+        saveSettings(next);
+        const host = ensure();
+        if (host) render(host, this.usage, true);
+      } finally {
+        applyingSettings = false;
+      }
+      return true;
+    },
     updateUsage(value) {
       const usage = preserveMetricsWhileLoading(this.usage, normalizeUsage(value));
       this.usage = usage;

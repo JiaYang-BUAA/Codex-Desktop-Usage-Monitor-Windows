@@ -90,6 +90,46 @@ try {
   assert.equal((await createAutoResumeStateStore(statePath)).current.handledByThread[THREAD_ID].eventId, EVENT_ID);
   await controller.stop();
 
+  // Two renderer windows can query their own status without changing the
+  // controller's current task or publishing another status update.
+  const windowsStore = await createAutoResumeStateStore(path.join(root, "windows.json"));
+  let windowPublications = 0;
+  const windows = new AutoResumeController({
+    store: windowsStore,
+    now: () => startAt,
+    sendContinue: async () => assert.fail("status projection must never send a message"),
+    onStatusChange: () => { windowPublications++; },
+  });
+  await windows.settingsChanged({ autoResumeThreads: {
+    [THREAD_ID]: { enabled: true },
+    [OTHER_THREAD_ID]: { enabled: true },
+  } });
+  await windows.observeUsage(usage());
+  windows.publish("sent", { threadId: OTHER_THREAD_ID, sentAt: startAt, resetAt });
+  const activeStatus = windows.status;
+  const publicationCount = windowPublications;
+  const persistedBeforeRead = JSON.stringify(windowsStore.current);
+  assert.deepEqual(windows.statusForThread(THREAD_ID), { enabled: true, status: "waiting", resetAt });
+  assert.deepEqual(windows.statusForThread(OTHER_THREAD_ID.toUpperCase()), {
+    enabled: true, status: "sent", resetAt, sentAt: startAt,
+  });
+  assert.deepEqual(windows.statusForThread(null), { enabled: false, status: "idle", resetAt: null });
+  assert.deepEqual(windows.statusForThread("invalid"), { enabled: false, status: "idle", resetAt: null });
+  windows.statusForThread(OTHER_THREAD_ID).status = "idle";
+  assert.equal(windows.statusForThread(OTHER_THREAD_ID).status, "sent", "a projection cannot mutate saved status");
+  assert.equal(windows.currentThreadId, THREAD_ID);
+  assert.equal(windows.status, activeStatus, "reading another window does not replace the published status");
+  assert.equal(windowPublications, publicationCount, "status reads must not trigger recursive broadcasts");
+  assert.equal(JSON.stringify(windowsStore.current), persistedBeforeRead);
+  await windows.settingsChanged({ autoResumeThreads: {
+    [THREAD_ID]: { enabled: true },
+    [OTHER_THREAD_ID]: { enabled: false },
+  } });
+  assert.deepEqual(windows.statusForThread(OTHER_THREAD_ID), { enabled: false, status: "idle", resetAt: null },
+    "disabled windows cannot inherit an earlier sent state");
+  assert.equal(windows.statusForThread(THREAD_ID).status, "waiting");
+  await windows.stop();
+
   const cancellationPath = path.join(root, "cancel.json");
   now = startAt;
   const cancellationStore = await createAutoResumeStateStore(cancellationPath);

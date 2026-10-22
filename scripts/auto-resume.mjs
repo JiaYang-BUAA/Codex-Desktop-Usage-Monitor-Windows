@@ -197,18 +197,24 @@ export class AutoResumeController {
     for (const id of ids.slice(0, Math.max(0, ids.length - 128))) delete this.state.handledByThread[id];
   }
 
+  statusForThread(threadId) {
+    const normalized = String(threadId || "").toLowerCase();
+    const id = UUID_PATTERN.test(normalized) ? normalized : null;
+    const enabled = id ? this.threadSettings[id]?.enabled === true : false;
+    const pending = id ? this.state.pendingByThread[id] : null;
+    const detailForThread = id ? this.statusByThread.get(id) : null;
+    return { enabled, status: "idle", resetAt: null,
+      ...(enabled ? pending ? { status: "waiting", resetAt: pending.resetAt, ...(pending.reason ? { reason: pending.reason } : {}) }
+        : detailForThread || {} : {}) };
+  }
+
   publish(status, detail = {}) {
     const relatedThreadId = String(detail.threadId || this.currentThreadId || "").toLowerCase();
     if (status && UUID_PATTERN.test(relatedThreadId)) {
       const { threadId: _threadId, ...rest } = detail;
       this.statusByThread.set(relatedThreadId, { status, ...rest });
     }
-    const enabled = this.currentThreadId ? this.threadSettings[this.currentThreadId]?.enabled === true : false;
-    const pending = this.state.pendingByThread[this.currentThreadId];
-    const detailForThread = this.statusByThread.get(this.currentThreadId);
-    this.status = { enabled, status: "idle", resetAt: null,
-      ...(enabled ? pending ? { status: "waiting", resetAt: pending.resetAt, ...(pending.reason ? { reason: pending.reason } : {}) }
-        : detailForThread || {} : {}) };
+    this.status = this.statusForThread(this.currentThreadId);
     try { this.onStatusChange(this.status); } catch {}
   }
 

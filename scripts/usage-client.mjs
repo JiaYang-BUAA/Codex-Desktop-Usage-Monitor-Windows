@@ -486,14 +486,35 @@ export function parseLocalTokenUsageEvent(line, expectedDate = null) {
   };
 }
 
-function resolveLocalTokenSessionRoot(explicit) {
-  if (explicit) return path.resolve(explicit);
-  const codexHome = process.env.CODEX_HOME
+function resolveCodexHome() {
+  return process.env.CODEX_HOME
     ? path.resolve(process.env.CODEX_HOME)
     : process.env.USERPROFILE
       ? path.join(process.env.USERPROFILE, ".codex")
       : null;
+}
+
+function resolveLocalTokenSessionRoot(explicit) {
+  if (explicit) return path.resolve(explicit);
+  const codexHome = resolveCodexHome();
   return codexHome ? path.join(codexHome, "sessions") : null;
+}
+
+function resolveAuthStatePath() {
+  const codexHome = resolveCodexHome();
+  return codexHome ? path.join(codexHome, "auth.json") : null;
+}
+
+function authStateRevision(filePath) {
+  if (!filePath) return "unavailable";
+  try {
+    // Only inspect file metadata. Credentials remain owned by the Codex CLI.
+    const stat = statSync(filePath, { bigint: true });
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+  } catch (error) {
+    if (error?.code === "ENOENT") return "missing";
+    throw new Error("无法检查 Codex 登录状态是否变化", { cause: error });
+  }
 }
 
 function resolveLocalTokenCounterPath(explicit) {
@@ -752,6 +773,8 @@ export class LocalCodexTokenTracker {
     );
     this.classificationReady = Array.isArray(officialModelProviders);
     this.currentThreadId = null;
+    this.visibleThreadIds = new Set();
+    this.visibleThreadSignature = "";
     this.autoResumeThreadIds = new Set();
     this.dailyDate = null;
     this.todayTokens = 0;
@@ -854,6 +877,12 @@ export class LocalCodexTokenTracker {
   }
 
   emit(view) {
+    const visibleThreadSignature = JSON.stringify([...this.visibleThreadIds].map((threadId) => {
+      const task = this.getThreadView(threadId, view.fetchedAt ?? this.now());
+      // Completed tasks need no update merely because another scan took place.
+      if (!task.executionTimeRunning) delete task.executionTimeUpdatedAt;
+      return task;
+    }));
     const unchanged = this.view.status === view.status
       && this.view.dailyDate === view.dailyDate
       && this.view.todayTokens === view.todayTokens
@@ -873,8 +902,10 @@ export class LocalCodexTokenTracker {
       && this.view.contextCompactions === view.contextCompactions
       && this.view.quotaExceeded?.eventId === view.quotaExceeded?.eventId
       && JSON.stringify(this.view.autoResumeTasks) === JSON.stringify(view.autoResumeTasks)
+      && this.visibleThreadSignature === visibleThreadSignature
       && this.view.error === view.error;
     this.view = view;
+    this.visibleThreadSignature = visibleThreadSignature;
     if (!unchanged) this.onUpdate(view);
   }
 
@@ -938,6 +969,37 @@ export class LocalCodexTokenTracker {
     this.autoResumeThreadIds = normalized;
     this.refresh().catch(() => {});
     return true;
+  }
+
+  setVisibleThreadIds(values) {
+    const normalized = new Set((Array.isArray(values) ? values : [])
+      .filter((value) => typeof value === "string")
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value))
+      .sort());
+    if ([...normalized].join(",") === [...this.visibleThreadIds].join(",")) return false;
+    this.visibleThreadIds = normalized;
+    this.refresh().catch(() => {});
+    return true;
+  }
+
+  getThreadView(value, now = this.now()) {
+    const threadId = typeof value === "string"
+      ? value.trim().toLowerCase().match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)?.[0] || null
+      : null;
+    const task = threadId ? this.threadLatest.get(threadId) : null;
+    const tokens = this.taskTokenView(threadId);
+    return {
+      currentThreadId: threadId,
+      currentTaskTokens: tokens.tokens,
+      lastTurnTokens: tokens.lastTokens,
+      lastTurnCacheHitRate: tokens.lastCacheRate,
+      currentStatus: SESSION_STATUS_VALUES.has(task?.currentStatus) ? task.currentStatus : null,
+      ...this.executionView(threadId, now),
+      cacheHitRate: tokens.cacheRate,
+      contextCompactions: task?.contextCompactions ?? (threadId ? 0 : null),
+      quotaExceeded: task?.quotaExceeded ?? null,
+    };
   }
 
   autoResumeTasks() {
@@ -1108,7 +1170,7 @@ export class LocalCodexTokenTracker {
       const checkpoints = [this.officialLifetimeCheckpointAt, this.officialLast7DaysCheckpointAt]
         .filter((value) => Number.isFinite(value));
       const scanStart = checkpoints.length ? Math.min(dayStart, ...checkpoints) : dayStart;
-      const trackedThreadIds = new Set(this.autoResumeThreadIds);
+      const trackedThreadIds = new Set([...this.autoResumeThreadIds, ...this.visibleThreadIds]);
       if (this.currentThreadId) trackedThreadIds.add(this.currentThreadId);
       const discoveryKey = `${scanStart}:${[...trackedThreadIds].sort().join(",")}`;
       if (!this.sessionDiscovery || this.sessionDiscovery.key !== discoveryKey
@@ -1400,9 +1462,6 @@ export class LocalCodexTokenTracker {
       if (activityDetected) this.lastActivityAt = now;
       const last7DaysTokens = this.currentLast7DaysTokens();
       const lifetimeTokens = this.currentLifetimeTokens();
-      const currentTask = this.currentThreadId ? this.threadLatest.get(this.currentThreadId) || null : null;
-      const taskTokens = this.taskTokenView(this.currentThreadId);
-      const cacheHitRate = taskTokens.cacheRate;
       if (this.counterDirty) {
         this.saveCounter(now);
       }
@@ -1414,15 +1473,7 @@ export class LocalCodexTokenTracker {
         todayTokens: available || todayTokens > 0 ? todayTokens : null,
         last7DaysTokens,
         lifetimeTokens,
-        currentThreadId: this.currentThreadId,
-        currentTaskTokens: taskTokens.tokens,
-        lastTurnTokens: taskTokens.lastTokens,
-        lastTurnCacheHitRate: taskTokens.lastCacheRate,
-        currentStatus: SESSION_STATUS_VALUES.has(currentTask?.currentStatus) ? currentTask.currentStatus : null,
-        ...this.executionView(this.currentThreadId, now),
-        cacheHitRate,
-        contextCompactions: currentTask?.contextCompactions ?? (this.currentThreadId ? 0 : null),
-        quotaExceeded: currentTask?.quotaExceeded ?? null,
+        ...this.getThreadView(this.currentThreadId, now),
         autoResumeTasks: this.autoResumeTasks(),
         fetchedAt: now,
         error: available ? null : "未找到本机 Codex 任务记录",
@@ -2657,10 +2708,10 @@ export class CombinedUsageClient {
         this.history.recordQuota(view);
         this.history.flush();
         if (Number.isSafeInteger(view?.lifetimeTokens) && view.lifetimeTokens >= 0) {
-          this.localOfficial.setOfficialLifetimeTokens(view.lifetimeTokens, view.fetchedAt);
+          this.localOfficial.setOfficialLifetimeTokens(view.lifetimeTokens, view.tokenUsageFetchedAt ?? view.fetchedAt);
         }
         if (Number.isSafeInteger(view?.last7DaysTokens) && view.last7DaysTokens >= 0) {
-          this.localOfficial.setOfficialLast7DaysTokens(view.last7DaysTokens, view.fetchedAt);
+          this.localOfficial.setOfficialLast7DaysTokens(view.last7DaysTokens, view.tokenUsageFetchedAt ?? view.fetchedAt);
         }
         if (view?.officialModelProvidersResolved) {
           this.localOfficial.setOfficialModelProviders(view?.officialModelProviders);
@@ -2692,6 +2743,26 @@ export class CombinedUsageClient {
 
   setCurrentThreadId(value) {
     return this.localOfficial.setCurrentThreadId(value);
+  }
+
+  setVisibleThreadIds(values) {
+    return this.localOfficial.setVisibleThreadIds(values);
+  }
+
+  usageForThread(baseUsage, threadId) {
+    if (!baseUsage) return baseUsage;
+    const sampledAt = this.localOfficial.view.fetchedAt ?? Date.now();
+    const usage = {
+      ...baseUsage,
+      ...this.localOfficial.getThreadView(threadId, sampledAt),
+    };
+    return {
+      ...usage,
+      sources: {
+        ...baseUsage.sources,
+        session: toSessionUsageSource({ ...usage, fetchedAt: sampledAt }, sampledAt, this.refreshMs),
+      },
+    };
   }
 
   setAutoResumeThreadIds(values) {
@@ -2892,12 +2963,15 @@ class AppServerRpc {
 }
 
 export class UsageClient {
-  constructor({ command = resolveCodexExecutable(), refreshMs = DEFAULT_REFRESH_MS, managed = false, onUpdate = () => {} } = {}) {
+  constructor({ command = resolveCodexExecutable(), refreshMs = DEFAULT_REFRESH_MS, managed = false, onUpdate = () => {}, authStatePath = resolveAuthStatePath() } = {}) {
     this.command = command;
     this.refreshMs = refreshMs;
     this.managed = managed;
     this.onUpdate = onUpdate;
     this.rpc = null;
+    this.authStatePath = authStatePath;
+    this.authRevision = undefined;
+    this.stopGeneration = 0;
     this.timer = null;
     this.refreshing = null;
     this.rateLimits = null;
@@ -2924,12 +2998,41 @@ export class UsageClient {
   }
 
   async ensureConnected() {
+    const stopGeneration = this.stopGeneration;
+    const revision = authStateRevision(this.authStatePath);
+    if (this.authRevision !== undefined && this.authRevision !== revision) {
+      const previous = this.rpc;
+      this.rpc = null;
+      if (previous) await previous.stop();
+      if (this.stopGeneration !== stopGeneration) throw new Error("Codex 用量查询已停止");
+      // A login change can select another account. Do not carry its quota or
+      // token totals into a partially successful response for the new account.
+      this.rateLimits = null;
+      this.tokenUsage = null;
+      this.accountSnapshot = null;
+      this.configSnapshot = null;
+      this.emit({
+        ...this.view, status: "loading", windows: [], planType: null,
+        todayTokens: null, last7DaysTokens: null, lifetimeTokens: null,
+        tokenUsageAvailable: false, latestUsageDate: null,
+        tokenUsageFetchedAt: null,
+        quotaObservedAt: null, fetchedAt: null, error: null,
+        officialModelProviders: [], officialModelProvidersResolved: false,
+      });
+    }
+    this.authRevision = revision;
     if (this.rpc) return this.rpc;
     const rpc = new AppServerRpc({
       command: this.command,
-      onNotification: (method, params) => this.handleNotification(method, params),
+      onNotification: (method, params) => {
+        if (this.rpc !== rpc || method !== "account/rateLimits/updated") return;
+        try {
+          if (authStateRevision(this.authStatePath) === this.authRevision) this.handleNotification(method, params);
+        } catch { /* The next poll reports a metadata read failure. */ }
+      },
       onExit: (error) => {
-        if (this.rpc === rpc) this.rpc = null;
+        if (this.rpc !== rpc) return;
+        this.rpc = null;
         this.emitFailure(error);
       },
     });
@@ -2959,6 +3062,7 @@ export class UsageClient {
     this.rateLimits = { ...(this.rateLimits || {}), rateLimits, rateLimitsByLimitId: Object.keys(byId).length ? byId : null };
     this.emit({
       ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),
+      tokenUsageFetchedAt: this.view.tokenUsageFetchedAt ?? null,
       quotaObservedAt: (!params.rateLimits.limitId || params.rateLimits.limitId === "codex")
         && (params.rateLimits.primary || params.rateLimits.secondary) ? Date.now() : null,
       officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
@@ -2971,6 +3075,7 @@ export class UsageClient {
     this.emit({
       ...this.view,
       status: hasData ? "stale" : "error",
+      quotaObservedAt: null,
       error: error?.message || "Codex 用量暂时不可用",
     });
   }
@@ -2986,6 +3091,9 @@ export class UsageClient {
           rpc.request("account/read", { refreshToken: false }),
           rpc.request("config/read", {}),
         ]);
+        if (authStateRevision(this.authStatePath) !== this.authRevision) {
+          throw new Error("Codex 登录状态已变化，等待重新读取用量");
+        }
         if (limitsResult.status === "fulfilled") this.rateLimits = limitsResult.value;
         if (usageResult.status === "fulfilled") this.tokenUsage = usageResult.value;
         if (accountResult.status === "fulfilled") this.accountSnapshot = accountResult.value;
@@ -2993,6 +3101,12 @@ export class UsageClient {
         if (limitsResult.status === "rejected" && usageResult.status === "rejected") throw limitsResult.reason;
         this.emit({
           ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),
+          tokenUsageFetchedAt: usageResult.status === "fulfilled" ? Date.now() : this.view.tokenUsageFetchedAt ?? null,
+          ...(limitsResult.status === "rejected" ? {
+            status: this.rateLimits ? "stale" : "error",
+            fetchedAt: this.view.fetchedAt,
+            error: limitsResult.reason?.message || "Codex 额度暂时不可用",
+          } : {}),
           quotaObservedAt: limitsResult.status === "fulfilled" ? Date.now() : null,
           officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
           officialModelProvidersResolved: officialModelProviderResolutionReady(this.accountSnapshot, this.configSnapshot),
@@ -3015,7 +3129,7 @@ export class UsageClient {
     this.stopped = false;
     this.emit({ ...this.view, status: "loading", error: null });
     await this.refresh();
-    if (!this.managed) {
+    if (!this.stopped && !this.managed) {
       this.timer = setInterval(() => this.refresh().catch(() => {}), this.refreshMs);
       this.timer.unref?.();
     }
@@ -3024,6 +3138,7 @@ export class UsageClient {
 
   async stop() {
     this.stopped = true;
+    this.stopGeneration += 1;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     const rpc = this.rpc;

@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { usageForWindow } from "../scripts/injector.mjs";
 import {
   ApiAccountUsageClient,
   ApiUsageClient,
@@ -82,7 +83,7 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
     return child;
   };
   syncBuiltinESMExports();
-  const client = new UsageClient({ command: "fixture-only" });
+  const client = new UsageClient({ command: "fixture-only", authStatePath: null });
   try {
     await client.refresh();
     assert.equal(client.view.status, "error");
@@ -102,6 +103,185 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
     for (const child of children) child.kill();
     childProcess.spawn = originalSpawn;
     syncBuiltinESMExports();
+  }
+}
+
+// Each child deliberately retains the account that was current when it started,
+// matching a long-lived app-server. The marker is test data, never real auth.
+{
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-quota-auth-"));
+  const marker = path.join(directory, "login-state.fixture");
+  const originalSpawn = childProcess.spawn;
+  const children = [];
+  const updates = [];
+  let account = { usedPercent: 41, lifetimeTokens: 100 };
+  let rejectLimits = false;
+  let rejectUsage = false;
+  let duringLimits = null;
+  let markerSequence = 0;
+  const changeLogin = () => writeFileSync(marker, `fixture-login-${++markerSequence}${".".repeat(markerSequence)}`);
+  changeLogin();
+  childProcess.spawn = () => {
+    const cached = { ...account };
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.requests = [];
+    const exit = () => {
+      if (child.exitCode !== null) return;
+      child.exitCode = 0;
+      child.emit("exit", 0, null);
+    };
+    child.stdin.on("data", (data) => {
+      const message = JSON.parse(String(data));
+      if (!Object.hasOwn(message, "id")) return;
+      child.requests.push(message);
+      let result = {};
+      let error = null;
+      if (message.method === "account/rateLimits/read") {
+        result = { rateLimits: { limitId: "codex", primary: {
+          usedPercent: cached.usedPercent, windowDurationMins: 10080, resetsAt: 1793100277,
+        } } };
+        if (rejectLimits) error = { message: "fixture quota unavailable" };
+        duringLimits?.();
+      } else if (message.method === "account/usage/read") {
+        result = { summary: { lifetimeTokens: cached.lifetimeTokens } };
+        if (rejectUsage) error = { message: "fixture token usage unavailable" };
+      } else if (message.method === "account/read") {
+        assert.equal(message.params.refreshToken, false, "polling must not force token rotation");
+        result = { account: { type: "chatgpt", planType: "prolite" }, requiresOpenaiAuth: true };
+      } else if (message.method === "config/read") {
+        result = { config: { model_provider: "openai" } };
+      }
+      const response = error ? { id: message.id, error } : { id: message.id, result };
+      queueMicrotask(() => child.stdout.write(`${JSON.stringify(response)}\n`));
+    });
+    child.stdin.on("finish", exit);
+    child.kill = exit;
+    children.push(child);
+    return child;
+  };
+  syncBuiltinESMExports();
+  const client = new UsageClient({
+    command: "fixture-only", authStatePath: marker, onUpdate: (value) => updates.push(value),
+  });
+  const remaining = () => client.view.windows[0]?.remainingPercent;
+  try {
+    await Promise.all([client.refresh(), client.refresh(), client.refresh()]);
+    assert.equal(children.length, 1, "overlapping refreshes share one connection");
+    assert.equal(children[0].requests.filter((item) => item.method === "account/rateLimits/read").length, 1);
+    assert.equal(remaining(), 59);
+    assert.equal(client.view.lifetimeTokens, 100);
+    await client.refresh();
+    assert.equal(children.length, 1, "an unchanged login reuses the connection");
+
+    account = { usedPercent: 7, lifetimeTokens: 200 };
+    rejectUsage = true;
+    changeLogin();
+    const updatesBeforeSwitch = updates.length;
+    await client.refresh();
+    assert.equal(children.length, 2);
+    assert.equal(children[0].exitCode, 0, "only the obsolete owned transport is stopped");
+    assert.equal(remaining(), 93, "login changes replace the stale quota client");
+    assert.equal(client.view.lifetimeTokens, null, "a partial new-account result cannot inherit old token totals");
+    assert.equal(client.view.tokenUsageFetchedAt, null, "the new account cannot inherit an old token checkpoint");
+    assert.ok(updates.slice(updatesBeforeSwitch).some((item) => item.status === "loading" && item.windows.length === 0));
+    const currentView = client.view;
+    children[0].stdout.write(`${JSON.stringify({
+      method: "account/rateLimits/updated",
+      params: { rateLimits: { primary: { usedPercent: 99, windowDurationMins: 10080 } } },
+    })}\n`);
+    assert.equal(client.view, currentView, "retired transport notifications cannot restore the old account");
+
+    rejectUsage = false;
+    rejectLimits = true;
+    const lastQuotaTime = client.view.fetchedAt;
+    const tokenPollTime = lastQuotaTime + 1000;
+    const originalNow = Date.now;
+    try {
+      Date.now = () => tokenPollTime;
+      await client.refresh();
+    } finally {
+      Date.now = originalNow;
+    }
+    assert.equal(client.view.status, "stale", "token success does not make a failed quota poll fresh");
+    assert.equal(client.view.fetchedAt, lastQuotaTime);
+    assert.equal(client.view.tokenUsageFetchedAt, tokenPollTime,
+      "a successful token poll keeps its own checkpoint even when quota data remain stale");
+    assert.equal(client.view.quotaObservedAt, null);
+    assert.equal(remaining(), 93);
+    assert.equal(client.view.lifetimeTokens, 200);
+    assert.match(client.view.error, /quota unavailable/);
+    rejectLimits = false;
+
+    rmSync(marker);
+    account = { usedPercent: 10, lifetimeTokens: 300 };
+    await client.refresh();
+    assert.equal(children.length, 3, "deleting the login state invalidates the connection");
+    assert.equal(remaining(), 90);
+    changeLogin();
+    account = { usedPercent: 11, lifetimeTokens: 400 };
+    await client.refresh();
+    assert.equal(children.length, 4, "restoring login state invalidates the connection");
+    assert.equal(remaining(), 89);
+
+    const beforeRace = updates.length;
+    duringLimits = () => {
+      duringLimits = null;
+      account = { usedPercent: 12, lifetimeTokens: 500 };
+      changeLogin();
+    };
+    await client.refresh();
+    assert.equal(client.rpc, null, "a login change during a request retires that transport");
+    assert.equal(client.view.status, "stale");
+    assert.equal(client.view.quotaObservedAt, null);
+    assert.ok(updates.slice(beforeRace).every((item) => item.status !== "ready"),
+      "mixed-login responses are never published as fresh");
+    await client.refresh();
+    assert.equal(children.length, 5);
+    assert.equal(remaining(), 88);
+    assert.equal(client.view.lifetimeTokens, 500);
+    assert.equal(client.view.status, "ready");
+
+    changeLogin();
+    rejectLimits = true;
+    await client.refresh();
+    assert.equal(client.view.status, "error", "a new account with no successful quota has no stale quota to retain");
+    assert.equal(client.view.windows.length, 0);
+    assert.equal(client.view.fetchedAt, null);
+    assert.equal(client.view.quotaObservedAt, null);
+
+    // Stop while a login-triggered reconnect is awaiting the old transport.
+    // start() also awaits this refresh and must not reinstall its timer afterward.
+    changeLogin();
+    let releaseOldStop;
+    let signalOldStop;
+    const oldStopGate = new Promise((resolve) => { releaseOldStop = resolve; });
+    const oldStopEntered = new Promise((resolve) => { signalOldStop = resolve; });
+    const originalStop = client.rpc.stop.bind(client.rpc);
+    client.rpc.stop = async () => {
+      signalOldStop();
+      await oldStopGate;
+      await originalStop();
+    };
+    const childCountBeforeStop = children.length;
+    const pendingStart = client.start();
+    await oldStopEntered;
+    await client.stop();
+    releaseOldStop();
+    await pendingStart;
+    assert.equal(children.length, childCountBeforeStop, "stop cancels a pending replacement process");
+    assert.equal(client.rpc, null);
+    assert.equal(client.timer, null, "a stopped start() must not install a polling timer");
+    assert.ok(children.every((child) => child.exitCode === 0));
+  } finally {
+    await client.stop();
+    for (const child of children) child.kill();
+    childProcess.spawn = originalSpawn;
+    syncBuiltinESMExports();
+    rmSync(directory, { recursive: true, force: true });
   }
 }
 
@@ -895,6 +1075,116 @@ try {
   assert.deepEqual(delegateCalls, [enabledIds]);
 } finally {
   rmSync(backgroundTrackerRoot, { recursive: true, force: true });
+}
+
+const multiwindowTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-multiwindow-test-"));
+try {
+  const trackerNow = localNoonTimestamp();
+  const oldAt = trackerNow - 3 * 86400000;
+  const firstId = uuidAt(oldAt, 101);
+  const secondId = uuidAt(oldAt, 102);
+  const firstTurn = uuidAt(oldAt + 1000, 103);
+  const secondTurn = uuidAt(oldAt + 1000, 104);
+  const firstPath = path.join(multiwindowTrackerRoot, `rollout-first-${firstId}.jsonl`);
+  const secondPath = path.join(multiwindowTrackerRoot, `rollout-second-${secondId}.jsonl`);
+  writeFileSync(firstPath, [
+    sessionMeta(oldAt, firstId, "openai"), turnContext(oldAt + 1000, firstTurn),
+    tokenCountWithCache(oldAt + 2000, 100, 100, 80, 40, 80, 40),
+    taskComplete(oldAt + 3000, firstTurn, null, 2000), "",
+  ].join("\n"));
+  writeFileSync(secondPath, [
+    sessionMeta(oldAt, secondId, "openai"), turnContext(oldAt + 1000, secondTurn),
+    tokenCountWithCache(oldAt + 2000, 200, 200, 160, 120, 160, 120),
+    taskComplete(oldAt + 3000, secondTurn, null, 4000), "",
+  ].join("\n"));
+  for (const file of [firstPath, secondPath]) utimesSync(file, new Date(oldAt), new Date(oldAt));
+  const updates = [];
+  const tracker = new LocalCodexTokenTracker({
+    sessionRoot: multiwindowTrackerRoot, counterPath: null, now: () => trackerNow,
+    officialModelProviders: ["openai"], onUpdate: (view) => updates.push(view),
+  });
+  tracker.setCurrentThreadId(firstId);
+  await tracker.refresh();
+  assert.equal(tracker.getThreadView(secondId).currentTaskTokens, null, "unselected old tasks are initially skipped");
+  const combined = Object.create(CombinedUsageClient.prototype);
+  Object.assign(combined, { localOfficial: tracker, refreshMs: 30000 });
+  assert.equal(combined.setVisibleThreadIds([firstId, secondId, firstId, "invalid"]), true);
+  assert.equal(combined.setVisibleThreadIds([secondId, firstId]), false, "same visible set does not rescan");
+  await tracker.refresh();
+  assert.equal(tracker.currentThreadId, firstId, "window registration does not change the legacy current task");
+  assert.equal(tracker.getThreadView(secondId).currentTaskTokens, 200, "every visible old task is discovered");
+  assert.equal(tracker.view.todayTokens, 0, "opening old tasks does not add historical tokens to today's total");
+  const officialSource = { id: "official", status: "ready", metrics: [{ id: "secondaryRemaining", value: "86%" }] };
+  const base = { ...mergeOfficialLocalUsage({ windows: [] }, tracker.view), sources: { official: officialSource, session: {} } };
+  const first = combined.usageForThread(base, firstId);
+  const second = combined.usageForThread(base, secondId);
+  assert.equal(first.currentTaskTokens, 100);
+  assert.equal(second.currentTaskTokens, 200);
+  assert.equal(first.cacheHitRate, 50);
+  assert.equal(second.cacheHitRate, 75);
+  assert.equal(first.lastTurnTokens, 100);
+  assert.equal(second.lastTurnTokens, 200);
+  assert.equal(first.lastTurnCacheHitRate, 50);
+  assert.equal(second.lastTurnCacheHitRate, 75);
+  assert.equal(first.executionTimeMs, 2000);
+  assert.equal(second.executionTimeMs, 4000);
+  assert.equal(first.sources.session.metrics.find((item) => item.id === "currentTaskTokens").value, "100");
+  assert.equal(second.sources.session.metrics.find((item) => item.id === "currentTaskTokens").value, "200");
+  assert.equal(first.sources.official, officialSource);
+  assert.equal(second.sources.official, officialSource, "official quota is shared without another request");
+  const resumeByThread = new Map([[firstId, { state: "waiting" }], [secondId, { state: "sent" }]]);
+  const controller = { statusForThread: (id) => resumeByThread.get(id) ?? { state: "idle" } };
+  const firstWindow = usageForWindow(combined, base, firstId, controller);
+  const secondWindow = usageForWindow(combined, base, secondId, controller);
+  assert.equal(firstWindow.currentTaskTokens, 100);
+  assert.equal(firstWindow.autoResume.state, "waiting");
+  assert.equal(secondWindow.currentTaskTokens, 200);
+  assert.equal(secondWindow.autoResume.state, "sent");
+  assert.equal(firstWindow.sources.official, secondWindow.sources.official);
+  assert.equal(usageForWindow(combined, null, firstId, controller), null);
+  assert.equal(base.currentThreadId, firstId, "projecting another window never mutates the shared base");
+  assert.equal(tracker.currentThreadId, firstId, "projecting another window never switches tracker state");
+  assert.equal(combined.usageForThread(base, secondId).currentThreadId, secondId);
+  assert.equal(combined.usageForThread(base, firstId).currentThreadId, firstId, "window switches are independent");
+  for (const emptyId of [null, "invalid"]) {
+    const empty = combined.usageForThread(base, emptyId);
+    assert.equal(empty.currentThreadId, null);
+    assert.equal(empty.currentTaskTokens, null);
+    assert.equal(empty.lastTurnTokens, null);
+    assert.equal(empty.cacheHitRate, null);
+    assert.equal(empty.sources.session.status, "unavailable");
+    assert.equal(empty.sources.official, officialSource);
+  }
+  const beforeUpdate = updates.length;
+  const nextTurn = uuidAt(oldAt + 4000, 105);
+  appendFileSync(secondPath, [
+    turnContext(oldAt + 4000, nextTurn),
+    tokenCountWithCache(oldAt + 5000, 250, 50, 200, 160, 40, 40),
+    taskComplete(oldAt + 6000, nextTurn, null, 1000), "",
+  ].join("\n"));
+  utimesSync(secondPath, new Date(oldAt), new Date(oldAt));
+  await tracker.refresh();
+  assert.equal(updates.length, beforeUpdate + 1, "a secondary window update publishes even when primary and daily totals are unchanged");
+  assert.equal(tracker.view.currentTaskTokens, 100);
+  assert.equal(tracker.view.todayTokens, 0);
+  const changedSecond = combined.usageForThread(base, secondId);
+  assert.equal(changedSecond.currentTaskTokens, 250);
+  assert.equal(changedSecond.lastTurnTokens, 50);
+  assert.equal(changedSecond.lastTurnCacheHitRate, 100);
+  assert.equal(changedSecond.executionTimeMs, 5000);
+  await tracker.refresh();
+  assert.equal(updates.length, beforeUpdate + 1, "unchanged windows do not publish duplicate updates");
+  combined.setVisibleThreadIds([firstId]);
+  await tracker.refresh();
+  assert.ok(!tracker.sessionDiscovery.files.includes(secondPath), "closed old windows leave the active scan set");
+  combined.setVisibleThreadIds([secondId]);
+  await tracker.refresh();
+  assert.ok(tracker.sessionDiscovery.files.includes(firstPath), "legacy current selection remains in the scan union");
+  assert.ok(tracker.sessionDiscovery.files.includes(secondPath));
+  assert.equal(combined.usageForThread(base, secondId).currentTaskTokens, 250, "reopening does not double-count history");
+  await tracker.stop();
+} finally {
+  rmSync(multiwindowTrackerRoot, { recursive: true, force: true });
 }
 
 const cacheTrackerRoot = mkdtempSync(path.join(os.tmpdir(), "codex-usage-cache-hit-test-"));

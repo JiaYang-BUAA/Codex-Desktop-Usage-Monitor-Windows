@@ -59,9 +59,14 @@ export function currentThreadSelectionExpression() {
 export function isMainCodexRendererTarget(target) {
   try {
     const url = new URL(String(target?.url || ""));
+    const initialRoute = url.searchParams.get("initialRoute");
+    // Popped-out local tasks use the normal renderer with an initial route.
+    // Keep auxiliary shells (avatar, quick chat, browser prewarm) excluded.
+    const taskRoute = /^\/local\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/?$/i;
     return url.protocol === "app:"
+      && url.hostname === "-"
       && url.pathname === "/index.html"
-      && !url.searchParams.has("initialRoute");
+      && (initialRoute === null || taskRoute.test(initialRoute));
   } catch {
     return false;
   }
@@ -83,4 +88,13 @@ export async function syncCurrentThread(session, usageClient) {
 
   usageClient.setCurrentThreadId(null);
   return { threadId: null, auxiliaryConversationPresent, preserved: false };
+}
+
+// Keep the selection on its renderer, never on the shared usage collector.
+export async function syncWindowThread(session, windowState) {
+  const previous = windowState.threadId ?? null;
+  const selection = await syncCurrentThread(session, {
+    setCurrentThreadId: (threadId) => { windowState.threadId = threadId; },
+  });
+  return { ...selection, changed: previous !== (windowState.threadId ?? null) };
 }

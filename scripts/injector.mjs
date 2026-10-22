@@ -7,7 +7,7 @@ import { createUiSettingsStore, MAX_UI_SETTINGS_BYTES } from "./ui-settings.mjs"
 import { createAutoUpdater } from "./auto-updater.mjs";
 import { AutoResumeController, createAutoResumeStateStore } from "./auto-resume.mjs";
 import { sendContinueThroughDesktop } from "./desktop-request.mjs";
-import { isMainCodexRendererTarget, syncCurrentThread } from "./current-thread.mjs";
+import { isMainCodexRendererTarget, syncWindowThread } from "./current-thread.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -299,6 +299,10 @@ function settingsSeedExpression(value) {
   return `(() => { const value = ${JSON.stringify(value)}; if (value && typeof value === "object") window[${JSON.stringify(PERSISTED_SETTINGS_KEY)}] = value; else delete window[${JSON.stringify(PERSISTED_SETTINGS_KEY)}]; return true; })()`;
 }
 
+function settingsApplyExpression(value) {
+  return `(() => window[${JSON.stringify(STATE_KEY)}]?.applySettings?.(${JSON.stringify(value)}) || false)()`;
+}
+
 function configurationSeedExpression(value) {
   return `(() => { window[${JSON.stringify(CONFIGURATION_KEY)}] = ${JSON.stringify(value)}; return true; })()`;
 }
@@ -464,6 +468,14 @@ export async function runOnce(options) {
   if (options.mode === "verify" && !verified) process.exitCode = 1;
 }
 
+export function usageForWindow(usageClient, baseUsage, threadId, autoResumeController) {
+  if (!baseUsage) return null;
+  return {
+    ...usageClient.usageForThread(baseUsage, threadId),
+    autoResume: autoResumeController.statusForThread(threadId),
+  };
+}
+
 async function runWatch(options) {
   const sessions = new Map();
   const settingsStore = await createUiSettingsStore();
@@ -471,7 +483,6 @@ async function runWatch(options) {
   const autoUpdater = createAutoUpdater({ root, port: options.port, settingsStore });
   let usageClient = null;
   let latestBaseUsage = null;
-  let latestUsage = null;
   let stopping = false;
   let targetsMissingSince = null;
   let usageStartPromise = Promise.resolve();
@@ -494,9 +505,8 @@ async function runWatch(options) {
   };
   const publishUsage = () => {
     if (!latestBaseUsage) return;
-    latestUsage = { ...latestBaseUsage, autoResume: { ...autoResumeController.status } };
     for (const entry of sessions.values()) {
-      updateMonitor(entry.session, latestUsage, settingsStore).catch((error) => console.error(`[usage-monitor] update failed: ${error.message}`));
+      updateMonitor(entry.session, usageForEntry(entry), settingsStore).catch((error) => console.error(`[usage-monitor] update failed: ${error.message}`));
     }
   };
   const autoResumeController = new AutoResumeController({
@@ -527,6 +537,19 @@ async function runWatch(options) {
     },
   });
 
+  const usageForEntry = (entry) => usageForWindow(usageClient, latestBaseUsage, entry.threadId, autoResumeController);
+  const updateVisibleThreads = () => {
+    if (!stopping) usageClient.setVisibleThreadIds([...sessions.values()].map((entry) => entry.threadId));
+  };
+  const syncEntryThread = async (entry) => {
+    const selection = await syncWindowThread(entry.session, entry);
+    if (sessions.get(entry.target.id) !== entry) return;
+    if (selection.changed) {
+      updateVisibleThreads();
+      if (latestBaseUsage) await updateMonitor(entry.session, usageForEntry(entry), settingsStore);
+    }
+  };
+
   const attach = async (target) => {
     if (!isMonitorTarget(target)) return;
     const previous = sessions.get(target.id);
@@ -535,31 +558,39 @@ async function runWatch(options) {
     const session = new CdpSession(target, 10000);
     try {
       await session.open();
-      const entry = { session, target };
+      const entry = { session, target, threadId: null };
       sessions.set(target.id, entry);
       session.ws.addEventListener("close", () => {
-        if (sessions.get(target.id)?.session === session) sessions.delete(target.id);
+        if (sessions.get(target.id)?.session === session) {
+          sessions.delete(target.id);
+          updateVisibleThreads();
+        }
       }, { once: true });
       session.on("Page.loadEventFired", () => {
-        applyMonitor(session, latestUsage, settingsStore)
-          .then(() => syncCurrentThread(session, usageClient))
+        syncEntryThread(entry)
+          .then(() => applyMonitor(session, usageForEntry(entry), settingsStore))
           .catch((error) => console.error(`[usage-monitor] renderer reload failed: ${error.message}`));
       });
-      await registerSettingsBinding(session, settingsStore, (value) => {
+      await registerSettingsBinding(session, settingsStore, async () => {
+        const value = settingsStore.current;
+        await Promise.allSettled([...sessions.values()].map((entry) => entry.session.evaluate(settingsApplyExpression(value))));
         autoUpdater.settingsChanged(value);
         usageClient.setRefreshInterval(value?.refreshEvery30Seconds ? 30000 : 60000);
         usageClient.setAutoResumeThreadIds(Object.entries(value?.autoResumeThreads || {}).filter(([, config]) => config?.enabled === true).map(([id]) => id));
         return autoResumeController.settingsChanged(value);
       });
       await registerConfigurationBinding(session, options.port);
-      await applyMonitor(session, latestUsage, settingsStore);
+      await applyMonitor(session, usageForEntry(entry), settingsStore);
       autoUpdater.settingsChanged(settingsStore.current);
       usageClient.setRefreshInterval(settingsStore.current?.refreshEvery30Seconds ? 30000 : 60000);
       usageClient.setAutoResumeThreadIds(Object.entries(settingsStore.current?.autoResumeThreads || {}).filter(([, config]) => config?.enabled === true).map(([id]) => id));
       await autoResumeController.settingsChanged(settingsStore.current);
-      await syncCurrentThread(session, usageClient);
+      await syncEntryThread(entry);
     } catch (error) {
-      if (sessions.get(target.id)?.session === session) sessions.delete(target.id);
+      if (sessions.get(target.id)?.session === session) {
+        sessions.delete(target.id);
+        updateVisibleThreads();
+      }
       await session.close().catch(() => {});
       throw error;
     }
@@ -599,6 +630,7 @@ async function runWatch(options) {
         if (!activeIds.has(id)) {
           await entry.session.close().catch(() => {});
           sessions.delete(id);
+          updateVisibleThreads();
         }
       }
       for (const target of monitorTargets) {
@@ -608,7 +640,7 @@ async function runWatch(options) {
         try {
           await entry.session.evaluate(backendHeartbeatExpression(process.pid));
           await promotePendingStartup();
-          await syncCurrentThread(entry.session, usageClient);
+          await syncEntryThread(entry);
         } catch {}
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));

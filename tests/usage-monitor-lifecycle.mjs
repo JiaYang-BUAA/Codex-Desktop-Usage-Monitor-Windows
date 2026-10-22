@@ -1087,4 +1087,67 @@ try {
   dom.window.close();
 }
 
-console.log("PASS: unified panel, defaults, persistent settings bridge, replacement recovery, and cleanup lifecycle.");
+// Backend settings broadcasts must update all windows without sending the same
+// payload back to the backend, or replacing each window's task/host.
+{
+  const instances = [currentThreadId, otherThreadId].map((threadId) => {
+    const instance = new JSDOM(`<!doctype html><body><div id="composer-wrapper">${composerMarkup()}</div></body>`, {
+      pretendToBeVisual: true, runScripts: "outside-only", url: "https://codex.local/",
+    });
+    const target = instance.window;
+    target.Element.prototype.getBoundingClientRect = window.Element.prototype.getBoundingClientRect;
+    const saves = [];
+    target.__codexUsageMonitorSaveSettings = (value) => saves.push(JSON.parse(value));
+    target.__CODEX_USAGE_MONITOR__ = { ...usage, currentThreadId: threadId };
+    assert.equal(target.eval(payload).installed, true);
+    const monitor = target.__CODEX_USAGE_MONITOR_STATE__;
+    const host = target.document.getElementById("codex-usage-monitor");
+    host.shadowRoot.querySelector(".usage-summary").click();
+    return { instance, target, monitor, host, saves };
+  });
+  try {
+    const [first, second] = instances;
+    first.host.shadowRoot.querySelector('input[data-setting="minimalMode"]').click();
+    const shared = first.saves.at(-1);
+    const sourceInput = first.host.shadowRoot.querySelector('input[data-setting="minimalMode"]');
+    const counts = instances.map(({ saves }) => saves.length);
+    for (const item of instances) assert.equal(item.monitor.applySettings(shared), true);
+    assert.equal(first.host.shadowRoot.querySelector('input[data-setting="minimalMode"]'), sourceInput,
+      "the sender's unchanged settings echo preserves its input nodes");
+    for (const [index, item] of instances.entries()) {
+      assert.equal(item.monitor.getSettings().minimalMode, true);
+      assert.equal(item.host.dataset.minimal, "true");
+      assert.equal(item.target.document.getElementById("codex-usage-monitor"), item.host);
+      assert.equal(item.saves.length, counts[index], "settings broadcasts do not echo through the save binding");
+    }
+    assert.equal(first.monitor.usage.currentThreadId, currentThreadId);
+    assert.equal(second.monitor.usage.currentThreadId, otherThreadId);
+
+    const threadSettings = { ...shared, autoResumeThreads: {
+      [currentThreadId]: { enabled: true, message: "first task" },
+      [otherThreadId]: { enabled: false, message: "second task" },
+    } };
+    for (const item of instances) item.monitor.applySettings(threadSettings);
+    assert.equal(first.host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, true);
+    assert.equal(second.host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false,
+      "shared settings render the resume switch for each window's own task");
+    second.host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+    const secondSave = second.saves.at(-1);
+    assert.equal(secondSave.autoResumeThreads[currentThreadId].enabled, true,
+      "editing the second window retains the first window's task setting");
+    assert.equal(secondSave.autoResumeThreads[otherThreadId].enabled, true);
+    const beforeMigration = second.saves.length;
+    second.monitor.applySettings({ ...secondSave, unifiedMetricsVersion: 0, metricOrder: [], englishUi: true });
+    assert.equal(second.saves.length, beforeMigration, "render-time settings migration cannot echo a broadcast");
+    assert.equal(second.monitor.getSettings().unifiedMetricsVersion, 2);
+    assert.equal(second.monitor.applySettings(null), false);
+    assert.equal(second.monitor.applySettings([]), false);
+  } finally {
+    for (const { instance, monitor } of instances) {
+      monitor.cleanup();
+      instance.window.close();
+    }
+  }
+}
+
+console.log("PASS: unified panel, defaults, shared window settings, persistent settings bridge, replacement recovery, and cleanup lifecycle.");

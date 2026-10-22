@@ -5,6 +5,7 @@ import {
   isMainCodexRendererTarget,
   selectCurrentCodexThread,
   syncCurrentThread,
+  syncWindowThread,
 } from "../scripts/current-thread.mjs";
 
 const codexThreadId = "019fb3b1-2638-7bb0-9a90-ec83b5bca0f2";
@@ -12,6 +13,14 @@ const chatGptThreadId = "019fb3b1-2638-7bb0-9a90-ec83b5bca5e774";
 
 assert.equal(isMainCodexRendererTarget({ url: "app://-/index.html" }), true);
 assert.equal(isMainCodexRendererTarget({ url: "app://-/index.html?theme=dark" }), true);
+assert.equal(isMainCodexRendererTarget({ url: `app://-/index.html?initialRoute=${encodeURIComponent(`/local/${codexThreadId}`)}` }), true, "popped-out local task windows are eligible for injection");
+assert.equal(isMainCodexRendererTarget({ url: `app://-/index.html?theme=dark&initialRoute=/local/${codexThreadId}/` }), true);
+assert.equal(isMainCodexRendererTarget({ url: "app://-/index.html?initialRoute=/local/not-a-task" }), false);
+assert.equal(isMainCodexRendererTarget({ url: `app://-/index.html?initialRoute=/local/${codexThreadId}/unknown` }), false);
+assert.equal(isMainCodexRendererTarget({ url: "app://-/detached-window.html?initialRoute=%2Fdetached-window" }), false);
+assert.equal(isMainCodexRendererTarget({ url: "app://-/detached-window.html" }), false);
+assert.equal(isMainCodexRendererTarget({ url: "app://-/detached-window.html?initialRoute=%2Favatar-overlay" }), false);
+assert.equal(isMainCodexRendererTarget({ url: "app://other/index.html" }), false);
 assert.equal(isMainCodexRendererTarget({ url: "app://-/index.html?initialRoute=%2Fchatgpt%2Fquick-chat-prewarm" }), false);
 assert.equal(isMainCodexRendererTarget({ url: "app://-/index.html?initialRoute=%2Favatar-overlay" }), false);
 assert.equal(isMainCodexRendererTarget({ url: "https://chatgpt.com/" }), false);
@@ -169,4 +178,33 @@ function createDom(markup) {
   }
 }
 
-console.log("PASS: current Codex task selection stays anchored to the main Composer across side-chat transitions.");
+{
+  const secondId = "01a0244b-039c-7301-9aa1-33ad7fef9b93";
+  const main = createDom(`<div data-thread-id="${codexThreadId}"></div>`);
+  const detached = createDom(`<div data-thread-id="${secondId}"></div>`);
+  const first = { threadId: null };
+  const second = { threadId: null };
+  const mainSession = { evaluate: (expression) => main.window.eval(expression) };
+  const detachedSession = { evaluate: (expression) => detached.window.eval(expression) };
+  try {
+    await Promise.all([syncWindowThread(mainSession, first), syncWindowThread(detachedSession, second)]);
+    assert.equal(first.threadId, codexThreadId);
+    assert.equal(second.threadId, secondId);
+    assert.equal((await syncWindowThread(mainSession, first)).changed, false);
+    detached.window.document.body.innerHTML = `<div data-thread-id="chatgpt:${chatGptThreadId}"></div>`;
+    assert.equal((await syncWindowThread(detachedSession, second)).preserved, true);
+    assert.equal(second.threadId, secondId, "auxiliary chat cannot inherit another window's task");
+    detached.window.document.body.replaceChildren();
+    assert.equal((await syncWindowThread(detachedSession, second)).changed, true);
+    assert.equal(second.threadId, null, "an empty/reloaded window clears only its own selection");
+    assert.equal(first.threadId, codexThreadId);
+    detached.window.document.body.innerHTML = `<div data-thread-id="${codexThreadId}"></div>`;
+    await syncWindowThread(detachedSession, second);
+    assert.equal(second.threadId, first.threadId, "two windows can show the same task");
+  } finally {
+    main.window.close();
+    detached.window.close();
+  }
+}
+
+console.log("PASS: current Codex task selection stays anchored per window across side-chat transitions.");
