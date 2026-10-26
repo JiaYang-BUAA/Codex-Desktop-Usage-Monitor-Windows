@@ -854,6 +854,24 @@ try {
   assert.equal(window.eval(payload).installed, false, 'fresh injection in Dot must stay hidden');
   wrapper.style.removeProperty('--orbit-message-link-color');
   assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), 'leaving Dot restores the monitor');
+  // Delegated Dot tasks use an ordinary composer inside an Orbit activity tab.
+  wrapper.setAttribute('data-tab-id', 'orbit-activity:durable:test-task');
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().reason, 'dot-composer');
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage);
+  assert.equal(window.document.getElementById('codex-usage-monitor'), null, 'updates must not mount in delegated Dot tasks');
+  assert.equal(window.eval(payload).installed, false, 'reinjection must keep delegated Dot tasks hidden');
+  wrapper.setAttribute('data-tab-id', 'thread:ordinary-task');
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), 'ordinary task tabs remain supported');
+  wrapper.removeAttribute('data-tab-id');
+  const delegatedSide = window.document.createElement('div');
+  delegatedSide.setAttribute('data-tab-id', 'orbit-activity:durable:side-task');
+  delegatedSide.innerHTML = composerMarkup();
+  window.document.body.prepend(delegatedSide);
+  assert.ok(wrapper.contains(placementModule.findPlacement('codex-usage-monitor').composer), 'a separate Dot activity must not hide the ordinary task');
+  delegatedSide.remove();
+  assert.equal(JSON.stringify(window.__CODEX_USAGE_MONITOR_STATE__.getSettings()), savedModeSettings);
   const dotSide = window.document.createElement('div');
   dotSide.style.setProperty('--orbit-messages-content-x', '0px');
   dotSide.innerHTML = composerMarkup();

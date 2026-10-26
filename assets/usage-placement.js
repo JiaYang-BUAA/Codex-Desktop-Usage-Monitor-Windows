@@ -48,7 +48,8 @@
 
   const isDotComposer = (node) => {
     for (let current = node; current; current = current.parentElement) {
-      if (current.style.getPropertyValue("--orbit-message-link-color")
+      if (current.getAttribute("data-tab-id")?.startsWith("orbit-activity:")
+        || current.style.getPropertyValue("--orbit-message-link-color")
         || current.style.getPropertyValue("--orbit-messages-content-x")) return true;
     }
     return false;
