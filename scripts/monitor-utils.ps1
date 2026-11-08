@@ -746,6 +746,60 @@ function Wait-CodexUsageCdpPort([int]$Port, [int]$TimeoutSeconds = 180, [int]$Po
   } while ($true)
 }
 
+function Get-CodexUsageDesktopProcessState($Process, [DateTime]$Now = [DateTime]::UtcNow) {
+  # Missing/inaccessible metadata must never authorize bypassing a live instance.
+  if ([string]$Process.CommandLine -match '(?:^|\s)--type(?:=|\s)') { return 'helper' }
+  if ($Process.HasWindow) { return 'running' }
+  if (-not $Process.CreationDate) { return 'unknown' }
+  $age = ($Now - ([DateTime]$Process.CreationDate).ToUniversalTime()).TotalSeconds
+  if ($age -lt 0) { return 'unknown' }
+  if ($age -lt 180) { return 'starting' }
+  if ($Process.SuspendedThread) { return 'suspected-residual' }
+  return 'background'
+}
+
+function Get-CodexUsageDesktopProcesses {
+  $rows = @(Get-CimInstance Win32_Process -Filter "Name = 'ChatGPT.exe'" -ErrorAction Stop)
+  foreach ($row in $rows) {
+    if ([string]$row.CommandLine -match '(?:^|\s)--type(?:=|\s)') { continue }
+    $snapshot = [pscustomobject]@{
+      ProcessId = [int]$row.ProcessId; CreationDate = $row.CreationDate
+      CommandLine = $row.CommandLine; HasWindow = $false; SuspendedThread = $false
+      State = 'unknown'
+    }
+    try {
+      $live = Get-Process -Id $row.ProcessId -ErrorAction Stop
+      # CIM timestamps have microsecond precision; Process.StartTime has 100 ns.
+      $liveTicks = $live.StartTime.ToUniversalTime().Ticks
+      $cimTicks = ([DateTime]$row.CreationDate).ToUniversalTime().Ticks
+      if (($liveTicks - ($liveTicks % 10)) -ne ($cimTicks - ($cimTicks % 10))) {
+        $snapshot; continue
+      }
+      $snapshot.HasWindow = $live.MainWindowHandle -ne 0
+      foreach ($thread in $live.Threads) {
+        if ($thread.ThreadState -eq 'Wait' -and $thread.WaitReason -eq 'Suspended') {
+          $snapshot.SuspendedThread = $true
+        }
+      }
+      $snapshot.State = Get-CodexUsageDesktopProcessState $snapshot
+    } catch {
+      # It may have exited during discovery; refresh on the next launch attempt.
+    }
+    $snapshot
+  }
+}
+
+function Get-CodexUsageBlockedLaunchMessage([object[]]$Processes) {
+  $details = ($Processes | ForEach-Object { "PID $($_.ProcessId)：$($_.State)" }) -join '；'
+  if (@($Processes | Where-Object State -eq 'suspected-residual').Count -gt 0) {
+    return "检测到疑似挂起残留的 Codex 进程（无窗口，启动超过 180 秒且存在挂起线程）。即使看不到 Codex 窗口，残留进程也可能阻止监视器启动。`n$details`n请先正常退出可见的 Codex；若仍提示残留，请核对任务管理器中的进程 PID 后再处理。脚本未自动结束任何 Codex 进程。"
+  }
+  if (@($Processes | Where-Object State -eq 'starting').Count -gt 0) {
+    return "Codex 进程正在启动，但尚未发现可用的监视端口。请等待启动完成后重试；若从原生入口启动，请正常退出后使用监视器快捷方式。`n$details"
+  }
+  return "检测到 Codex 窗口或后台进程，但没有可用的监视端口，无法在不中断会话的情况下补加端口。关闭窗口不一定会退出后台进程，请先正常退出 Codex，再点击 Codex Usage Monitor 快捷方式。`n$details`n脚本未自动结束任何 Codex 进程。"
+}
+
 function Get-CodexUsageProcessCdpCandidates {
   $candidates = [Collections.Generic.List[object]]::new()
   try {

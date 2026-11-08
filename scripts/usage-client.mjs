@@ -2866,7 +2866,7 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.2.2" },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.2.3" },
       capabilities: { optOutNotificationMethods: [] },
     });
     this.notify("initialized");

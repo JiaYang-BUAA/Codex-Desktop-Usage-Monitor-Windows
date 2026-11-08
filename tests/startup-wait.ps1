@@ -5,6 +5,45 @@ function Assert-Startup($Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
 }
 
+$now = [DateTime]::UtcNow
+$desktop = [pscustomobject]@{ ProcessId = 123; CommandLine = 'ChatGPT.exe'; CreationDate = $now.AddMinutes(-5); HasWindow = $false; SuspendedThread = $true; State = '' }
+Assert-Startup ((Get-CodexUsageDesktopProcessState $desktop $now) -eq 'suspected-residual') 'Old windowless suspended process must have a specific diagnostic.'
+$desktop.HasWindow = $true
+Assert-Startup ((Get-CodexUsageDesktopProcessState $desktop $now) -eq 'running') 'A visible instance must not be classified as a residual.'
+$desktop.HasWindow = $false
+$desktop.CreationDate = $now.AddSeconds(-10)
+Assert-Startup ((Get-CodexUsageDesktopProcessState $desktop $now) -eq 'starting') 'Fresh suspended processes can be legitimate startup.'
+$desktop.CreationDate = $now.AddMinutes(-5)
+$desktop.SuspendedThread = $false
+Assert-Startup ((Get-CodexUsageDesktopProcessState $desktop $now) -eq 'background') 'Windowless alone is not evidence of a residual.'
+$desktop.CreationDate = $null
+Assert-Startup ((Get-CodexUsageDesktopProcessState $desktop $now) -eq 'unknown') 'Missing metadata must remain conservative.'
+$desktop.CommandLine = 'ChatGPT.exe --type=crashpad-handler'
+Assert-Startup ((Get-CodexUsageDesktopProcessState $desktop $now) -eq 'helper') 'Crash handlers must not block startup as desktop instances.'
+$desktop.State = 'suspected-residual'
+Assert-Startup ((Get-CodexUsageBlockedLaunchMessage @($desktop)) -match 'PID 123' -and (Get-CodexUsageBlockedLaunchMessage @($desktop)) -match '未自动结束') 'Residual diagnostic must identify PID and preserve user control.'
+
+# Exercise discovery through mocked OS boundaries; never stop a desktop process.
+function Get-CimInstance { @(
+  [pscustomobject]@{ ProcessId = 123; CommandLine = 'ChatGPT.exe'; CreationDate = $now.AddMinutes(-5) },
+  [pscustomobject]@{ ProcessId = 124; CommandLine = 'ChatGPT.exe --type=crashpad-handler'; CreationDate = $now }
+) }
+function Get-Process { [pscustomobject]@{ StartTime = $now.AddMinutes(-5); MainWindowHandle = 0; Threads = @([pscustomobject]@{ ThreadState = 'Wait'; WaitReason = 'Suspended' }) } }
+$found = @(Get-CodexUsageDesktopProcesses)
+Assert-Startup ($found.Count -eq 1 -and $found[0].State -eq 'suspected-residual') 'Discovery must exclude helpers and classify the main process.'
+$now = [DateTime]::new($now.Ticks - ($now.Ticks % 10), [DateTimeKind]::Utc)
+function Get-Process { [pscustomobject]@{ StartTime = $now.AddMinutes(-5).AddTicks(1); MainWindowHandle = 0; Threads = @([pscustomobject]@{ ThreadState = 'Wait'; WaitReason = 'Suspended' }) } }
+$found = @(Get-CodexUsageDesktopProcesses)
+Assert-Startup ($found[0].State -eq 'suspected-residual') 'CIM microsecond truncation must not look like PID reuse.'
+function Get-Process { [pscustomobject]@{ StartTime = $now; MainWindowHandle = 0; Threads = @() } }
+Assert-Startup (@(Get-CodexUsageDesktopProcesses)[0].State -eq 'unknown') 'A reused PID must not inherit an old process classification.'
+function Get-Process { throw 'Process exited or access denied' }
+$found = @(Get-CodexUsageDesktopProcesses)
+Assert-Startup ($found.Count -eq 1 -and $found[0].State -eq 'unknown') 'Process inspection failures must not silently authorize a second launch.'
+function Get-CimInstance { @() }
+Assert-Startup (@(Get-CodexUsageDesktopProcesses).Count -eq 0) 'A fresh snapshot must allow launch after the main process exits.'
+Remove-Item Function:\Get-CimInstance, Function:\Get-Process
+
 Assert-Startup ((Get-CodexUsageStartupPhase $true $false) -eq 'waiting-ui') 'A live slow-starting daemon must remain pending, not fail.'
 Assert-Startup ((Get-CodexUsageStartupPhase $true $true) -eq 'ready') 'A matching live heartbeat should promote pending to ready.'
 Assert-Startup ((Get-CodexUsageStartupPhase $false $false) -eq 'failed') 'A daemon that exits must fail.'

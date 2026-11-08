@@ -65,7 +65,8 @@ function Write-CodexMonitorLaunchError([string]$Message) {
 }
 
 try {
-  $codexRunning = @(Get-Process ChatGPT -ErrorAction SilentlyContinue).Count -gt 0
+  $desktopProcesses = @(Get-CodexUsageDesktopProcesses)
+  $codexRunning = $desktopProcesses.Count -gt 0
   $activePort = if ($codexRunning) { Resolve-CodexUsageCdpPort $Port } else { 0 }
   $debugReady = [bool]$activePort
   if ($codexRunning -and -not $debugReady) {
@@ -74,9 +75,16 @@ try {
     $activePort = Wait-CodexUsagePendingCdpPort
     $debugReady = [bool]$activePort
   }
+  if (-not $debugReady) {
+    # The main process can exit while CDP discovery is in progress.
+    $desktopProcesses = @(Get-CodexUsageDesktopProcesses)
+    $codexRunning = $desktopProcesses.Count -gt 0
+  }
   $plan = Get-CodexMonitorLaunchPlan $debugReady $codexRunning
   if ($plan -eq 'blocked-running-without-cdp') {
-    Show-CodexMonitorMessage 'Codex 已通过原生入口运行，无法在不中断会话的情况下补加监视端口。请先正常退出 Codex，再点击“Codex Usage Monitor”。' 'Warning'
+    $message = Get-CodexUsageBlockedLaunchMessage $desktopProcesses
+    Write-CodexMonitorLaunchError $message
+    Show-CodexMonitorMessage $message 'Warning'
     exit 2
   }
   if ($debugReady) { $Port = $activePort }
