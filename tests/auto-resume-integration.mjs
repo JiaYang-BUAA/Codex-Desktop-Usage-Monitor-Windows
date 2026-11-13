@@ -83,12 +83,17 @@ try {
   const resetAt = startAt + 3600000;
   // Freeze the transport fixture's fetch timestamp; normalizeUsageView uses wall
   // time for fetchedAt, while its third argument controls token-bucket dates.
+  const accountKey = "a".repeat(64);
   const officialSnapshot = (remaining, fetchedAt) => ({ ...normalizeUsageView({
     rateLimits: { limitId: "codex",
       primary: { usedPercent: 100 - remaining, windowDurationMins: 300, resetsAt: resetAt / 1000 },
       secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: (startAt + 7 * 86400000) / 1000 },
     },
-  }, null, new Date(fetchedAt)), fetchedAt });
+  }, null, new Date(fetchedAt)), fetchedAt, resumeAccountKey: accountKey, resumeAccountSince: oldAt,
+    resumeQuota: { accountKey, observedAt: fetchedAt, windows: [
+      { id: "primaryRemaining", remainingPercent: remaining, resetsAt: resetAt / 1000 },
+      { id: "secondaryRemaining", remainingPercent: 80, resetsAt: (startAt + 7 * 86400000) / 1000 },
+    ] } });
   const combined = async (snapshot) => {
     const merged = mergeOfficialLocalUsage(snapshot, await tracker.refresh(), new Date(now));
     return { ...merged, sources: { official: toOfficialUsageSource(merged, now) } };

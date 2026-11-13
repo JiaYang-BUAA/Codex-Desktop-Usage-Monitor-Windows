@@ -1,355 +1,72 @@
 # Codex Usage Monitor for Windows
 
-> In-app usage monitor and status bar for OpenAI Codex Desktop on Windows
-
-[![Windows CI](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml)
 [![Latest Release](https://img.shields.io/github/v/release/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows)](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/latest)
+[![Windows CI](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml/badge.svg)](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/actions/workflows/ci.yml)
 
-Codex Usage Monitor 把官方订阅周期、当前会话 Token、社区重置概率、Tibo 最新 X 动态，以及可选的 API 账户和 API Key 用量，直接放到 Windows 版 Codex Desktop 的输入区域旁。
+**在 Windows 版 Codex 的输入框旁，看本周还剩多少额度、这次对话用了多少 Token。** 平时只占一条，默认显示「7 天剩余」和「当前会话累计 Token」。点开就能看重置时间、上次回答的缓存命中率，以及最近 30 天采集到的用量。
 
-监视器通过仅绑定本机的 Chrome DevTools Protocol（CDP）运行时注入，不是独立悬浮窗，也不修改 WindowsApps、`app.asar`、Codex 登录文件或模型配置。
+本项目是非官方项目。订阅额度由 Codex 返回；社区重置预测单独展示，仅供参考。
 
-> 本项目是非官方项目，与 OpenAI 没有隶属、赞助或背书关系。社区重置概率和 Tibo 动态也不是 OpenAI 官方数据。Codex 更新可能改变页面结构；项目会持续通过兼容性测试适配新版界面。
+![Codex 输入区旁展开的监视面板，包含本会话、官方订阅和社区重置预测](docs/images/monitor-expanded.png)
 
-![Codex Usage Monitor 本机展开面板实拍：统一续跑发送内容与重置预告方式](docs/images/monitor-expanded.png)
+*上图为本机实拍，数值和勾选项取决于当时的账户与设置。*
 
-上图为本机实际截图，展示值和开关状态仅代表截图时的配置，不是新安装默认值。
+## 值得常驻的几个理由
 
-主要功能：
+| 你想知道什么 | 在哪里看 |
+| --- | --- |
+| **额度能用到什么时候？** | 「官方订阅」把剩余百分比和对应窗口的重置时间放在一起。额度取自官方读数，不用 Token 数反推。 |
+| **刚才那一轮用了多少？** | 「本会话」分别显示上次回答消耗 Token、上次回答缓存命中率和整段对话的总缓存命中率。新回答生成期间，仍显示上一轮已完成的结果。 |
+| **哪几天用得最多？** | 打开「官方订阅 → 用量历史」，在今日、7 天、30 天之间切换。柱状图看本机采集到的订阅 Token，曲线看官方剩余额度；没有采样的时段留空。 |
+| **同时开两个任务，会串数吗？** | 在同一 Codex 实例中，每个窗口跟随自己的任务，独立显示 Token、执行总耗时、自动压缩上下文次数和续跑状态；账号额度共享。 |
+| **长任务因为额度耗尽停了怎么办？** | 可以只为这个任务开启「额度恢复续跑」。监视器确认任务仍因额度耗尽而暂停，且官方额度已恢复，才向原对话发送「继续」或自定义内容。默认关闭，不占用输入框，不覆盖排队消息。 |
 
-- 在一个面板中查看“本会话”“官方订阅”“重置概率预测（仅供参考）”，并按需开启 API 账户和 API Key 两栏。
-- 查看当前会话累计 Token、上次回答消耗 Token、总缓存命中率、上次回答缓存命中率、自动压缩上下文次数和执行总耗时。
-- 查看 5 小时与 7 天官方周期、重置时间、今日 Token、近7天 Token和累计 Token。
-- 每 5 分钟显示社区重置概率和 Tibo（[`@thsottiaux`](https://x.com/thsottiaux)）最新 X 动态摘要。
-- 支持普通模式、极简模式、倒计时可视化、中文与 English UI、自动更新和按任务独立的额度恢复续跑。
-- 设置中的“30 秒刷新”开关可将官方订阅和 API 用量轮询从 60 秒改为 30 秒，关闭后恢复 60 秒；即时生效并保存。本地 Token 扫描与重置预测缓存频率不变。
-- 使用当前 Windows 用户的 DPAPI 加密保存 API 凭据，不把凭据写入源码、页面设置或日志。
+## 1. 三步开始使用：让 Codex 帮你安装
 
-## 1. 三步开始使用
+1. 在已登录的 Windows 版 Codex 中，复制下面这句话：
 
-当前版本 **v3.2.3**：改进启动进程识别，忽略辅助进程，明确提示疑似挂起残留并保留诊断日志。变更见 [更新日志](CHANGELOG.md)。
-
-### 1.1 准备环境
-
-- Windows 10 或 Windows 11。
-- 已安装并能正常登录的 Codex Desktop。
-- Node.js 22 或更高版本。
-- 推荐使用 PowerShell 7，并确认命令 `pwsh` 可用。
-- 安全软件：项目使用隐藏 PowerShell、Node.js 后台进程和 CDP 参数，可能触发启发式误报。确认安装包来自本仓库后，为项目目录、启动脚本或相关进程添加精确信任规则，或者直接关闭杀毒软件。
-
-### 1.2 下载、安装、启动
-
-1. 从 [最新 Release](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/latest) 下载 `codex-usage-monitor-windows-*.zip`。
-2. 解压 ZIP，在解压目录中运行：
-
-   ```powershell
-   pwsh -NoProfile -File .\install.ps1
+   ```text
+   请帮我安装 https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows 的最新正式版，按仓库 AGENTS.md 操作，验证桌面快捷方式，保留当前 Codex 会话。
    ```
 
-3. 正常退出已经打开的 Codex，然后双击桌面的 `Codex Usage Monitor` 快捷方式。
+2. 安装完成后，**正常退出 Codex**。
+3. 从桌面的 **Codex Usage Monitor** 快捷方式重新打开。它会一起启动 Codex 和监视器；从原生 Codex 图标启动不会开启监视端口。
 
-专用快捷方式会同时启动 Codex 和监视器，并隐藏正常的黑色命令行窗口。原生 Codex 图标不会开放本机 CDP 端口，因此从原生图标启动时不会显示监视栏。
+只看官方订阅和会话用量，**不需要 API Key**。支持 Windows 10/11、Microsoft Store 和非 Store 版 Codex；需要 Node.js 22+，推荐 PowerShell 7。
 
-### 1.3 让 Codex 帮你安装
+## 把常看的数字留在输入框旁
 
-不熟悉 PowerShell 时，可以把下面这段话直接发送给 Windows 版 Codex：
+点击监视条展开面板，勾选想常看的指标。**勾选顺序就是从左到右的显示顺序**；取消后重新勾选即可把一项移到末尾。在「官方订阅 → 设置」里可以切换模式：
 
-```text
-请安装这个项目：https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows
-先阅读仓库根目录的 AGENTS.md 和 README.md，再运行 install.ps1。自动寻找 Microsoft Store 和常见非 Store Codex 路径；找不到时才询问我选择真实的 ChatGPT.exe 或 codex.exe。不要猜路径，不要修改 WindowsApps、app.asar、Codex 登录文件或模型配置，也不要强制终止或重启我当前的 Codex。安装后验证桌面的“Codex Usage Monitor”快捷方式。
-官方订阅无需配置。API 账户和 API Key 请优先指导我在监视栏展开面板中填写；密钥不能粘贴到聊天、源码、JSON 或日志。找不到服务商字段时，请根据公开文档或脱敏截图解释，不要猜测接口。
-```
-
-## 2. 日常使用
-
-### 2.1 折叠监视栏
-
-监视栏位于 Codex 输入区域底部。新安装默认勾选“7天剩余”和“当前会话累计 Token”，普通模式最多显示 8 项。
-
-ChatGPT 普通聊天模式不挂载监视栏；ChatGPT Work 工作模式和 Codex 任务继续显示。切回工作模式或 Codex 任务后自动恢复，原有显示设置不变。
-
-同一 Codex 实例中的主窗口和独立任务窗口可以同时显示监视栏。各窗口的“本会话”Token、缓存命中率、执行耗时和续跑状态跟随该窗口的任务；官方额度、API 数据和显示设置共享。新增窗口复用现有采集后台，关闭窗口不会停止其他窗口的监视。
-
-指标会严格按照勾选顺序从左到右排列；取消后重新勾选的项目会移动到末尾。展开面板中的“5小时剩余”和“7天剩余”显示为“重置时间 · 剩余百分数”，折叠栏只保留百分数。
-
-识别为 Pro 账户时，保留“5小时剩余”及勾选框，数值显示为 `--`，折叠栏也不显示百分数；“重置时间”使用主额度的 7 天窗口。Spark 等模型独立额度不会混入官方订阅展示；其他套餐保留原有 5 小时显示。
-
-![Codex Usage Monitor 普通模式示意图](docs/images/monitor-collapsed.png)
-
-### 2.2 极简模式
-
-极简模式隐藏指标名称，只保留数值、单位和必要开关，最多选择 14 项；选中 9 项及以上时自动使用双行布局。
-
-![Codex Usage Monitor 极简模式示意图](docs/images/monitor-minimal.png)
-
-### 2.3 展开面板
-
-点击监视栏即可展开面板。新安装默认显示三栏：
-
-| 栏位 | 默认状态 | 主要内容 |
-| --- | --- | --- |
-| 本会话 | 显示 | 当前会话累计 Token、上次回答消耗 Token、总缓存命中率、上次回答缓存命中率、自动压缩上下文次数、执行总耗时和额度恢复续跑。耗时累计各轮执行时间，不计轮次之间的等待；`≈` 表示含估算，`+` 表示记录不完整。 |
-| 官方订阅 | 显示 | 5 小时/7 天周期、重置时间、今日/近7天/累计 Token 和全局设置。 |
-| 重置概率预测（仅供参考） | 显示 | 12/24/48/72 小时社区概率、重置预告方式，以及 Tibo 最新 X 动态缩略卡片。 |
-| API 账户 | 隐藏 | 第三方用户账户余额、请求日志和累计 Token。 |
-| API Key | 隐藏 | 某个 API Key 的额度、限额、到期时间和请求状态。 |
-
-每栏使用独立固定宽度，不会因为其他栏显示或隐藏而被压窄。面板会根据已启用栏位向左扩展，并优先保证右边缘和每栏内容完整显示。
-
-“上次回答消耗 Token”只在回答完成后更新。回答生成期间，它会继续显示最近一次已完成回答的数据，不会混入当前尚未完成的内容。
-
-#### 用量历史
-
-在“官方订阅”栏点击“用量历史”，可查看 Token 柱状图和额度剩余曲线，并切换“今日 / 7 天 / 30 天”。图表按本机时区显示；今日按小时汇总，7 天与 30 天按自然日汇总。点击“返回”恢复原面板，不增加常驻监视栏的长度。
-
-Token 图复用本机增量扫描，只统计已采集且能确认使用官方订阅的任务记录，不等同于跨设备账户总用量，也不保证首次启用就具有完整 30 天历史。额度曲线来自启用此功能之后实际收到的官方额度快照；缺失或未采集的时间不回填，不根据 Token 推算额度，也不把未知值当作 0%。
-
-### 2.4 设置与保存
-
-点击“官方订阅”栏底部的“设置”，可以调整：
-
-| 设置 | 作用 |
+| 普通模式：保留名称，最多 8 项 | 极简模式：只看数值，最多 14 项 |
 | --- | --- |
-| 极简模式 | 只显示数值、单位和必要开关。 |
-| 倒计时可视化 | 使用圆形表盘显示刷新进度。 |
-| English UI | 切换中英文界面。 |
-| 自动更新 | 每 24 小时检查一次最新正式 Release。 |
-| API 栏 | 同时显示或隐藏 API 账户与 API Key。新安装默认关闭。 |
-| 重置概率预测栏 | 显示或隐藏社区概率与 Tibo 动态。新安装默认开启。 |
+| ![带指标名称的折叠监视条](docs/images/monitor-collapsed.png) | ![只显示数值的极简监视条](docs/images/monitor-minimal.png) |
 
-显示项、勾选顺序和上述全局设置保存在：
+监视条跟随 Codex 任务和 ChatGPT Work 输入区；普通 ChatGPT 聊天、Dot 面板和 Dot 指派的任务不显示。设置里还可以切换中英文、倒计时可视化，以及将官方订阅和 API 的刷新间隔从 60 秒调为 30 秒。
 
-```text
-%LOCALAPPDATA%\CodexUsageMonitor\ui-settings.json
-```
+**读数怎么看：**
 
-已有用户升级时保留原来的显示选择；新安装才使用默认布局。
+- **额度和 Token 是两种统计。** 5 小时、7 天剩余是账户额度；「今日 Token」统计本机订阅用量，「近7天 Token」和累计值以官方汇总为基准。官方汇总延迟不等于额度耗尽。识别为 Pro 时，当前版本的 5 小时项显示 `--`，重置时间看 7 天窗口。官方栏红灯表示本轮读取失败，有上次成功值时会保留它。
+- **社区预告和账户重置分开看。** 可选的预测栏每 5 分钟更新 [Codex Reset Observatory](https://github.com/gussuri/codex-reset-observatory) 的社区概率、重置预告和 Tibo 最新公开动态。预测不参与自动续跑。
+- **第三方 API 按需开启。** 两个 API 栏默认隐藏。「API 账户」看账户余额和请求日志；「API Key」看单个密钥的限额、到期时间和请求状态。需服务商提供用量接口，密钥在本机表单内填写，由 Windows DPAPI 加密保存，不要发到聊天里。
 
-若旧版自动更新一直停留在 `installing`，请先手动下载安装 v3.1.7 或更新版本；本次修复安装后，继续开启“自动更新”即可使用新的后台安装方式。
+## 文档与维护
 
-### 2.5 额度恢复续跑
+- [数据源与指标说明](docs/data-sources.md)：Token 统计口径、缓存命中率、历史图采样、续跑条件和第三方接口配置。
+- [故障排查指南](docs/troubleshooting.md)：快捷方式启动失败、没有监视条、读数过期或设置未保存。
+- v3.2.4 恢复了新版 Codex Desktop 上的额度续跑，修复了切换账号后的旧读数和多窗口设置冲突。可在设置中开启自动更新，更新监视器无需重启 Codex。[更新日志](CHANGELOG.md) · [下载正式版](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/latest)
 
-“额度恢复续跑”默认关闭，启停按 Codex 任务分别保存。发送内容默认各自独立，也可开启“为所有对话设置发送内容”统一设置。
+<details>
+<summary>手动安装、API 配置与技术细节</summary>
 
-输入框下方的“为所有对话设置发送内容”控制内容的适用范围：
+手动安装：从正式版页面下载并解压 Windows ZIP，运行 `pwsh -NoProfile -File .\install.ps1`，再正常退出 Codex，从桌面专用快捷方式启动。[AGENTS.md](AGENTS.md) 包含安装和验证说明。
 
-| 操作 | 发送内容如何变化 |
-| --- | --- |
-| 默认关闭 | 每个对话独立设置，初始内容为“继续”。 |
-| 开启统一设置 | 所有对话使用同一份内容，修改输入框即更新统一内容。 |
-| 关闭统一设置 | 各对话保留关闭时的统一内容，不恢复旧内容；之后可各自修改。 |
+API 账户首次配置需要服务地址、数字用户 ID、账户访问令牌和累计 Token 基准；API Key 的服务地址和字段映射可在[配置面板](docs/images/configure-api-key.png)填写。社区动态取自上游响应的 `latestTiboActivity` 字段，无需登录 X。
 
-尚未单独配置的对话以最近一次统一内容为初始值。这个开关只统一发送内容，不会开启其他对话的自动续跑。
+监视器只通过本机回环地址连接 Codex，不修改 WindowsApps、`app.asar`、登录文件或模型配置。安全软件：项目使用隐藏 PowerShell、Node.js 后台进程和 CDP 参数，可能触发启发式误报。确认安装包来自本仓库后，为项目目录、启动脚本或相关进程添加精确信任规则，或者直接关闭杀毒软件。
 
-开启后，监视器只会在以下条件全部成立时发送续跑内容：
+</details>
 
-1. 当前任务明确以 `usage_limit_exceeded` 结束。
-2. 该对话仍明确处于额度用尽暂停状态，没有开始新回合、执行完成或主动暂停。
-3. 耗尽事件之后更新的官方订阅数据确认阻塞周期已有剩余额度；提前恢复额度也可触发。
+## 来源与贡献
 
-可以在额度耗尽后开启续跑。已开启的对话分别记录等待状态，切换到其他对话后仍会跟踪；重启监视器后会重新核对记录。暂时缺少会话数据时保留等待，等待数据确认后再发送。
-
-若发送通道不可用或请求超时，展开面板会显示原因并等待重试。监视器必须保持运行，且 Codex 桌面的发送通道可用。
-
-默认发送内容为“继续”，可修改为最多 500 字符的单行文本。监视器在 Codex Desktop 内部按原任务 ID 调用 `thread/resume` 和 `turn/start`，不会填写或占用可见输入框，也不会删除或覆盖原有排队消息。每个额度事件使用稳定的客户端消息 ID，并在当前渲染器内复用进行中或已成功的请求，减少重复提交；发送回合仍会正常消耗 Codex 额度。
-
-等待记录保存在 `%LOCALAPPDATA%\CodexUsageMonitor\auto-resume-state.json`，不包含发送内容、对话正文或凭据。
-
-## 3. 数据源与配置
-
-### 3.1 数据源总览
-
-| 数据源 | 数据内容 | 需要准备 |
-| --- | --- | --- |
-| 官方订阅 | 5 小时/7 天周期、重置时间、今日/近7天/累计 Token。 | 无需额外凭据。 |
-| 重置概率预测（仅供参考） | Codex Reset Observatory 的社区概率和 Tibo 最新 X 动态。 | 无需凭据；可在设置中隐藏。 |
-| API 账户 | 第三方账户余额、累计已用额度、请求日志和 Token 账本。 | Base URL、数字用户 ID、账户访问令牌、累计 Token 基准。 |
-| API Key | 单个 Key 的已用额度、限额、到期时间和请求状态。 | API Key；首次配置还需服务地址和用量接口路径。 |
-
-更完整的指标口径、Token 累计逻辑、状态灯和 Provider 字段映射见 [数据源与指标说明](docs/data-sources.md)。
-
-### 3.2 官方订阅
-
-官方订阅通过 Codex Desktop 本机 app-server 读取，无需填写任何凭据。红色指示灯表示本轮请求失败但仍保留上一次成功数据，不代表额度耗尽或模型不可用。
-
-### 3.3 重置概率与 Tibo 动态
-
-重置概率来自 MIT License 开源项目 [Codex Reset Observatory](https://github.com/gussuri/codex-reset-observatory)。本项目只读取并显示它汇总的 12/24/48/72 小时社区概率，不训练预测模型，也不使用预测结果触发自动续跑。
-
-概率下方的“预告方式”根据上游当前有效预告显示“发放重置卡”（需手动使用）或“直接重置”（恢复额度）；没有明确预告时显示“暂未明确”。这一说明仅在展开面板显示，不占监视栏勾选名额，也不代表当前账户已收到重置。
-
-监视器每 5 分钟向以下固定 HTTPS 接口发送一次无凭据 GET 请求：
-
-```text
-https://codex.gussuriworks.com/api/current?locale=zh
-```
-
-请求不包含 Codex 登录信息、任务 ID、对话内容、Token 统计、API Key 或账户令牌。上游返回 `stale=true` 时，该栏显示红灯并保留最近数据。
-
-同一响应中的 `latestTiboActivity` 用于缩略展示 Tibo 在 X 上的最新公开动态。监视器不会登录或单独抓取 X；动态和概率同步每 5 分钟更新，只显示三行正文摘要、发布时间，以及限定为 `x.com/thsottiaux/status/...` 的原帖链接。该字段由第三方项目整理，仍属于非官方信息。
-
-### 3.4 API 账户
-
-开启“API 栏”，点击“API 账户”标题后的“配置”，填写：
-
-- API 服务 Base URL。
-- 数字用户 ID。
-- 账户访问令牌（Access Token）。
-- 当前真实的累计 Token 基准；不知道精确值时填 `0`。
-
-保存前会验证账户接口并读取当前日志建立检查点，成功后使用 DPAPI 加密保存访问令牌。账户访问令牌不一定等于 API Key。
-
-### 3.5 API Key
-
-开启“API 栏”，点击“API Key”标题后的“配置”：
-
-- 已有连接配置时，通常只需填写或更换 API Key。
-- 首次配置时，填写 API Key、API 服务地址和用量接口路径。
-- 认证头和响应字段映射位于“高级设置（通常无需修改）”。
-- 密钥框不会回填；已经配置时留空可保留原密钥。
-
-![API Key 小白配置界面](docs/images/configure-api-key.png)
-
-如果服务商返回 `HTTP 429`，界面会显示“请求受限”，并保留旧数据。这不一定表示 Key 失效；监视器会按 60、120、240、300 秒逐步退避，成功后恢复为 60 秒刷新。
-
-## 4. 更新、安装与维护
-
-### 4.1 自动更新
-
-自动更新开启后，运行中的监视器最多每 24 小时检查一次本项目的 GitHub Release。发现正式新版本时，它会：
-
-1. 下载名称和版本严格匹配的 Windows ZIP。
-2. 核对 GitHub 提供的 SHA-256 摘要。
-3. 校验通过后安装并热替换监视器后台。
-
-更新不会重启 Codex。检查、下载或校验失败时继续使用当前版本，并在下个周期重试。
-
-### 4.2 安装位置与运行包
-
-安装器把白名单运行文件复制到：
-
-```text
-%LOCALAPPDATA%\Programs\CodexUsageMonitor\<版本号>
-```
-
-运行包不包含 Node.js、Codex、API Key、用户日志或本地 Provider 配置。桌面快捷方式会始终指向对应版本的启动脚本。
-
-### 4.3 从源码安装
-
-```powershell
-git clone https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows.git
-cd Codex-Desktop-Usage-Monitor-Windows
-pwsh -NoProfile -File .\install.ps1
-```
-
-安装器会优先寻找 Microsoft Store 和常见非 Store 路径；找不到时才询问实际文件。也可以提前设置真实路径：
-
-```powershell
-[Environment]::SetEnvironmentVariable('CODEX_USAGE_DESKTOP_PATH', 'D:\Apps\Codex\ChatGPT.exe', 'User')
-[Environment]::SetEnvironmentVariable('CODEX_USAGE_CODEX_PATH', 'D:\Apps\Codex\codex.exe', 'User')
-[Environment]::SetEnvironmentVariable('CODEX_USAGE_NODE_PATH', 'D:\Runtime\node.exe', 'User')
-```
-
-### 4.4 高级命令行配置
-
-展开面板是推荐配置入口。以下命令保留给自动化和高级用户：
-
-```powershell
-pwsh -NoProfile -File .\scripts\configure-api-account.ps1 -FromClipboard -UserId <用户ID> -BaseUrl https://api.example.com
-pwsh -NoProfile -File .\scripts\configure-token-baseline.ps1 -InitialTokens <完整整数>
-
-Copy-Item .\config\providers\custom.example.json .\config\providers\my-provider.local.json
-pwsh -NoProfile -File .\scripts\configure-api-provider.ps1 -ConfigPath .\config\providers\my-provider.local.json -FromClipboard
-```
-
-清除配置：
-
-```powershell
-pwsh -NoProfile -File .\scripts\clear-api-provider.ps1
-pwsh -NoProfile -File .\scripts\clear-api-account.ps1
-pwsh -NoProfile -File .\scripts\clear-token-baseline.ps1
-```
-
-## 5. 安全与隐私
-
-### 5.1 数据去向
-
-| 数据 | 处理方式 |
-| --- | --- |
-| Codex 官方订阅与会话数据 | 只在本机通过 Codex Desktop app-server 和本地会话事件读取。 |
-| 重置概率与 Tibo 动态 | 只向 README 公开的 Codex Reset Observatory 固定 HTTPS 接口发送无凭据 GET 请求。 |
-| API Key 和账户访问令牌 | 使用当前 Windows 用户的 DPAPI 加密保存。 |
-| UI 设置和续跑文案 | 保存在监视器自己的本地设置文件中。 |
-
-### 5.2 安全边界
-
-- CDP 仅绑定 `127.0.0.1`，不会向局域网或互联网开放调试端口。
-- 携带凭据的远程 API 请求强制使用 HTTPS；只有本机回环地址允许 HTTP。
-- 远程请求拒绝重定向，并限制单个 JSON 响应体最大为 2 MiB。
-- API Key 和访问令牌不会进入源码、页面设置、日志或测试产物；换用户、换电脑或删除本地状态后需要重新配置。
-- 明文凭据只在当前表单和本机配置进程内存中短暂存在。
-- 项目不读取 `%USERPROFILE%\.codex\auth.json` 或 `config.toml`。
-- 项目不会修改 WindowsApps、`app.asar`、Codex 登录文件或模型配置，也不会强制结束正在运行的 Codex。
-- 自动续跑发送内容以明文保存在监视器自己的 UI 设置文件中，请勿填写密码、令牌或其他秘密。
-
-完整安装、配置与安全契约见 [AGENTS.md](AGENTS.md)。
-
-## 6. 常见问题与排查
-
-1. **点击快捷方式没有反应**：确认 Codex 已正常退出，检查 `node -v` 是否为 22+，然后重新运行 `install.ps1`。
-2. **Codex 启动但没有监视栏**：必须使用 `Codex Usage Monitor` 快捷方式。启动器从 Codex 进程创建时起最多等待 180 秒让 CDP 就绪；重复点击不会重新计时，进程退出后停止等待。若提示启动残留，先正常退出 Codex；如仍有无窗口的残留，请核对错误中的 PID 后手动处理，启动器不会强制结束会话。实际端口及启动阶段记录在 `%LOCALAPPDATA%\CodexUsageMonitor\state.json`。若显示“监视器已断连”，展开面板中的数据是旧数据；已有 CDP 连接时，双击专用快捷方式即可重新连接，无需退出 Codex。
-3. **官方订阅指示灯变红**：当前请求失败但仍有缓存数据，不代表额度耗尽。等待后台自动刷新即可。
-4. **重置概率预测指示灯变红**：Codex Reset Observatory 数据过期或本轮请求失败；它与官方订阅额度无关，等待下一次 5 分钟刷新即可。
-5. **API Key 显示请求受限**：等待 60～300 秒自动退避，避免反复重启或重复保存配置。
-6. **API 账户失败**：确认用户 ID 是数字、令牌是完整单行文本且接口返回 JSON；不要把令牌或私有响应发到聊天。
-7. **额度恢复后没有自动续跑**：确认该任务已开启“额度恢复续跑”、任务确实以官方额度耗尽结束，并保持 Codex 与监视器运行。
-8. **安全软件拦截**：项目没有编译 EXE、自启动服务或下载器，但隐藏 PowerShell、Node 后台进程和 CDP 参数可能触发启发式检测。添加相关行为放行，或直接关闭杀毒软件。
-
-完整诊断命令、日志位置和恢复步骤见 [故障排查指南](docs/troubleshooting.md)。
-
-## 7. 开发与测试
-
-```powershell
-npm ci
-pwsh -NoProfile -File .\tests\run-tests.ps1
-pwsh -NoProfile -File .\scripts\build-release.ps1
-```
-
-实时开发与恢复命令：
-
-```powershell
-pwsh -NoProfile -File .\scripts\start-monitor.ps1
-pwsh -NoProfile -File .\scripts\restore-monitor.ps1
-node .\scripts\validate-provider.mjs .\config\providers\custom.example.json
-```
-
-测试覆盖 JavaScript/PowerShell 语法、官方周期、Token 单位、账户分页与累计基线、通用 Provider 映射、Tibo 动态刷新、额度恢复状态机、Codex Desktop 内部发送保护、恶意配置拒绝、DPAPI 持久化、UI 生命周期、设置恢复、启动器、安全扫描和运行包白名单。续跑还包含从本地会话事件到发送请求的隔离集成测试，不向真实对话发送消息。Windows CI 会在推送和 Pull Request 时运行同一套测试。
-
-## 8. FAQ
-
-### 监视器是独立悬浮窗吗？
-
-不是。它直接插入 Codex Desktop 输入区域，会随 Codex 页面一起显示和隐藏。
-
-### 为什么必须使用专用快捷方式？
-
-监视器需要 Codex 启动时开放仅绑定本机的 CDP 端口。原生图标不会开放该端口，因此无法注入。
-
-### 是否支持 Microsoft Store 和非 Store 版本？
-
-支持。安装器会自动寻找两类路径，找不到时才询问真实的 `ChatGPT.exe` 或 `codex.exe`。
-
-### 官方订阅、API 账户和 API Key 有什么区别？
-
-官方订阅读取 Codex 本机账户与任务事件；API 账户读取第三方用户账户和请求日志；API Key 读取单个密钥的额度接口。后两者由不同凭据和接口驱动。
-
-### 升级会覆盖我的设置吗？
-
-不会。版本化运行文件与 `%LOCALAPPDATA%\CodexUsageMonitor` 中的本地设置分开保存；自动更新和重新安装会保留现有配置。
-
-## 9. 项目来源与贡献者
-
-项目从 [Fei-Away/Codex-Dream-Skin](https://github.com/Fei-Away/Codex-Dream-Skin) 的运行时注入思路演化而来，当前发布版只保留用量监视功能。代码采用 MIT License，详见 [LICENSE](LICENSE) 与 [NOTICE.md](NOTICE.md)。
-
-- [+羊（@JiaYang-BUAA）](https://github.com/JiaYang-BUAA)：项目发起、产品设计与维护。
-- [Codex（@codex）](https://github.com/codex)：协作完成界面设计、功能实现、问题诊断、测试与文档。
+项目的运行时注入思路源自 [Fei-Away/Codex-Dream-Skin](https://github.com/Fei-Away/Codex-Dream-Skin)。由 [+羊（@JiaYang-BUAA）](https://github.com/JiaYang-BUAA) 发起和维护，[Codex（@codex）](https://github.com/codex) 协作开发。代码采用 [MIT License](LICENSE)，第三方说明见 [NOTICE.md](NOTICE.md)。

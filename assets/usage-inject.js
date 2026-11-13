@@ -184,8 +184,8 @@
       autoResume: source.autoResume && typeof source.autoResume === "object"
         ? {
             enabled: source.autoResume.enabled === true,
-            status: ["idle", "waiting", "sending", "sent"].includes(source.autoResume.status) ? source.autoResume.status : "idle",
-            reason: ["desktop-request-client-unavailable", "desktop-send-timeout", "desktop-send-failed", "codex-desktop-unavailable"].includes(source.autoResume.reason) ? source.autoResume.reason : null,
+            status: ["idle", "waiting", "sending", "queued", "sent"].includes(source.autoResume.status) ? source.autoResume.status : "idle",
+            reason: ["desktop-request-client-unavailable", "desktop-send-timeout", "desktop-send-failed", "codex-desktop-unavailable", "desktop-send-unconfirmed", "desktop-queue-pending", "account-unconfirmed"].includes(source.autoResume.reason) ? source.autoResume.reason : null,
             resetAt: finiteNumber(source.autoResume.resetAt) ? Number(source.autoResume.resetAt) : null,
           }
         : { enabled: false, status: "idle", resetAt: null },
@@ -198,6 +198,7 @@
     for (const [id, source] of Object.entries(sources)) {
       const previousSource = previous.sources[id];
       if (id === "session" && previous.currentThreadId !== incoming.currentThreadId) continue;
+      if (id === "official" && source.fetchedAt === null) continue;
       if (source.status !== "loading" || !previousSource?.metrics?.length) continue;
       sources[id] = {
         ...source,
@@ -329,13 +330,41 @@
     }
   };
   let applyingSettings = false;
-  const saveSettings = (value) => {
+  const settingsWriter = window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let settingsSequence = 0;
+  const showSettingsNotice = (key) => {
+    const host = document.getElementById(HOST_ID);
+    const node = host?.shadowRoot?.querySelector(".usage-settings-notice");
+    if (!node) return;
+    node.hidden = !key;
+    node.textContent = key ? createTranslator(loadSettings().englishUi ? "en" : "zh")(key) : "";
+    if (key && host.dataset.open !== "true") {
+      host.dataset.open = "true";
+      host.shadowRoot.querySelector(".usage-summary").setAttribute("aria-expanded", "true");
+      host.shadowRoot.querySelector(".usage-popover").hidden = false;
+    }
+  };
+  const saveSettings = (value, edit = null) => {
+    if (edit?.threadId && Object.keys(value.autoResumeThreads).length > 128) {
+      const removable = Object.keys(value.autoResumeThreads).find(id => id !== edit.threadId &&
+        !value.autoResumeThreads[id].enabled && value.autoResumeThreads[id].message === AUTO_RESUME_DEFAULT_MESSAGE &&
+        value.autoResumeMessage === AUTO_RESUME_DEFAULT_MESSAGE);
+      if (!removable) {
+        showSettingsNotice("autoResumeCapacity");
+        return false;
+      }
+      delete value.autoResumeThreads[removable];
+    }
+    if (edit && edit.key !== "layout") showSettingsNotice(null);
     try {
       window[PERSISTED_SETTINGS_KEY] = value;
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(value));
       localStorage.removeItem(PREVIOUS_SETTINGS_KEY);
-      if (!applyingSettings && typeof window[SETTINGS_BINDING] === "function") window[SETTINGS_BINDING](JSON.stringify(value));
     } catch {}
+    if (!applyingSettings && edit && typeof window[SETTINGS_BINDING] === "function") {
+      window[SETTINGS_BINDING](JSON.stringify({ ...value, edit: { ...edit, writer: settingsWriter, seq: ++settingsSequence } }));
+    }
+    return true;
   };
   const selectedMetrics = (source, settings) => {
     const available = new Map(source.metrics.map((item) => [item.id, item]));
@@ -486,10 +515,11 @@
     </div>
     <div class="usage-popover" role="dialog" aria-label="Usage display settings" hidden>
       <div class="usage-backend-notice" role="status" aria-atomic="true" hidden></div>
+      <div class="usage-settings-notice" role="status" aria-live="polite" hidden></div>
       <div class="usage-columns"></div>
     </div>`;
   const css = `
-    .usage-backend-notice { margin-bottom: 10px; padding: 8px; border: 1px solid currentColor; border-radius: 6px; color: inherit; font-weight: 600; line-height: 1.5; }
+    .usage-backend-notice, .usage-settings-notice { margin-bottom: 10px; padding: 8px; border: 1px solid currentColor; border-radius: 6px; color: inherit; font-weight: 600; line-height: 1.5; }
     :host([data-backend="disconnected"]) .usage-summary-items { display: none; }
     :host([data-backend="disconnected"]) .usage-status { background: #9ca3af !important; }
     :host {
@@ -598,6 +628,7 @@
       z-index: 40;
       left: var(--usage-popover-shift, 0px);
       width: max-content;
+      max-width: calc(100vw - 24px);
       max-height: min(440px, calc(100vh - 72px));
       padding: 10px 11px;
       border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
@@ -605,7 +636,7 @@
       color: inherit;
       background: Canvas;
       box-shadow: 0 10px 28px rgba(0, 0, 0, .16);
-      overflow-x: hidden;
+      overflow-x: auto;
       overflow-y: auto;
       overscroll-behavior: contain;
       scrollbar-gutter: stable;
@@ -877,7 +908,8 @@
     .usage-inline-toggle { position: relative; display: block; width: 24px; height: 14px; cursor: pointer; }
     .usage-inline-toggle .usage-toggle-track { display: block; }
     .usage-auto-resume-field { display: grid; gap: 3px; min-width: 0; padding: 0 0 5px 19px; }
-    .usage-auto-resume-error { padding: 3px 0 5px 19px; font-size: 10px; line-height: 1.5; color: #b45309; overflow-wrap: anywhere; }
+    .usage-auto-resume-error, .usage-auto-resume-note { padding: 3px 0 5px 19px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+    .usage-auto-resume-error { color: #b45309; }
     .usage-inline-toggle.usage-shared-resume { display: flex; width: auto; height: auto; min-height: 14px; gap: 6px; align-items: center; margin-left: 19px; font-size: 10px; justify-content: space-between; }
     .usage-shared-resume > span:first-child { white-space: normal; }
     .usage-auto-resume-label { font-size: 9px; font-weight: 650; line-height: 1.2; opacity: .72; }
@@ -1196,7 +1228,7 @@
     return errors;
   };
 
-  const render = (host, value, forceColumns = false) => {
+  const render = (host, value, forceColumns = false, officialReset = false) => {
     if (!host?.shadowRoot) return;
     const usage = normalizeUsage(value);
     const settings = loadSettings();
@@ -1206,7 +1238,10 @@
         message: normalizeAutoResumeMessage(settings.autoResumeMessage),
       };
       settings.autoResume = false;
-      saveSettings(settings);
+      if (!saveSettings(settings, { key: "legacyResume", threadId: usage.currentThreadId })) {
+        delete settings.autoResumeThreads[usage.currentThreadId];
+        settings.autoResume = true;
+      }
     }
     const currentAutoResume = autoResumeForThread(settings, usage.currentThreadId);
     const t = createTranslator(settings.englishUi ? "en" : "zh");
@@ -1230,10 +1265,10 @@
           : source.accountType === "api-account" ? t("apiAccount")
             : source.accountType === "api-key" ? t("apiKey") : source.label,
         metrics: source.metrics.map((metric) => {
-          const autoResumeValueKey = !currentAutoResume.enabled ? "autoResumeOff"
-            : usage.autoResume.status === "waiting" ? "autoResumeWaitingValue"
-              : usage.autoResume.status === "sending" ? "autoResumeSendingValue"
-                : usage.autoResume.status === "sent" ? "autoResumeSentValue" : "autoResumeOn";
+          const autoResumeValueKey = !currentAutoResume.enabled ? "autoResumeOff" : ({
+            waiting: "autoResumeWaitingValue", sending: "autoResumeSendingValue",
+            queued: "autoResumeQueuedValue", sent: "autoResumeSentValue",
+          }[usage.autoResume.status] || "autoResumeOn");
           const value = metric.id === "autoResume" ? t(autoResumeValueKey)
             : metric.id === "executionTime" ? executionTimeDisplay(metric, t)
             : metric.id === "requestStatus" ? localizedStatus
@@ -1282,7 +1317,10 @@
       }
       settingsChanged = true;
     }
-    if (settingsChanged) saveSettings(settings);
+    if (settingsChanged) {
+      const previous = loadSettings();
+      saveSettings(settings, { key: "layout", base: JSON.stringify([previous.metricOrder, previous.metrics, previous.minimalMode]) });
+    }
     const availableWidth = Number.parseInt(host.style.getPropertyValue("--usage-max-width"), 10) || 280;
     host.dataset.density = settings.minimalMode
       ? selected.length >= 9 ? "packed" : "normal"
@@ -1331,7 +1369,8 @@
     shadow.querySelector(".usage-summary")?.setAttribute("aria-label", t("displayedItems", { count: selected.length }));
     shadow.querySelector(".usage-popover")?.setAttribute("aria-label", t("displaySettings"));
     const columns = shadow.querySelector(".usage-columns");
-    if (columns && (forceColumns || !shadow.activeElement?.closest?.(".usage-config-form,.usage-auto-resume-field"))) {
+    const editing = shadow.activeElement?.closest?.(".usage-config-form,.usage-auto-resume-field");
+    if (columns && (forceColumns || !editing || officialReset)) {
       const visibleSources = sources.filter((source) => {
         if (["api-account", "api-key"].includes(source.accountType)) return settings.showApiColumns;
         if (source.accountType === "forecast") return settings.showResetForecast;
@@ -1342,7 +1381,8 @@
       host.dataset.columnCount = String(visibleSources.length);
       columns.style.setProperty("--usage-column-count", String(visibleSources.length));
       const selectedKeys = new Set(selected.map((item) => `${item.source.id}:${item.metric.id}`));
-      columns.replaceChildren(...visibleSources.map((source) => {
+      const onlyOfficial = officialReset && editing && !forceColumns;
+      const refreshed = (onlyOfficial ? visibleSources.filter(source => source.id === "official") : visibleSources).map((source) => {
         const column = document.createElement("section");
         column.className = "usage-column";
         column.dataset.status = source.status;
@@ -1396,6 +1436,7 @@
               const statusKey = {
                 waiting: "autoResumeWaiting",
                 sending: "autoResumeSending",
+                queued: "autoResumeQueued",
                 sent: "autoResumeSent",
               }[usage.autoResume.status] || "autoResumeIdle";
               const toggle = document.createElement("label");
@@ -1416,13 +1457,18 @@
               children.push(row);
 
               const field = document.createElement("label");
-              if (usage.autoResume.reason) {
-                const error = document.createElement("div");
-                error.className = "usage-auto-resume-error";
-                error.setAttribute("role", "status");
-                error.textContent = t(usage.autoResume.reason === "desktop-send-timeout" ? "autoResumeTimeout"
+              if (usage.autoResume.reason || usage.autoResume.status === "queued") {
+                const note = document.createElement("div");
+                note.className = usage.autoResume.status === "queued" || usage.autoResume.reason === "desktop-queue-pending"
+                  ? "usage-auto-resume-note" : "usage-auto-resume-error";
+                note.setAttribute("role", "status");
+                note.textContent = t(usage.autoResume.status === "queued" ? "autoResumeQueued"
+                  : usage.autoResume.reason === "desktop-send-timeout" ? "autoResumeTimeout"
+                  : usage.autoResume.reason === "desktop-send-unconfirmed" ? "autoResumeUnconfirmed"
+                  : usage.autoResume.reason === "desktop-queue-pending" ? "autoResumeQueuePending"
+                  : usage.autoResume.reason === "account-unconfirmed" ? "autoResumeAccountUnconfirmed"
                   : ["desktop-request-client-unavailable", "codex-desktop-unavailable"].includes(usage.autoResume.reason) ? "autoResumeClientUnavailable" : "autoResumeSendFailed");
-                children.push(error);
+                children.push(note);
               }
               field.className = "usage-auto-resume-field";
               const fieldLabel = document.createElement("span");
@@ -1440,6 +1486,14 @@
               messageInput.setAttribute("aria-label", t("autoResumeMessage"));
               field.append(fieldLabel, messageInput);
               children.push(field);
+              if (!currentAutoResume.enabled && settings.autoResumeThreads[usage.currentThreadId] && Object.keys(settings.autoResumeThreads).length >= 128) {
+                const forget = document.createElement("button");
+                forget.type = "button";
+                forget.className = "usage-config-trigger";
+                forget.dataset.forgetResumeThread = usage.currentThreadId;
+                forget.textContent = t("forgetResumeThread");
+                children.push(forget);
+              }
               const shared = document.createElement("label");
               shared.className = "usage-inline-toggle usage-shared-resume";
               const sharedLabel = document.createElement("span");
@@ -1580,7 +1634,9 @@
           column.append(brand);
         }
         return column;
-      }));
+      });
+      if (onlyOfficial) columns.querySelector('[data-source="official"]')?.replaceWith(refreshed[0]);
+      else columns.replaceChildren(...refreshed);
     }
     updateCountdowns(host, usage);
     host.dataset.rendered = "true";
@@ -1636,6 +1692,17 @@
         toggleSummary();
       });
       host.shadowRoot.addEventListener("click", (event) => {
+        const forget = event.target?.closest?.("[data-forget-resume-thread]");
+        if (forget) {
+          const threadId = forget.dataset.forgetResumeThread;
+          const settings = loadSettings();
+          const config = settings.autoResumeThreads[threadId];
+          if (!config || config.enabled) return;
+          delete settings.autoResumeThreads[threadId];
+          saveSettings(settings, { key: "forgetThread", threadId, message: config.message });
+          render(host, window[STATE_KEY]?.usage || window[USAGE_KEY], true);
+          return;
+        }
         const settingsTrigger = event.target?.closest?.("[data-toggle-settings]");
         if (settingsTrigger) {
           host.dataset.settingsOpen = String(host.dataset.settingsOpen !== "true");
@@ -1748,7 +1815,7 @@
           if (settings.autoResumeSharedMessage) settings.autoResumeMessage = message;
           else settings.autoResumeThreads[usage.currentThreadId] = { enabled: current.enabled, message };
           input.value = message;
-          saveSettings(settings);
+          if (!saveSettings(settings, { key: settings.autoResumeSharedMessage ? "autoResumeMessage" : "threadMessage", threadId: usage.currentThreadId })) input.value = current.message;
           return;
         }
         if (input.type !== "checkbox") return;
@@ -1765,16 +1832,15 @@
             if (settings.autoResumeSharedMessage && !input.checked) {
               const message = normalizeAutoResumeMessage(settings.autoResumeMessage);
               for (const config of Object.values(settings.autoResumeThreads)) config.message = message;
-              if (usage.currentThreadId && !settings.autoResumeThreads[usage.currentThreadId]) {
-                settings.autoResumeThreads[usage.currentThreadId] = { enabled: false, message };
-              }
             }
             settings.autoResumeSharedMessage = input.checked;
           } else settings[input.dataset.setting] = input.checked;
           if (input.dataset.setting === "showApiColumns" && !input.checked && state?.configuration) {
             state.configuration.openSourceId = null;
           }
-          saveSettings(settings);
+          if (!saveSettings(settings, { key: input.dataset.setting === "autoResume" ? "threadEnabled" : input.dataset.setting, threadId: usage.currentThreadId })) {
+            input.checked = !input.checked;
+          }
           render(host, usage);
           return;
         }
@@ -1799,7 +1865,7 @@
         const key = metricSelectionKey(source.id, input.dataset.metric);
         settings.metricOrder = (settings.metricOrder || []).filter((item) => item !== key);
         if (input.checked) settings.metricOrder.push(key);
-        saveSettings(settings);
+        saveSettings(settings, { key: "metric", source: source.id, metric: input.dataset.metric, checked: input.checked });
         render(host, usage);
       });
     }
@@ -1891,8 +1957,10 @@
     ensure,
     diagnose() { return { ...this.health }; },
     getSettings() { return loadSettings(); },
-    applySettings(value) {
+    applySettings(value, ack) {
       if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      if (arguments.length > 1 && settingsSequence && (ack?.writer !== settingsWriter || ack.seq < settingsSequence)) return false;
+      if (ack?.writer === settingsWriter && ["autoResumeCapacity", "settingsSaveFailed"].includes(ack.error)) showSettingsNotice(ack.error);
       const previous = loadSettings();
       window[PERSISTED_SETTINGS_KEY] = value;
       const next = loadSettings();
@@ -1909,10 +1977,11 @@
     },
     updateUsage(value) {
       const usage = preserveMetricsWhileLoading(this.usage, normalizeUsage(value));
+      const officialReset = usage.sources.official.status === "loading" && usage.sources.official.fetchedAt === null;
       this.usage = usage;
       window[USAGE_KEY] = usage;
       const host = ensure();
-      if (host) render(host, usage);
+      if (host) render(host, usage, false, officialReset);
       return true;
     },
     configurationResult(requestId, result) {

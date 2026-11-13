@@ -67,6 +67,68 @@ export function normalizeUiSettings(value) {
   return normalized;
 }
 
+// Each renderer reads the same persisted state, but its next click can arrive
+// before another window's change has been broadcast back to it.
+export function mergeUiSettingsEdit(current, snapshot, edit) {
+  if (!current || !edit) return normalizeUiSettings(snapshot);
+  const next = normalizeUiSettings(current);
+  const { key, threadId } = edit;
+  if (key === "layout") {
+    // A refresh may migrate the selection layout or trim it to the display limit.
+    // A layout computed before a newer metric selection will be recomputed
+    // when that window receives the authoritative settings.
+    if (JSON.stringify([next.metricOrder, next.metrics, next.minimalMode]) === edit.base) {
+      next.metrics = snapshot.metrics;
+      next.metricOrder = snapshot.metricOrder;
+      for (const version of VERSION_FIELDS) next[version] = Math.max(next[version], safeVersion(snapshot[version]));
+    }
+  } else if (key === "metric") {
+    const { source, metric, checked } = edit;
+    if (!SOURCE_ID_PATTERN.test(source) || !METRIC_ID_PATTERN.test(metric) || typeof checked !== "boolean" || !Object.hasOwn(snapshot.metrics || {}, source)) return next;
+    const selected = Object.hasOwn(next.metrics, source) ? next.metrics[source] : snapshot.metrics[source];
+    if (!Array.isArray(selected)) return next;
+    const ids = selected.filter(id => id !== metric);
+    const id = source + ":" + metric;
+    next.metricOrder = next.metricOrder.filter(item => item !== id);
+    if (checked) {
+      ids.push(metric);
+      next.metricOrder.push(id);
+    }
+    next.metrics[source] = ids;
+  } else if (key === "forgetThread") {
+    const config = next.autoResumeThreads[threadId];
+    if (THREAD_ID_PATTERN.test(threadId) && config && !config.enabled && config.message === edit.message) delete next.autoResumeThreads[threadId];
+  } else if (key === "threadEnabled" || key === "threadMessage" || key === "legacyResume") {
+    if (!THREAD_ID_PATTERN.test(threadId) || !Object.hasOwn(snapshot.autoResumeThreads || {}, threadId)) return next;
+    if (key === "legacyResume" && (!next.autoResume || next.autoResumeThreads[threadId])) return next;
+    const source = snapshot.autoResumeThreads[threadId];
+    const config = next.autoResumeThreads[threadId] || { enabled: false, message: next.autoResumeMessage };
+    if (key === "threadMessage") config.message = normalizeAutoResumeMessage(source.message);
+    else {
+      config.enabled = source.enabled === true;
+      next.autoResume = false;
+    }
+    next.autoResumeThreads[threadId] = config;
+    if (Object.keys(next.autoResumeThreads).length > 128) {
+      const removable = Object.keys(next.autoResumeThreads).find(id => id !== threadId &&
+        !next.autoResumeThreads[id].enabled && next.autoResumeThreads[id].message === AUTO_RESUME_MESSAGE &&
+        next.autoResumeMessage === AUTO_RESUME_MESSAGE);
+      if (!removable) throw new RangeError("autoResumeCapacity");
+      delete next.autoResumeThreads[removable];
+    }
+  } else if (key === "autoResumeMessage") {
+    next.autoResumeMessage = normalizeAutoResumeMessage(snapshot.autoResumeMessage);
+  } else if (key === "autoResumeSharedMessage") {
+    if (next.autoResumeSharedMessage && !snapshot.autoResumeSharedMessage) {
+      for (const config of Object.values(next.autoResumeThreads)) config.message = next.autoResumeMessage;
+    }
+    next.autoResumeSharedMessage = snapshot.autoResumeSharedMessage === true;
+  } else if ([...BOOLEAN_FIELDS, "showApiColumns", "showResetForecast"].includes(key) && key !== "autoResume") {
+    next[key] = snapshot[key] === true;
+  }
+  return normalizeUiSettings(next);
+}
+
 export function resolveUiSettingsPath(environment = process.env) {
   if (environment.CODEX_USAGE_UI_SETTINGS_PATH) return path.resolve(environment.CODEX_USAGE_UI_SETTINGS_PATH);
   if (!environment.LOCALAPPDATA) throw new Error("LOCALAPPDATA is unavailable; cannot persist monitor UI settings.");

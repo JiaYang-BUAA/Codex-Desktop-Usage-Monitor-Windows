@@ -17,10 +17,15 @@ $statePath = Join-Path $stateRoot 'update-state.json'
 $extractRoot = Join-Path $stateRoot "updates\extract-$PID"
 $expectedRootName = "codex-usage-monitor-windows-$Version"
 $utf8 = [Text.UTF8Encoding]::new($false)
+$currentVersion = (Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'VERSION') -Raw).Trim()
+$installedVersion = $null
 
 function Write-UpdateState([string]$Status, [string]$ErrorMessage = '') {
   New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
-  $value = [ordered]@{ schemaVersion = 1; checkedAt = (Get-Date).ToUniversalTime().ToString('o'); status = $Status; currentVersion = $Version }
+  $value = [ordered]@{ schemaVersion = 1; checkedAt = (Get-Date).ToUniversalTime().ToString('o'); status = $Status; currentVersion = $currentVersion; latestVersion = $Version }
+  if ($installedVersion) { $value.installedVersion = $installedVersion }
+  if ($Status -eq 'waiting-ui') { $value.installedInjectorPath = Join-Path $installedRoot 'scripts\injector.mjs' }
+  if ($Status -eq 'installed') { $value.currentVersion = $Version }
   if ($ErrorMessage) { $value.error = $ErrorMessage.Substring(0, [Math]::Min(500, $ErrorMessage.Length)) }
   $temporary = "$statePath.$PID.tmp"
   try {
@@ -91,11 +96,16 @@ try {
   if ($ValidateOnly) { Write-Host "Validated update package $Version."; return }
   & (Join-Path $packageRoot 'install.ps1') -Port $Port -InstallRoot $InstallRoot -ShortcutDirectory $ShortcutDirectory -NonInteractive
   $installedRoot = Join-Path $InstallRoot $Version
-  if (-not (Test-Path -LiteralPath (Join-Path $installedRoot 'scripts\start-monitor.ps1') -PathType Leaf)) { throw 'Installed update could not be verified.' }
-  Write-UpdateState 'installed'
-  $pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
-  if (-not $pwsh) { $pwsh = (Get-Command powershell.exe -ErrorAction Stop).Source }
-  Start-Process -FilePath $pwsh -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f (Join-Path $installedRoot 'scripts\start-monitor.ps1')),'-Port',"$Port",'-Replace') -WindowStyle Hidden
+  $launcher = Join-Path $installedRoot 'scripts\start-monitor.ps1'
+  if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Installed update could not be verified.' }
+  $installedVersion = $Version
+  Write-UpdateState 'waiting-ui'
+  & $launcher -Port $Port -Replace
+  $runtime = Get-Content -LiteralPath (Join-Path $stateRoot 'state.json') -Raw | ConvertFrom-Json
+  if ($runtime.runtimeVersion -ne $Version -or [int]$runtime.injectorPid -le 0 -or
+      $runtime.injectorPath -ne (Join-Path $installedRoot 'scripts\injector.mjs')) { throw 'Updated monitor did not register its runtime.' }
+  if ($runtime.startupPhase -eq 'ready' -and $runtime.startupVerifiedAt) { Write-UpdateState 'installed' }
+  elseif ($runtime.startupPhase -ne 'waiting-ui') { throw 'Updated monitor did not confirm its startup state.' }
 } catch {
   Write-UpdateState 'error' $_.Exception.Message
   throw

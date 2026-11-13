@@ -32,8 +32,9 @@ try {
   now+=60000;
   restored.recordQuota({...quota,quotaObservedAt:now,windows:[{limitId:'spark',windowDurationMins:10080,remainingPercent:90}]});
   assert.equal(restored.snapshot().quotaSamples.length,1,'model-specific pool must not replace main');
-  restored.recordQuota({...quota,quotaObservedAt:now,windows:[{limitId:'codex',windowDurationMins:10080,remainingPercent:99,resetsAt:999}]});
+  restored.recordQuota({...quota,quotaObservedAt:now,windows:[{limitId:'codex',windowDurationMins:10079,remainingPercent:99,resetsAt:999}]});
   assert.equal(restored.snapshot().quotaSamples.length,2,'reset/change sample retained');
+  assert.equal(restored.snapshot().quotaSamples.at(-1).secondaryRemaining,99,'history uses the same near-weekly duration as the subscription panel');
   now+=32*86400000;
   assert.equal(restored.snapshot().tokenBuckets.length,0);
   assert.equal(restored.snapshot().quotaSamples.length,0);

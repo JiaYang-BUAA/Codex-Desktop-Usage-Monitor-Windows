@@ -63,6 +63,12 @@ try {
   . (Join-Path $root 'scripts\monitor-utils.ps1')
   $stored = Get-CodexUsagePersistedProvider
   if ($stored.ApiKey -ne $testKey) { throw 'DPAPI panel key round-trip failed.' }
+  $providerChange = Invoke-PanelHelper @{
+    requestId = 'changed-provider-url'; type = 'api-key'; apiKey = ''
+    provider = @{ baseUrl = 'https://other.example.test' }
+  }
+  if ($providerChange.ok -or $providerChange.message -notmatch '重新输入凭据') { throw 'Provider key reuse at another destination was not rejected.' }
+  if ((Get-Content -LiteralPath $providerPath -Raw | ConvertFrom-Json).baseUrl -ne 'https://api.example.test') { throw 'Rejected provider edit modified its config.' }
 
   $invalidResult = Invoke-PanelHelper ([ordered]@{
     requestId = 'panel-test-account'
@@ -138,6 +144,10 @@ try {
   if ($counter.baselineConfigured -ne $true -or [long]$counter.initialTokens -ne 12345L) { throw 'Token baseline was not persisted.' }
   $storedAccount = Get-CodexUsagePersistedAccount
   if ($storedAccount.Token -ne $testAccountToken) { throw 'DPAPI account token round-trip failed.' }
+  foreach ($change in @(@{url="http://127.0.0.1:$port/other"; id='10530'}, @{url="http://127.0.0.1:$port"; id='42'})) {
+    $accountChange = Invoke-PanelHelper @{requestId='changed-account'; type='api-account'; baseUrl=$change.url; userId=$change.id; token=''; initialTokens='0'}
+    if ($accountChange.ok -or $accountChange.message -notmatch '重新输入凭据') { throw 'Changed account destination or ID must require a new token.' }
+  }
   if ((Get-Content -LiteralPath (Join-Path $stateRoot 'account.json') -Raw).Contains($testAccountToken)) { throw 'Account JSON contains plaintext token.' }
   Wait-Job -Job $serverJob -Timeout 10 | Out-Null
   if ($serverJob.State -ne 'Completed') { throw 'Local account test server did not complete.' }

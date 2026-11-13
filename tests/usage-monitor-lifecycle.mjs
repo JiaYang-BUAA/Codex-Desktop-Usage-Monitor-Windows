@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 import { normalizeUsageView, toOfficialUsageSource } from "../scripts/usage-client.mjs";
+import { mergeUiSettingsEdit } from "../scripts/ui-settings.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -244,7 +245,7 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column\s*\{[\s\S]*?box-sizing:\s*border-box;[\s\S]*?width:\s*100%;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-column \+ \.usage-column\s*\{[^}]*border-left/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-columns\s*\{[\s\S]*?grid-template-columns:\s*var\(--usage-column-widths, repeat\(var\(--usage-column-count, 4\), minmax\(230px, 1fr\)\)\);/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?overflow-x:\s*hidden;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[^}]*max-width:\s*calc\(100vw - 24px\);[^}]*overflow-x:\s*auto;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-detail-label\s*\{[\s\S]*?color:\s*inherit;[\s\S]*?font-weight:\s*650;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-detail-select input\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?width:\s*13px;[\s\S]*?height:\s*13px;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-popover-footer/);
@@ -278,8 +279,8 @@ try {
   assert.equal(columns.length, 5);
   assert.equal(host.dataset.columnCount, "5");
   assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 230px 170px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1060px");
-  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-298px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1000px");
+  assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-222px");
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "API 账户", "API Key"]);
   assert.deepEqual(columns.map((column) => column.dataset.status), ["ready", "ready", "ready", "loading", "error"]);
   assert.deepEqual(columns.map((column) => column.querySelectorAll(".usage-detail-row").length), [7, 6, 4, 8, 4]);
@@ -573,6 +574,11 @@ try {
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "请继续完成当前任务");
 
   const sharedSelector = 'input[data-setting="autoResumeSharedMessage"]';
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage({ ...usage, autoResume: {status: "queued"} });
+  assert.match(host.shadowRoot.querySelector('.usage-auto-resume-note').textContent, /已排队.*重新打开/);
+  assert.match(host.shadowRoot.querySelector('input[data-setting="autoResume"]').title, /已排队/);
+  window.__CODEX_USAGE_MONITOR_STATE__.updateUsage({ ...usage, autoResume: {status: "waiting", reason: "desktop-queue-pending"} });
+  assert.equal(host.shadowRoot.querySelector('.usage-auto-resume-note').textContent, "原任务有排队消息，等待队列处理");
   window.__CODEX_USAGE_MONITOR_STATE__.updateUsage({ ...usage, autoResume: {status: "waiting", reason: "desktop-send-timeout"} });
   assert.equal(host.shadowRoot.querySelector('.usage-auto-resume-error').textContent, "续跑发送超时，等待重试");
   window.__CODEX_USAGE_MONITOR_STATE__.updateUsage(usage);
@@ -1029,6 +1035,21 @@ try {
     } });
     assert.equal(durationDetail().textContent, "--", "thread switches cannot inherit prior execution time");
     assert.equal(durationSummary().textContent, "--");
+    const readyMetrics = monitor.usage.sources.official.metrics;
+    assert.ok(readyMetrics.length);
+    monitor.updateUsage({ ...usage, sources: { ...usage.sources,
+      official: { ...usage.sources.official, status: "loading", fetchedAt: now, metrics: [] },
+    } });
+    assert.deepEqual(monitor.usage.sources.official.metrics, readyMetrics, "a same-account refresh can carry the last measurement");
+    const focusedMessage = host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]');
+    focusedMessage.focus();
+    monitor.updateUsage({ ...usage, sources: { ...usage.sources,
+      official: { ...usage.sources.official, status: "loading", fetchedAt: null, metrics: [] },
+    } });
+    assert.equal(monitor.usage.sources.official.metrics.length, 0, "a cleared official sample must not recover the previous account's quota");
+    assert.equal(host.shadowRoot.querySelector('.usage-column[data-source="official"]').dataset.status, "loading");
+    assert.doesNotMatch(host.shadowRoot.querySelector('.usage-column[data-source="official"]').textContent, /75%/);
+    assert.equal(host.shadowRoot.activeElement, focusedMessage, "clearing another account's quota preserves the active message editor");
     window.__CODEX_USAGE_MONITOR_BACKEND__ = { pid: 123, at: clockNow, phase: "connected" };
     tick();
     assert.equal(host.dataset.backend, "connected");
@@ -1095,7 +1116,15 @@ try {
     assert.equal(originalEntry.isConnected, false, 'ordinary refresh replaces the column entry button');
     originalBack.click();
     assert.equal(shadow.activeElement, shadow.querySelector('[data-history-open]'), 'Back focuses the live entry button after refresh');
-    assert.equal(host.style.getPropertyValue('--usage-popover-width'), '1060px', 'returning restores the column placement');
+    for (const viewport of [1280, 1024, 480, 320]) {
+      window.innerWidth = viewport;
+      monitor.ensure();
+      const width = Number.parseFloat(host.style.getPropertyValue('--usage-popover-width'));
+      const left = Number.parseFloat(host.style.getPropertyValue('--usage-left')) + Number.parseFloat(host.style.getPropertyValue('--usage-popover-shift'));
+      assert.equal(width, Math.min(1060, viewport - 24));
+      assert.ok(left >= 12 && left + width <= viewport - 12, 'all columns remain reachable within the viewport');
+    }
+    window.innerWidth = historyOriginalWidth;
 
     shadow.querySelector('[data-history-open]').click();
     let revision = historyNow;
@@ -1168,6 +1197,43 @@ try {
     assert.equal(second.monitor.getSettings().unifiedMetricsVersion, 2);
     assert.equal(second.monitor.applySettings(null), false);
     assert.equal(second.monitor.applySettings([]), false);
+
+    // Both windows edit their own tasks before either sees a broadcast.
+    for (const item of instances) item.monitor.applySettings({ ...shared, autoResumeThreads: {} });
+    first.host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+    second.host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+    const firstEdit = first.saves.at(-1);
+    const secondEdit = second.saves.at(-1);
+    const afterFirst = mergeUiSettingsEdit(shared, firstEdit, firstEdit.edit);
+    assert.equal(second.monitor.applySettings(afterFirst, null), false, "a pending local click must survive an earlier broadcast");
+    assert.equal(second.monitor.getSettings().autoResumeThreads[otherThreadId].enabled, true);
+    const afterBoth = mergeUiSettingsEdit(afterFirst, secondEdit, secondEdit.edit);
+    for (const [index, item] of instances.entries()) {
+      assert.equal(item.monitor.applySettings(afterBoth, [firstEdit, secondEdit][index].edit), true);
+      assert.equal(item.monitor.getSettings().autoResumeThreads[currentThreadId].enabled, true);
+      assert.equal(item.monitor.getSettings().autoResumeThreads[otherThreadId].enabled, true);
+    }
+    const full = Object.fromEntries(Array.from({ length: 128 }, (_, i) => [
+      "019fb3b1-2638-7bb0-9a90-" + String(i).padStart(12, "0"),
+      { enabled: i > 0, message: "task " + i },
+    ]));
+    first.monitor.applySettings({ ...shared, autoResumeThreads: full });
+    const beforeLimit = first.saves.length;
+    first.host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+    assert.equal(first.saves.length, beforeLimit);
+    assert.equal(first.host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false);
+    assert.match(first.host.shadowRoot.querySelector(".usage-settings-notice").textContent, /128/);
+    const removableId = Object.keys(full)[0];
+    first.monitor.updateUsage({ ...usage, currentThreadId: removableId });
+    first.host.shadowRoot.querySelector("[data-forget-resume-thread]").click();
+    const removal = first.saves.at(-1);
+    assert.equal(removal.edit.key, "forgetThread");
+    const afterRemoval = mergeUiSettingsEdit({ ...shared, autoResumeThreads: full }, removal, removal.edit);
+    assert.equal(Object.keys(afterRemoval.autoResumeThreads).length, 127);
+    assert.equal(afterRemoval.autoResumeThreads[removableId], undefined);
+    first.monitor.updateUsage({ ...usage, currentThreadId });
+    first.host.shadowRoot.querySelector('input[data-setting="autoResume"]').click();
+    assert.equal(first.monitor.getSettings().autoResumeThreads[currentThreadId].enabled, true);
   } finally {
     for (const { instance, monitor } of instances) {
       monitor.cleanup();

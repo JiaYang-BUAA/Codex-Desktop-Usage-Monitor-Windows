@@ -9,10 +9,11 @@ $ErrorActionPreference = 'Stop'
 
 $savedKey = $env:CODEX_USAGE_API_KEY
 $savedConfig = $env:CODEX_USAGE_PROVIDER_CONFIG_PATH
+$savedSnapshot = $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT
 $savedDisable = $env:CODEX_USAGE_DISABLE_PERSISTED_PROVIDER
 try {
   Remove-CodexUsagePersistedProvider
-  Remove-Item Env:CODEX_USAGE_API_KEY,Env:CODEX_USAGE_PROVIDER_CONFIG_PATH -ErrorAction SilentlyContinue
+  Remove-Item Env:CODEX_USAGE_API_KEY,Env:CODEX_USAGE_PROVIDER_CONFIG_PATH,Env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT -ErrorAction SilentlyContinue
   $env:CODEX_USAGE_DISABLE_PERSISTED_PROVIDER = '1'
   $activePort = Resolve-CodexUsageCdpPort $Port
   if ($activePort) {
@@ -25,5 +26,6 @@ try {
 } finally {
   if ($null -ne $savedKey) { $env:CODEX_USAGE_API_KEY = $savedKey } else { Remove-Item Env:CODEX_USAGE_API_KEY -ErrorAction SilentlyContinue }
   if ($null -ne $savedConfig) { $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $savedConfig } else { Remove-Item Env:CODEX_USAGE_PROVIDER_CONFIG_PATH -ErrorAction SilentlyContinue }
+  $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT = $savedSnapshot
   if ($null -ne $savedDisable) { $env:CODEX_USAGE_DISABLE_PERSISTED_PROVIDER = $savedDisable } else { Remove-Item Env:CODEX_USAGE_DISABLE_PERSISTED_PROVIDER -ErrorAction SilentlyContinue }
 }

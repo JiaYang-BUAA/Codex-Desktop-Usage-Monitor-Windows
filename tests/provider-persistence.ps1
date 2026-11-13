@@ -16,6 +16,7 @@ $oldAccountTokenPath = $CodexUsagePersistedAccountTokenPath
 $oldAccountCounterPath = $CodexUsageAccountCounterPath
 $oldEnvKey = $env:CODEX_USAGE_API_KEY
 $oldEnvConfig = $env:CODEX_USAGE_PROVIDER_CONFIG_PATH
+$oldEnvSnapshot = $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT
 $oldEnvAccountToken = $env:CODEX_USAGE_ACCOUNT_TOKEN
 $oldEnvAccountUserId = $env:CODEX_USAGE_ACCOUNT_USER_ID
 $oldEnvAccountBaseUrl = $env:CODEX_USAGE_ACCOUNT_BASE_URL
@@ -57,6 +58,29 @@ try {
   Remove-Item Env:CODEX_USAGE_API_KEY,Env:CODEX_USAGE_PROVIDER_CONFIG_PATH -ErrorAction SilentlyContinue
   if (-not (Import-CodexUsagePersistedProvider)) { throw 'Persisted provider was not imported.' }
   if ($env:CODEX_USAGE_API_KEY -ne $testKey) { throw 'Imported API key mismatch.' }
+  $newEndpoint = 'https://different.example.test'
+  $changedProvider = $stored.ConfigJson | ConvertFrom-Json
+  $changedProvider.baseUrl = $newEndpoint
+  [IO.File]::WriteAllText($CodexUsagePersistedProviderConfigPath, ($changedProvider | ConvertTo-Json -Depth 8))
+  try { Get-CodexUsagePersistedProvider | Out-Null; throw 'Provider accepted mixed files.' }
+  catch { if ($_.Exception.Message -notmatch '不匹配') { throw } }
+  if (($env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT | ConvertFrom-Json).baseUrl -ne $stored.BaseUrl) { throw 'Old runtime snapshot followed the edited destination.' }
+  [IO.File]::WriteAllText($CodexUsagePersistedProviderConfigPath, $stored.ConfigJson)
+  $legacyCipher = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($testKey), $CodexUsagePersistedProviderEntropy, 'CurrentUser')
+  [IO.File]::WriteAllBytes($CodexUsagePersistedProviderKeyPath, $legacyCipher)
+  if ((Get-CodexUsagePersistedProvider).ApiKey -ne $testKey) { throw 'Legacy provider credential did not load.' }
+  $changedPath = Join-Path $testRoot 'changed-provider.json'
+  [IO.File]::WriteAllText($changedPath, ($changedProvider | ConvertTo-Json -Depth 8))
+  & {
+    function Move-Item($LiteralPath, $Destination, [switch]$Force) {
+      if ($Destination -eq $CodexUsagePersistedProviderConfigPath) { throw 'Fixture failed metadata rename.' }
+      Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
+    }
+    try { Save-CodexUsagePersistedProvider $changedPath 'unit-test-new-key'; throw 'Fixture rename failure ignored.' }
+    catch { if ($_.Exception.Message -ne 'Fixture failed metadata rename.') { throw } }
+  }
+  try { Get-CodexUsagePersistedProvider | Out-Null; throw 'Failed legacy upgrade exposed a mismatched provider.' }
+  catch { if ($_.Exception.Message -notmatch '不匹配') { throw } }
   Remove-CodexUsagePersistedProvider
   if (Test-CodexUsagePersistedProvider) { throw 'Persisted provider files were not removed.' }
 
@@ -68,6 +92,13 @@ try {
   $accountConfigText = Get-Content -LiteralPath $CodexUsagePersistedAccountConfigPath -Raw
   if ($accountConfigText.Contains($accountToken)) { throw 'Account config contains the account token.' }
   $storedAccount = Get-CodexUsagePersistedAccount
+  [IO.File]::WriteAllText($CodexUsagePersistedAccountConfigPath, $accountConfigText.Replace('10530','10531'))
+  try { Get-CodexUsagePersistedAccount | Out-Null; throw 'Account accepted another user ID.' }
+  catch { if ($_.Exception.Message -notmatch '不匹配') { throw } }
+  [IO.File]::WriteAllText($CodexUsagePersistedAccountConfigPath, $accountConfigText)
+  $legacyCipher = [Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($accountToken), $CodexUsagePersistedAccountEntropy, 'CurrentUser')
+  [IO.File]::WriteAllBytes($CodexUsagePersistedAccountTokenPath, $legacyCipher)
+  if ((Get-CodexUsagePersistedAccount).Token -ne $accountToken) { throw 'Legacy account credential did not load.' }
   if ($storedAccount.Token -ne $accountToken -or $storedAccount.UserId -ne '10530' -or $storedAccount.BaseUrl -ne 'https://example.test') {
     throw 'DPAPI account round-trip returned incorrect data.'
   }
@@ -93,6 +124,7 @@ try {
   $CodexUsagePersistedAccountConfigPath = $oldAccountConfigPath
   $CodexUsagePersistedAccountTokenPath = $oldAccountTokenPath
   $CodexUsageAccountCounterPath = $oldAccountCounterPath
+  $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT = $oldEnvSnapshot
   if ($null -ne $oldEnvKey) { $env:CODEX_USAGE_API_KEY = $oldEnvKey } else { Remove-Item Env:CODEX_USAGE_API_KEY -ErrorAction SilentlyContinue }
   if ($null -ne $oldEnvConfig) { $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $oldEnvConfig } else { Remove-Item Env:CODEX_USAGE_PROVIDER_CONFIG_PATH -ErrorAction SilentlyContinue }
   if ($null -ne $oldEnvAccountToken) { $env:CODEX_USAGE_ACCOUNT_TOKEN = $oldEnvAccountToken } else { Remove-Item Env:CODEX_USAGE_ACCOUNT_TOKEN -ErrorAction SilentlyContinue }

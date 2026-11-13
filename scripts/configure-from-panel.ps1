@@ -11,6 +11,13 @@ function Write-PanelResult {
   [Console]::Out.WriteLine(($result | ConvertTo-Json -Depth 12 -Compress))
 }
 
+function Confirm-SavedCredentialDestination($Stored, [string]$BaseUrl, [string]$UserId = '') {
+  if (-not $Stored) { throw '请输入凭据。' }
+  if ($Stored.BaseUrl -cne $BaseUrl -or ($UserId -and $Stored.UserId -cne $UserId)) {
+    throw '服务地址或账户已更改，请重新输入凭据。'
+  }
+}
+
 function Get-SafeConfigurationSummary {
   $account = [ordered]@{ configured = (Test-CodexUsagePersistedAccount); baseUrl = 'https://www.cctq.ai'; userId = ''; baselineConfigured = $false; initialTokens = '0' }
   if (Test-Path -LiteralPath $CodexUsagePersistedAccountConfigPath -PathType Leaf) {
@@ -52,13 +59,13 @@ try {
     $plainCredential = [string]$request.token
     if ([string]::IsNullOrWhiteSpace($plainCredential)) {
       $stored = Get-CodexUsagePersistedAccount
-      if (-not $stored) { throw 'Access Token 不能为空。' }
+      Confirm-SavedCredentialDestination $stored $baseUrl $userId
       $plainCredential = $stored.Token
     }
     if ($plainCredential.Length -gt 16384 -or $plainCredential -notmatch '^[\x21-\x7E]+$') { throw 'Access Token 必须是单行 ASCII 文本。' }
     $headers = @{ Authorization = "Bearer $plainCredential"; 'New-Api-User' = $userId; Accept = 'application/json' }
     try {
-      $response = Invoke-RestMethod -Uri "$baseUrl/api/user/self" -Headers $headers -Method Get -TimeoutSec 15
+      $response = Invoke-RestMethod -Uri "$baseUrl/api/user/self" -Headers $headers -Method Get -TimeoutSec 15 -MaximumRedirection 0 -ErrorAction Stop
       if ($null -eq $response.data) { throw 'missing-account-data' }
     } catch {
       throw 'API 账户验证失败，请检查 Base URL、用户 ID 和 Access Token。'
@@ -70,16 +77,16 @@ try {
     Save-CodexUsagePersistedAccount -Token $plainCredential -UserId $userId -BaseUrl $baseUrl
     Write-PanelResult -Ok $true -Message 'API 账户已安全保存。' -Configuration (Get-SafeConfigurationSummary)
   } elseif ([string]$request.type -eq 'api-key') {
-    $plainCredential = [string]$request.apiKey
-    if ([string]::IsNullOrWhiteSpace($plainCredential)) {
-      $stored = Get-CodexUsagePersistedProvider
-      if (-not $stored) { throw 'API Key 不能为空。' }
-      $plainCredential = $stored.ApiKey
-    }
-    if ($plainCredential.Length -gt 16384 -or $plainCredential -notmatch '^[\x21-\x7E]+$') { throw 'API Key 必须是单行 ASCII 文本。' }
     $source = $request.provider
     if ($null -eq $source) { throw 'Provider 配置不能为空。' }
     $baseUrl = Resolve-CodexUsageCredentialBaseUrl -BaseUrl ([string]$source.baseUrl) -Label 'API Provider Base URL'
+    $plainCredential = [string]$request.apiKey
+    if ([string]::IsNullOrWhiteSpace($plainCredential)) {
+      $stored = Get-CodexUsagePersistedProvider
+      Confirm-SavedCredentialDestination $stored $baseUrl
+      $plainCredential = $stored.ApiKey
+    }
+    if ($plainCredential.Length -gt 16384 -or $plainCredential -notmatch '^[\x21-\x7E]+$') { throw 'API Key 必须是单行 ASCII 文本。' }
     $statusPath = [string]$source.statusPath
     $provider = [ordered]@{
       schemaVersion = 1

@@ -21,7 +21,8 @@ if (-not $env:CODEX_USAGE_ACCOUNT_TOKEN -or -not $env:CODEX_USAGE_ACCOUNT_USER_I
   throw '请先配置 API 账户访问令牌。'
 }
 
-$baseUrl = $(if ($env:CODEX_USAGE_ACCOUNT_BASE_URL) { $env:CODEX_USAGE_ACCOUNT_BASE_URL } else { 'https://www.cctq.ai' }).TrimEnd('/')
+$accountUrl = if ($env:CODEX_USAGE_ACCOUNT_BASE_URL) { $env:CODEX_USAGE_ACCOUNT_BASE_URL } else { 'https://www.cctq.ai' }
+$baseUrl = Resolve-CodexUsageCredentialBaseUrl -BaseUrl $accountUrl -Label 'API 账户 BaseUrl'
 $headers = @{ Authorization = "Bearer $env:CODEX_USAGE_ACCOUNT_TOKEN"; 'New-Api-User' = $env:CODEX_USAGE_ACCOUNT_USER_ID; Accept = 'application/json' }
 $requestedPageSize = 1000
 $maximumPages = 100
@@ -29,7 +30,7 @@ $maximumPages = 100
 function Invoke-AccountLogPage([int]$Page) {
   for ($attempt = 1; $attempt -le 3; $attempt++) {
     try {
-      return Invoke-RestMethod -Uri "$baseUrl/api/log/self?p=$Page&size=$requestedPageSize" -Headers $headers -Method Get -TimeoutSec 20
+      return Invoke-RestMethod -Uri "$baseUrl/api/log/self?p=$Page&size=$requestedPageSize" -Headers $headers -Method Get -TimeoutSec 20 -MaximumRedirection 0 -ErrorAction Stop
     } catch {
       if ($attempt -eq 3) { throw }
       Start-Sleep -Milliseconds (500 * $attempt)

@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 async function recordFailure(statePath, version, message) {
   const state = JSON.parse(await fs.readFile(statePath, "utf8"));
   // Preserve the installer's own diagnostic and any newer update state.
-  if (state.status !== "installing" || state.latestVersion !== version) return state;
+  if (!["installing", "waiting-ui"].includes(state.status) || state.latestVersion !== version) return state;
   const value = { ...state, status: "error", error: message.slice(0, 500) };
   const temporary = `${statePath}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -31,7 +31,10 @@ export async function runAutoUpdateWorker({ statePath, version, powerShell, args
     }
   });
   const state = JSON.parse(await fs.readFile(statePath, "utf8"));
-  if (!result.error && result.code === 0 && state.status === "installed" && state.currentVersion === version) return true;
+  if (!result.error && result.code === 0) {
+    if (state.status === "installed" && state.currentVersion === version) return true;
+    if (state.status === "waiting-ui" && state.installedVersion === version && state.latestVersion === version) return true;
+  }
   const message = result.error
     ? `Update installer could not start: ${result.error}`
     : `Update installer exited with ${result.signal ? `signal ${result.signal}` : `code ${result.code}`}${result.code === 0 ? " without confirming installation" : ""}.`;

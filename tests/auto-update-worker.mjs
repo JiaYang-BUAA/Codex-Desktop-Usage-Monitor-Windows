@@ -16,7 +16,7 @@ const pending = { schemaVersion: 1, status: "installing", currentVersion: "3.1.6
 const writeState = value => fs.writeFile(statePath, JSON.stringify(value));
 const readState = async () => JSON.parse(await fs.readFile(statePath, "utf8"));
 try {
-  for (const scenario of ["zero-without-state", "nonzero", "signal", "missing-executable", "script-error", "installed", "newer-state"]) {
+  for (const scenario of ["zero-without-state", "nonzero", "signal", "missing-executable", "script-error", "installed", "waiting-ui", "newer-state"]) {
     await writeState(pending);
     const result = await runAutoUpdateWorker({
       statePath, version, powerShell: "fixture", args: ["fixture script.ps1"],
@@ -28,6 +28,7 @@ try {
         setImmediate(async () => {
           if (scenario === "script-error") await writeState({ ...pending, status: "error", error: "SHA-256 failed" });
           if (scenario === "installed") await writeState({ status: "installed", currentVersion: version });
+          if (scenario === "waiting-ui") await writeState({ ...pending, status: "waiting-ui", installedVersion: version });
           if (scenario === "newer-state") await writeState({ ...pending, latestVersion: "9.8.8" });
           if (scenario === "missing-executable") child.emit("error", new Error("ENOENT"));
           child.emit("close", ["nonzero", "script-error"].includes(scenario) ? 17 : 0, scenario === "signal" ? "SIGTERM" : null);
@@ -35,9 +36,10 @@ try {
         return child;
       },
     });
-    assert.equal(result, scenario === "installed");
+    assert.equal(result, ["installed", "waiting-ui"].includes(scenario));
     const state = await readState();
     if (scenario === "installed") assert.equal(state.status, "installed");
+    else if (scenario === "waiting-ui") assert.equal(state.currentVersion, pending.currentVersion);
     else if (scenario === "newer-state") assert.equal(state.latestVersion, "9.8.8");
     else {
       assert.equal(state.status, "error");
@@ -54,7 +56,8 @@ try {
   if (process.platform === "win32") {
     const updaterUrl = new URL("../scripts/auto-updater.mjs", import.meta.url).href;
     const workerPath = fileURLToPath(new URL("../scripts/auto-update-worker.mjs", import.meta.url));
-    for (const shell of ["pwsh.exe", "powershell.exe"]) {
+    const shells = process.argv.includes("--skip-legacy-runtime") ? ["pwsh.exe"] : ["pwsh.exe", "powershell.exe"];
+    for (const shell of shells) {
       const fixture = path.join(root, shell);
       const fixtureState = path.join(fixture, "state", "update-state.json");
       await fs.mkdir(path.join(fixture, "scripts"), { recursive: true });
@@ -99,7 +102,7 @@ if(result.status !== 'installing') process.exitCode=1;`;
       assert.ok(files.some(name => name.endsWith(".executed")));
     }
   }
-  console.log("PASS: update worker failure states and installation after parent exit (both Windows PowerShell runtimes).");
+  console.log("PASS: update worker failure states and installation after parent exit.");
 } finally {
   await fs.rm(root, { recursive: true, force: true });
 }

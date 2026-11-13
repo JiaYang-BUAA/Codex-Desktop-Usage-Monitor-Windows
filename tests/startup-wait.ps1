@@ -52,6 +52,56 @@ Assert-Startup ((Get-CodexUsageStartupPhase $false $true) -eq 'failed') 'A previ
 $startupTestRoot = Join-Path ([IO.Path]::GetTempPath()) ('codex-startup-wait-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $startupTestRoot | Out-Null
 try {
+  & {
+    $queueExe = Join-Path $startupTestRoot 'codex.exe'
+    [IO.File]::WriteAllBytes($queueExe, [byte[]](0, 1))
+    $desktopProcess = [pscustomobject]@{Name='ChatGPT.exe'; ProcessId=100; ParentProcessId=1; CommandLine='ChatGPT.exe'}
+    $appServer = [pscustomobject]@{Name='codex.exe'; ProcessId=110; ParentProcessId=100; CommandLine='codex.exe -c feature=true app-server --analytics-default-enabled'; ExecutablePath=$queueExe}
+    $otherInstance = [pscustomobject]@{Name='codex.exe'; ProcessId=120; ParentProcessId=200; CommandLine='codex.exe app-server'; ExecutablePath=$queueExe}
+    $proxy = [pscustomobject]@{Name='codex.exe'; ProcessId=130; ParentProcessId=100; CommandLine='codex.exe app-server proxy'; ExecutablePath=$queueExe}
+    $unrelated = [pscustomobject]@{Name='codex.exe'; ProcessId=140; ParentProcessId=100; CommandLine='codex.exe exec-server app-server'; ExecutablePath=$queueExe}
+    $connection = [pscustomobject]@{LocalAddress='127.0.0.1'; OwningProcess=100}
+    $processesFixture = @($desktopProcess, $appServer, $otherInstance, $proxy, $unrelated)
+    function Get-CimInstance($ClassName, $Filter, $Namespace, $ErrorAction) {
+      if ($ClassName -eq 'MSFT_NetTCPConnection') {
+        Assert-Startup ($Filter -eq 'LocalPort = 9336 AND State = 2') 'Queue selection must inspect the selected port.'
+        return $connection
+      }
+      return $processesFixture
+    }
+    $originalRuntime = $env:CODEX_APP_RUNTIME_CLI_PATH
+    try {
+      $env:CODEX_APP_RUNTIME_CLI_PATH = $null
+      Assert-Startup ((Resolve-CodexUsageDesktopQueueCliPath -Port 9336) -eq $queueExe) 'A normal shortcut must select the CLI serving its connected desktop.'
+      $otherInstance.ParentProcessId = 100
+      Assert-Startup (-not (Resolve-CodexUsageDesktopQueueCliPath 9336)) 'Multiple matching app servers are ambiguous.'
+      $otherInstance.ParentProcessId = 200
+      $appServer.ExecutablePath = Join-Path $startupTestRoot 'missing\codex.exe'
+      Assert-Startup (-not (Resolve-CodexUsageDesktopQueueCliPath 9336)) 'A missing desktop CLI must not fall back to another executable.'
+      $appServer.ExecutablePath = $queueExe
+      $connection.OwningProcess = 999
+      Assert-Startup (-not (Resolve-CodexUsageDesktopQueueCliPath 9336)) 'A different listener cannot select the desktop CLI.'
+      $connection = $null
+      Assert-Startup (-not (Resolve-CodexUsageDesktopQueueCliPath 9336)) 'Discovery must tolerate a desktop that already closed.'
+    } finally { $env:CODEX_APP_RUNTIME_CLI_PATH = $originalRuntime }
+  }
+  & {
+    $CodexUsageStateRoot = $startupTestRoot
+    $CodexUsageStatePath = Join-Path $startupTestRoot 'state.json'
+    Write-CodexUsageState @{startupPhase='waiting-ui'}
+    $bytes = [IO.File]::ReadAllBytes($CodexUsageStatePath)
+    Assert-Startup ($bytes[0] -eq 0x7B) 'Startup state must begin with a JSON object, without a UTF-8 BOM.'
+    $restorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\restore-monitor.ps1'
+    $restoreAst = [Management.Automation.Language.Parser]::ParseFile($restorePath, [ref]$null, [ref]$null)
+    # Evaluate the cleanup body against fixture state and mocked process/CDP boundaries.
+    $body = @($restoreAst.EndBlock.Statements | Where-Object { $_.Extent.Text -match '^(if \(Test-CodexUsageCdpPort|foreach|Remove-Item|if \(Test-Path|Write-Host)' })
+    function Test-CodexUsageCdpPort { return $false }
+    function Get-CodexUsageInjectorProcesses { return @() }
+    function Stop-Process { throw 'Unexpected process termination.' }
+    $Port = 9335
+    & ([scriptblock]::Create(($body.Extent.Text -join [Environment]::NewLine)))
+    Assert-Startup (-not (Test-Path -LiteralPath $CodexUsageStatePath)) 'Restore should remove its state under strict mode.'
+  }
   $emptyPath = Join-Path $startupTestRoot 'empty.log'
   $outputPath = Join-Path $startupTestRoot 'stdout.log'
   [IO.File]::WriteAllText($emptyPath, '')
@@ -109,23 +159,24 @@ $parseTokens = $null
 $parseErrors = $null
 $startupAst = [Management.Automation.Language.Parser]::ParseFile($startupSource, [ref]$parseTokens, [ref]$parseErrors)
 Assert-Startup ($parseErrors.Count -eq 0) 'Startup script must parse.'
-# Exercise only the shell-selection statements, with command discovery mocked.
-# This never starts a monitor or imports the user's stored provider credentials.
+# Stable hosts survive the desktop app's package upgrades.
 & {
-  $originalPowerShell = $env:CODEX_USAGE_POWERSHELL_PATH
-  $shellSelection = [scriptblock]::Create((@($startupAst.EndBlock.Statements | Where-Object {
-    $_.Extent.Text -match '^\$powerShellCommand\s*=' -or $_.Extent.Text -match '^if\s*\(\$powerShellCommand\)'
-  } | ForEach-Object { $_.Extent.Text }) -join "`n"))
-  function Get-Command { param($Name, $ErrorAction) return $script:availableTestShell }
-  try {
-    $script:availableTestShell = $null
-    $env:CODEX_USAGE_POWERSHELL_PATH = 'stale-pwsh.exe'
-    . $shellSelection
-    Assert-Startup ($env:CODEX_USAGE_POWERSHELL_PATH -eq (Get-CodexUsageWindowsPowerShellPath)) 'Without PowerShell 7, the updater must receive the real Windows PowerShell path.'
-    $script:availableTestShell = [pscustomobject]@{ Source = 'C:\test\PowerShell 7\pwsh.exe' }
-    . $shellSelection
-    Assert-Startup ($env:CODEX_USAGE_POWERSHELL_PATH -eq $script:availableTestShell.Source) 'An available PowerShell 7 should remain preferred.'
-  } finally { $env:CODEX_USAGE_POWERSHELL_PATH = $originalPowerShell }
+  $stable = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+  $legacy = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+  $private = [pscustomobject]@{ Source = 'C:\Program Files\WindowsApps\OpenAI.Codex_1.2.0\app\pwsh.exe' }
+  $portable = [pscustomobject]@{ Source = 'C:\Tools\pwsh.exe' }
+  $available = @($private, $portable)
+  $hasStable = $true
+  function Test-Path($LiteralPath, $PathType) { return $LiteralPath -eq $stable -and $hasStable }
+  function Get-Command($Name, [switch]$All, $CommandType, $ErrorAction) { return $available }
+  function Get-CodexUsageWindowsPowerShellPath { return $legacy }
+  Assert-Startup ((Resolve-CodexUsagePowerShellPath) -eq $stable) 'Standard PowerShell 7 must win over a private app shell.'
+  $hasStable = $false
+  Assert-Startup ((Resolve-CodexUsagePowerShellPath) -eq $portable.Source) 'Portable PowerShell should survive a private PATH entry.'
+  $available = @($private)
+  Assert-Startup ((Resolve-CodexUsagePowerShellPath) -eq $legacy) 'Only private hosts should fall back to system PowerShell.'
+  $available = @()
+  Assert-Startup ((Resolve-CodexUsagePowerShellPath) -eq $legacy) 'No PowerShell 7 should fall back to system PowerShell.'
 }
 $probeAst = $startupAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-MonitorInjection' }, $true)
 . ([scriptblock]::Create($probeAst.Extent.Text))

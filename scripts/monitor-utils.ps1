@@ -65,6 +65,17 @@ function Invoke-CodexUsageProcessWithTimeout {
   }
 }
 
+# Existing DPAPI files contain a single printable ASCII credential. A newline
+# distinguishes the bound format even if a legacy token happens to contain JSON.
+function Read-CodexUsageBoundCredential([byte[]]$PlainBytes, [string]$BaseUrl, [string]$UserId = '') {
+  $parts = [Text.Encoding]::UTF8.GetString($PlainBytes).Split([char]10)
+  if ($parts.Count -eq 1 -and $parts[0] -match '^[\x21-\x7E]+$') { return $parts[0] }
+  if ($parts.Count -ne 3 -or $parts[0] -cne $BaseUrl -or $parts[1] -cne $UserId -or $parts[2] -notmatch '^[\x21-\x7E]+$') {
+    throw '凭据与当前配置不匹配，请重新输入凭据。'
+  }
+  return $parts[2]
+}
+
 function Save-CodexUsagePersistedProvider {
   [CmdletBinding()]
   param(
@@ -83,16 +94,18 @@ function Save-CodexUsagePersistedProvider {
   $plainBytes = $null
   $protectedBytes = $null
   try {
-    $plainBytes = [Text.Encoding]::UTF8.GetBytes($ApiKey)
+    $configJson = [IO.File]::ReadAllText($resolvedConfig)
+    $baseUrl = Resolve-CodexUsageCredentialBaseUrl ([string]($configJson | ConvertFrom-Json).baseUrl)
+    $plainBytes = [Text.Encoding]::UTF8.GetBytes("$baseUrl`n`n$ApiKey")
     $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
       $plainBytes,
       $CodexUsagePersistedProviderEntropy,
       [Security.Cryptography.DataProtectionScope]::CurrentUser
     )
-    [IO.File]::WriteAllBytes($temporaryConfig, [IO.File]::ReadAllBytes($resolvedConfig))
+    [IO.File]::WriteAllText($temporaryConfig, $configJson, $CodexUsageUtf8)
     [IO.File]::WriteAllBytes($temporaryKey, $protectedBytes)
-    Move-Item -LiteralPath $temporaryConfig -Destination $CodexUsagePersistedProviderConfigPath -Force
     Move-Item -LiteralPath $temporaryKey -Destination $CodexUsagePersistedProviderKeyPath -Force
+    Move-Item -LiteralPath $temporaryConfig -Destination $CodexUsagePersistedProviderConfigPath -Force
   } finally {
     Remove-Item -LiteralPath $temporaryConfig,$temporaryKey -Force -ErrorAction SilentlyContinue
     if ($plainBytes) { [Array]::Clear($plainBytes, 0, $plainBytes.Length) }
@@ -109,16 +122,19 @@ function Get-CodexUsagePersistedProvider {
   $protectedBytes = $null
   $plainBytes = $null
   try {
+    $configJson = [IO.File]::ReadAllText($CodexUsagePersistedProviderConfigPath)
+    $baseUrl = Resolve-CodexUsageCredentialBaseUrl ([string]($configJson | ConvertFrom-Json).baseUrl)
     $protectedBytes = [IO.File]::ReadAllBytes($CodexUsagePersistedProviderKeyPath)
     $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect(
       $protectedBytes,
       $CodexUsagePersistedProviderEntropy,
       [Security.Cryptography.DataProtectionScope]::CurrentUser
     )
-    $apiKey = [Text.Encoding]::UTF8.GetString($plainBytes)
-    if ([string]::IsNullOrWhiteSpace($apiKey)) { throw '持久化 API key 为空，请重新运行配置命令。' }
+    $apiKey = Read-CodexUsageBoundCredential $plainBytes $baseUrl
     return [pscustomobject]@{
       ApiKey = $apiKey
+      BaseUrl = $baseUrl
+      ConfigJson = $configJson
       ConfigPath = [IO.Path]::GetFullPath($CodexUsagePersistedProviderConfigPath)
     }
   } catch {
@@ -136,6 +152,7 @@ function Import-CodexUsagePersistedProvider {
   if (-not $stored) { return $false }
   $env:CODEX_USAGE_API_KEY = $stored.ApiKey
   $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $stored.ConfigPath
+  $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT = $stored.ConfigJson
   return $true
 }
 
@@ -192,7 +209,7 @@ function Save-CodexUsagePersistedAccount {
   $plainBytes = $null
   $protectedBytes = $null
   try {
-    $plainBytes = [Text.Encoding]::UTF8.GetBytes($Token)
+    $plainBytes = [Text.Encoding]::UTF8.GetBytes("$normalizedBaseUrl`n$UserId`n$Token")
     $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
       $plainBytes,
       $CodexUsagePersistedAccountEntropy,
@@ -201,8 +218,8 @@ function Save-CodexUsagePersistedAccount {
     $configJson = [ordered]@{ schemaVersion = 1; baseUrl = $normalizedBaseUrl; userId = $UserId } | ConvertTo-Json -Compress
     [IO.File]::WriteAllText($temporaryConfig, $configJson, $CodexUsageUtf8)
     [IO.File]::WriteAllBytes($temporaryToken, $protectedBytes)
-    Move-Item -LiteralPath $temporaryConfig -Destination $CodexUsagePersistedAccountConfigPath -Force
     Move-Item -LiteralPath $temporaryToken -Destination $CodexUsagePersistedAccountTokenPath -Force
+    Move-Item -LiteralPath $temporaryConfig -Destination $CodexUsagePersistedAccountConfigPath -Force
   } finally {
     Remove-Item -LiteralPath $temporaryConfig,$temporaryToken -Force -ErrorAction SilentlyContinue
     if ($plainBytes) { [Array]::Clear($plainBytes, 0, $plainBytes.Length) }
@@ -230,8 +247,7 @@ function Get-CodexUsagePersistedAccount {
       $CodexUsagePersistedAccountEntropy,
       [Security.Cryptography.DataProtectionScope]::CurrentUser
     )
-    $token = [Text.Encoding]::UTF8.GetString($plainBytes)
-    if ([string]::IsNullOrWhiteSpace($token)) { throw '持久化 API 账户令牌为空。' }
+    $token = Read-CodexUsageBoundCredential $plainBytes $normalizedBaseUrl ([string]$config.userId)
     return [pscustomobject]@{ Token = $token; UserId = [string]$config.userId; BaseUrl = $normalizedBaseUrl }
   } catch {
     throw "无法读取持久化 API 账户凭据，请重新运行配置命令。$($_.Exception.Message)"
@@ -352,6 +368,19 @@ function Get-CodexUsageWindowsPowerShellPath {
     return [IO.Path]::GetFullPath($windowsPowerShell)
   }
   return $null
+}
+
+function Resolve-CodexUsagePowerShellPath {
+  $stable = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+  if (Test-Path -LiteralPath $stable -PathType Leaf) { return $stable }
+  foreach ($command in @(Get-Command pwsh.exe -All -CommandType Application -ErrorAction SilentlyContinue)) {
+    if ($command -and $command.Source -notmatch '(?i)[\\/]WindowsApps[\\/]OpenAI\.Codex[^\\/]*[\\/]') {
+      return $command.Source
+    }
+  }
+  $legacy = Get-CodexUsageWindowsPowerShellPath
+  if ($legacy) { return $legacy }
+  throw '找不到可用于启动监视器的 PowerShell。'
 }
 
 function Get-CodexUsageAppPackageViaWindowsPowerShell {
@@ -481,15 +510,17 @@ function Resolve-CodexUsageCliPath {
   param([string]$DesktopPath)
 
   $command = Get-Command codex.exe -ErrorAction SilentlyContinue
-  $package = Get-CodexUsageAppPackage
-  $candidates = [Collections.Generic.List[string]]::new()
   foreach ($candidate in @(
     $env:CODEX_USAGE_CODEX_PATH,
     $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs\OpenAI Codex CLI\codex.exe' }),
-    $(if ($command) { $command.Source } else { $null }),
-    $(if ($package) { Join-Path $package.InstallLocation 'app\resources\codex.exe' } else { $null })
+    $(if ($command) { $command.Source })
   ) | Where-Object { $_ }) {
-    try { [void]$candidates.Add([IO.Path]::GetFullPath([string]$candidate)) } catch {}
+    if (Test-Path -LiteralPath $candidate -PathType Leaf -ErrorAction SilentlyContinue) { return [IO.Path]::GetFullPath($candidate) }
+  }
+  $package = Get-CodexUsageAppPackage
+  if ($package) {
+    $bundled = Join-Path $package.InstallLocation 'app\resources\codex.exe'
+    if (Test-Path -LiteralPath $bundled -PathType Leaf) { return [IO.Path]::GetFullPath($bundled) }
   }
 
   $desktop = if ($DesktopPath) { $DesktopPath } else { Resolve-CodexUsageNonStoreDesktopPath }
@@ -502,13 +533,10 @@ function Resolve-CodexUsageCliPath {
       (Join-Path $installDirectory 'codex.exe'),
       (Join-Path $desktopDirectory 'codex.exe')
     )) {
-      [void]$candidates.Add($candidate)
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [IO.Path]::GetFullPath($candidate) }
     }
   }
 
-  foreach ($candidate in @($candidates | Select-Object -Unique)) {
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) { return [IO.Path]::GetFullPath($candidate) }
-  }
   return $null
 }
 
@@ -516,6 +544,35 @@ function Test-CodexUsageWindowsAppsPath([string]$Path) {
   if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
   try { $fullPath = [IO.Path]::GetFullPath($Path) } catch { return $false }
   return $fullPath -match '(?i)(?:^|[\\/])WindowsApps(?:[\\/]|$)'
+}
+
+# The usage reader may use an independently installed CLI. Queueing must use
+# the CLI serving the connected desktop, even when launched from a shortcut.
+function Resolve-CodexUsageDesktopQueueCliPath([int]$Port) {
+  try {
+    $owners = @(Get-CimInstance -Namespace root/StandardCimv2 -ClassName MSFT_NetTCPConnection -Filter "LocalPort = $Port AND State = 2" -ErrorAction Stop |
+      Where-Object { $_.LocalAddress -in @('127.0.0.1', '::1') } | Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($owners.Count -ne 1) { return $null }
+    $owner = [int]$owners[0]
+    $processes = @(Get-CimInstance Win32_Process -Filter "ProcessId = $owner OR (ParentProcessId = $owner AND Name = 'codex.exe')" -ErrorAction Stop)
+    $desktop = @($processes | Where-Object { $_.ProcessId -eq $owner -and $_.Name -eq 'ChatGPT.exe' -and $_.CommandLine -and $_.CommandLine -notmatch '(?:^|\s)--type(?:=|\s)' })
+    if ($desktop.Count -ne 1) { return $null }
+    # Match the CLI subcommand after the executable and global config flags.
+    # Another child (e.g. exec-server) can mention app-server as an argument.
+    $serverCommand = '^\s*(?:"[^"]+"|\S+)(?:\s+(?:-c|--config|--enable|--disable)\s+(?:"(?:[^"\\]|\\.)*"|\S+))*\s+app-server(?:\s+-|\s*$)'
+    $servers = @($processes | Where-Object {
+      $_.ParentProcessId -eq $owner -and $_.Name -eq 'codex.exe' -and $_.ExecutablePath -and
+      [IO.Path]::GetFileName($_.ExecutablePath) -eq 'codex.exe' -and
+      $_.CommandLine -match $serverCommand -and
+      $_.CommandLine -notmatch '(?:^|\s)(?:proxy|daemon|generate-ts|generate-json-schema|help)(?=\s|$)'
+    })
+    if ($servers.Count -ne 1) { return $null }
+    return Resolve-CodexUsageRunnableCliPath -CliPath $servers[0].ExecutablePath
+  } catch {
+    # Queue support is optional. Normal monitoring still works without CIM
+    # permission, or if the desktop's process changed during discovery.
+    return $null
+  }
 }
 
 function Resolve-CodexUsageRunnableCliPath {
@@ -978,7 +1035,23 @@ function Write-CodexUsageState($State) {
   New-Item -ItemType Directory -Force -Path $CodexUsageStateRoot | Out-Null
   $temporary = "$CodexUsageStatePath.$PID.tmp"
   try {
-    $State | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $temporary -Encoding utf8
+    [IO.File]::WriteAllText($temporary, ($State | ConvertTo-Json -Depth 8), $CodexUsageUtf8)
     Move-Item -LiteralPath $temporary -Destination $CodexUsageStatePath -Force
   } finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+}
+
+function Complete-CodexUsagePendingUpdate([string]$InjectorPath) {
+  $updatePath = Join-Path $CodexUsageStateRoot 'update-state.json'
+  if (-not (Test-Path -LiteralPath $updatePath -PathType Leaf)) { return }
+  $temporary = "$updatePath.$PID.tmp"
+  try {
+    $update = Get-Content -LiteralPath $updatePath -Raw | ConvertFrom-Json
+    if ($update.status -ne 'waiting-ui' -or $update.installedVersion -ne $CodexUsageVersion -or $update.installedInjectorPath -ne $InjectorPath) { return }
+    $update.status = 'installed'
+    $update.currentVersion = $CodexUsageVersion
+    $update.checkedAt = (Get-Date).ToUniversalTime().ToString('o')
+    [IO.File]::WriteAllText($temporary, ($update | ConvertTo-Json), $CodexUsageUtf8)
+    Move-Item -LiteralPath $temporary -Destination $updatePath -Force
+  } catch { Write-Warning "更新状态记录失败：$($_.Exception.Message)" }
+  finally { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
 }

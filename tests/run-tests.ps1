@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param([switch]$SkipPackageTest)
+param([switch]$SkipPackageTest, [switch]$SkipLegacyRuntime)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -80,15 +80,24 @@ if ($LASTEXITCODE -ne 0) { throw 'Renderer lifecycle tests failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'UI settings persistence tests failed.' }
 & $node (Join-Path $root 'tests\auto-updater.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Automatic updater tests failed.' }
-& $node (Join-Path $root 'tests\auto-update-worker.mjs')
+$workerOptions = @()
+$archiveOptions = @()
+if ($SkipLegacyRuntime) {
+  $workerOptions += '--skip-legacy-runtime'
+  $archiveOptions += '-SkipLegacyRuntime'
+  Write-Host 'SKIP: Windows PowerShell 5.1 runtime tests.'
+}
+& $node (Join-Path $root 'tests\auto-update-worker.mjs') @workerOptions
 if ($LASTEXITCODE -ne 0) { throw 'Automatic update worker tests failed.' }
 & $node (Join-Path $root 'tests\auto-resume.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Quota recovery auto-resume tests failed.' }
 & $node (Join-Path $root 'tests\desktop-request.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Codex Desktop internal request submission tests failed.' }
+& $node (Join-Path $root 'tests\desktop-queue-integration.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Codex Desktop queue integration tests failed.' }
 & $node (Join-Path $root 'tests\auto-resume-integration.mjs')
 if ($LASTEXITCODE -ne 0) { throw 'Quota recovery auto-resume integration tests failed.' }
-& $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\auto-update.ps1')
+& $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\auto-update.ps1') @archiveOptions
 if ($LASTEXITCODE -ne 0) { throw 'Automatic update package validation tests failed.' }
 & $pwsh -NoLogo -NoProfile -File (Join-Path $root 'tests\provider-persistence.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Provider persistence tests failed.' }
@@ -371,7 +380,7 @@ if (-not $SkipPackageTest) {
     $packageNodeModules = Join-Path $packageRoot.FullName 'node_modules'
     try {
       New-Item -ItemType Junction -Path $packageNodeModules -Target $sourceNodeModules | Out-Null
-      & (Join-Path $packageRoot.FullName 'tests\run-tests.ps1') -SkipPackageTest
+      & (Join-Path $packageRoot.FullName 'tests\run-tests.ps1') -SkipPackageTest -SkipLegacyRuntime:$SkipLegacyRuntime
       if ($LASTEXITCODE -ne 0) { throw 'Release package self-test failed.' }
     } finally {
       if (Test-Path -LiteralPath $packageNodeModules) { [IO.Directory]::Delete($packageNodeModules) }

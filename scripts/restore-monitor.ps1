@@ -17,9 +17,7 @@ if (Test-CodexUsageCdpPort $Port) {
 foreach ($process in @(Get-CodexUsageInjectorProcesses)) {
   Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
 }
-foreach ($statePath in @($CodexUsageStatePath, $CodexUsageLegacyStatePath)) {
-  Remove-Item -LiteralPath $statePath -Force -ErrorAction SilentlyContinue
-}
+Remove-Item -LiteralPath $CodexUsageStatePath -Force -ErrorAction SilentlyContinue
 if (Test-Path -LiteralPath $CodexUsageStateRoot -PathType Container) {
   Get-ChildItem -LiteralPath $CodexUsageStateRoot -File -Filter 'injector-*.log' | Remove-Item -Force -ErrorAction SilentlyContinue
 }

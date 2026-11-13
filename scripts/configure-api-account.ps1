@@ -29,7 +29,7 @@ if ($Token -notmatch '^[\x21-\x7E]+$') { throw 'API 账户访问令牌必须是�
 $normalizedBaseUrl = Resolve-CodexUsageCredentialBaseUrl -BaseUrl $BaseUrl -Label 'API 账户 BaseUrl'
 $headers = @{ Authorization = "Bearer $Token"; 'New-Api-User' = $UserId; Accept = 'application/json' }
 try {
-  $response = Invoke-RestMethod -Uri "$normalizedBaseUrl/api/user/self" -Headers $headers -Method Get -TimeoutSec 15
+  $response = Invoke-RestMethod -Uri "$normalizedBaseUrl/api/user/self" -Headers $headers -Method Get -TimeoutSec 15 -MaximumRedirection 0 -ErrorAction Stop
   if ($null -eq $response.data) { throw '接口响应中没有账户数据。' }
 } catch {
   throw "API 账户凭据验证失败：$($_.Exception.Message)"

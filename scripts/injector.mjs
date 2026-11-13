@@ -3,10 +3,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { CombinedUsageClient } from "./usage-client.mjs";
-import { createUiSettingsStore, MAX_UI_SETTINGS_BYTES } from "./ui-settings.mjs";
+import { createUiSettingsStore, MAX_UI_SETTINGS_BYTES, mergeUiSettingsEdit } from "./ui-settings.mjs";
 import { createAutoUpdater } from "./auto-updater.mjs";
 import { AutoResumeController, createAutoResumeStateStore } from "./auto-resume.mjs";
-import { sendContinueThroughDesktop } from "./desktop-request.mjs";
+import { sendContinueThroughDesktop, sendContinueThroughQueue } from "./desktop-request.mjs";
 import { isMainCodexRendererTarget, syncWindowThread } from "./current-thread.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -299,8 +299,8 @@ function settingsSeedExpression(value) {
   return `(() => { const value = ${JSON.stringify(value)}; if (value && typeof value === "object") window[${JSON.stringify(PERSISTED_SETTINGS_KEY)}] = value; else delete window[${JSON.stringify(PERSISTED_SETTINGS_KEY)}]; return true; })()`;
 }
 
-function settingsApplyExpression(value) {
-  return `(() => window[${JSON.stringify(STATE_KEY)}]?.applySettings?.(${JSON.stringify(value)}) || false)()`;
+function settingsApplyExpression(value, ack) {
+  return `(() => window[${JSON.stringify(STATE_KEY)}]?.applySettings?.(${JSON.stringify(value)}, ${JSON.stringify(ack || null)}) || false)()`;
 }
 
 function configurationSeedExpression(value) {
@@ -320,9 +320,28 @@ async function registerSettingsBinding(session, settingsStore, onSettingsChanged
     if (name !== SETTINGS_BINDING || typeof payload !== "string" || Buffer.byteLength(payload, "utf8") > MAX_UI_SETTINGS_BYTES) return;
     let value;
     try { value = JSON.parse(payload); } catch { return; }
-    settingsStore.save(value)
-      .then((saved) => onSettingsChanged?.(saved))
-      .catch((error) => console.error(`[usage-monitor] UI settings save failed: ${error.message}`));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const edit = value.edit;
+    if (edit && (typeof edit.writer !== "string" || edit.writer.length > 80 || !Number.isSafeInteger(edit.seq) || edit.seq < 1)) return;
+    const ack = edit ? { writer: edit.writer, seq: edit.seq } : null;
+    session.settingsAck = ack;
+    const notifyFailure = (reason) => {
+      if (session.settingsAck !== ack) return;
+      session.settingsAck = { ...ack, error: reason };
+      session.evaluate(settingsApplyExpression(settingsStore.current, session.settingsAck)).catch(() => {});
+    };
+    try {
+      const merged = mergeUiSettingsEdit(settingsStore.current, value, edit);
+      const write = settingsStore.save(merged);
+      const changed = onSettingsChanged?.(settingsStore.current);
+      Promise.all([write, changed]).catch((error) => {
+        notifyFailure("settingsSaveFailed");
+        console.error(`[usage-monitor] UI settings update failed: ${error.message}`);
+      });
+    } catch (error) {
+      if (error instanceof RangeError && error.message === "autoResumeCapacity") notifyFailure("autoResumeCapacity");
+      else console.error(`[usage-monitor] UI settings merge failed: ${error.message}`);
+    }
   });
   await session.send("Runtime.addBinding", { name: SETTINGS_BINDING });
 }
@@ -366,12 +385,17 @@ function runPanelConfiguration(request) {
   });
 }
 
-function startMonitorReplacement(port) {
+function startMonitorReplacement(port, configuredType) {
   const powerShell = process.env.CODEX_USAGE_POWERSHELL_PATH || "pwsh.exe";
   const script = path.join(root, "scripts", "start-monitor.ps1");
+  const env = { ...process.env };
+  const replaced = configuredType === "api-key"
+    ? ["CODEX_USAGE_API_KEY", "CODEX_USAGE_PROVIDER_CONFIG_PATH", "CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT", "CODEX_USAGE_DISABLE_PERSISTED_PROVIDER"]
+    : ["CODEX_USAGE_ACCOUNT_TOKEN", "CODEX_USAGE_ACCOUNT_USER_ID", "CODEX_USAGE_ACCOUNT_BASE_URL", "CODEX_USAGE_DISABLE_PERSISTED_ACCOUNT"];
+  for (const key of replaced) delete env[key];
   try {
     const child = spawn(powerShell, ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Port", String(port), "-Replace"], {
-      detached: true, windowsHide: true, stdio: "ignore",
+      detached: true, windowsHide: true, stdio: "ignore", env,
     });
     child.unref();
   } catch {}
@@ -386,7 +410,7 @@ async function registerConfigurationBinding(session, port) {
     if (!/^[a-z0-9-]{8,64}$/.test(requestId) || !["api-account", "api-key"].includes(request?.type)) return;
     runPanelConfiguration(request).then(async (result) => {
       await session.evaluate(configurationResultExpression(requestId, result)).catch(() => {});
-      if (result?.ok) setTimeout(() => startMonitorReplacement(port), 750);
+      if (result?.ok) setTimeout(() => startMonitorReplacement(port, request.type), 750);
     }).catch(() => {});
   });
   await session.send("Runtime.addBinding", { name: CONFIGURATION_BINDING });
@@ -400,7 +424,7 @@ async function applyMonitor(session, usage, settingsStore) {
   if (usage) await session.evaluate(updateExpression(usage));
   if (settingsStore && !settingsStore.current) {
     const rendererSettings = await session.evaluate(readSettingsExpression());
-    if (rendererSettings) await settingsStore.save(rendererSettings);
+    if (rendererSettings && !settingsStore.current) await settingsStore.save(rendererSettings);
   }
   return result || { installed: false, mode: "monitor-only", anchoredToApproval: false };
 }
@@ -493,7 +517,7 @@ async function runWatch(options) {
     nextPendingCheckAt = Date.now() + 5000;
     try {
       const statePath = path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor", "state.json");
-      const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+      const state = JSON.parse((await fs.readFile(statePath, "utf8")).replace(/^\uFEFF/, ""));
       if (state.injectorPid !== process.pid || state.startupPhase !== "waiting-ui" || Date.now() - lastPendingPromotionAt < 30000) return;
       lastPendingPromotionAt = Date.now();
       const child = spawn(process.env.CODEX_USAGE_POWERSHELL_PATH || "pwsh.exe",
@@ -512,20 +536,24 @@ async function runWatch(options) {
   const autoResumeController = new AutoResumeController({
     store: autoResumeStore,
     onStatusChange: publishUsage,
-    sendContinue: async (pending) => {
-      let lastReason = "codex-desktop-unavailable";
+    sendContinue: async (pending, canSubmit) => {
+      const command = process.env.CODEX_USAGE_DESKTOP_QUEUE_CLI;
+      if (command && pending.turnId) {
+        const result = await sendContinueThroughQueue(command, pending, canSubmit);
+        if (result.reason !== "desktop-request-client-unavailable") return result;
+      }
       for (const entry of sessions.values()) {
+        if (!canSubmit()) return { ok: false, reason: "not-authorized" };
         if (entry.session.closed) continue;
         const result = await sendContinueThroughDesktop(entry.session, {
           threadId: pending.threadId,
           eventId: pending.eventId,
           message: pending.message,
-        });
+        }, canSubmit);
         if (result?.ok) return result;
-        lastReason = result?.reason || "desktop-send-failed";
-        if (lastReason !== "desktop-request-client-unavailable") return result;
+        if (result?.reason !== "desktop-request-client-unavailable") return result;
       }
-      return { ok: false, reason: lastReason };
+      return { ok: false, reason: "desktop-request-client-unavailable" };
     },
   });
   usageClient = new CombinedUsageClient({
@@ -571,13 +599,13 @@ async function runWatch(options) {
           .then(() => applyMonitor(session, usageForEntry(entry), settingsStore))
           .catch((error) => console.error(`[usage-monitor] renderer reload failed: ${error.message}`));
       });
-      await registerSettingsBinding(session, settingsStore, async () => {
-        const value = settingsStore.current;
-        await Promise.allSettled([...sessions.values()].map((entry) => entry.session.evaluate(settingsApplyExpression(value))));
+      await registerSettingsBinding(session, settingsStore, async (value) => {
+        const resumeChange = autoResumeController.settingsChanged(value);
         autoUpdater.settingsChanged(value);
         usageClient.setRefreshInterval(value?.refreshEvery30Seconds ? 30000 : 60000);
         usageClient.setAutoResumeThreadIds(Object.entries(value?.autoResumeThreads || {}).filter(([, config]) => config?.enabled === true).map(([id]) => id));
-        return autoResumeController.settingsChanged(value);
+        await Promise.all([resumeChange, Promise.allSettled([...sessions.values()].map((entry) =>
+          entry.session.evaluate(settingsApplyExpression(value, entry.session.settingsAck))))]);
       });
       await registerConfigurationBinding(session, options.port);
       await applyMonitor(session, usageForEntry(entry), settingsStore);

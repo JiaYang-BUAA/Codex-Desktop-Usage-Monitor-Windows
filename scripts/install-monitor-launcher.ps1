@@ -17,8 +17,7 @@ $monitorUtils = Join-Path $PSScriptRoot 'monitor-utils.ps1'
 $shortcutPath = Join-Path $DestinationDirectory $ShortcutName
 if (-not (Test-Path -LiteralPath $DestinationDirectory -PathType Container)) { throw "快捷方式目录不存在：$DestinationDirectory" }
 if (-not (Test-Path -LiteralPath $hiddenLauncher -PathType Leaf)) { throw "隐藏启动器不存在：$hiddenLauncher" }
-$pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
-if (-not $pwsh) { $pwsh = (Get-Command powershell.exe -ErrorAction Stop).Source }
+$pwsh = Resolve-CodexUsagePowerShellPath
 $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
 if (-not (Test-Path -LiteralPath $wscript -PathType Leaf)) { throw "Windows Script Host 不存在：$wscript" }
 
@@ -79,17 +78,15 @@ $IconCachePath = [IO.Path]::GetFullPath($IconCachePath)
 $iconPath = if ((Test-Path -LiteralPath $IconCachePath -PathType Leaf) -and (Get-Item -LiteralPath $IconCachePath).Length -ge 100) {
   $IconCachePath
 } else {
-  $iconCandidates = [Collections.Generic.List[string]]::new()
-  if ($IconSourcePath) { [void]$iconCandidates.Add($IconSourcePath) }
-  try {
-    $package = Get-CodexUsageAppPackage
-    if ($package) {
-      [void]$iconCandidates.Add((Join-Path $package.InstallLocation 'assets\Square44x44Logo.targetsize-256_altform-unplated.png'))
-      [void]$iconCandidates.Add((Join-Path $package.InstallLocation 'assets\Square150x150Logo.scale-200.png'))
-    }
-  } catch {}
-  foreach ($candidate in @($iconCandidates | Select-Object -Unique)) {
-    if (Export-CodexUsageShortcutIcon -SourcePath $candidate -DestinationPath $IconCachePath) { break }
+  if (-not ($IconSourcePath -and (Export-CodexUsageShortcutIcon -SourcePath $IconSourcePath -DestinationPath $IconCachePath))) {
+    try {
+      $package = Get-CodexUsageAppPackage
+      if ($package) {
+        foreach ($asset in @('assets\Square44x44Logo.targetsize-256_altform-unplated.png', 'assets\Square150x150Logo.scale-200.png')) {
+          if (Export-CodexUsageShortcutIcon -SourcePath (Join-Path $package.InstallLocation $asset) -DestinationPath $IconCachePath) { break }
+        }
+      }
+    } catch {}
   }
   if ((Test-Path -LiteralPath $IconCachePath -PathType Leaf) -and (Get-Item -LiteralPath $IconCachePath).Length -ge 100) {
     $IconCachePath

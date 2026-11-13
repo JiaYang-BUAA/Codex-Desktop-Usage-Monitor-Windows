@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param()
+param([switch]$SkipLegacyRuntime)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -31,7 +31,7 @@ try {
   # The launcher supports machines without PowerShell 7. Validate a real ZIP
   # with the actual Windows PowerShell runtime, not a mocked installer script.
   $windowsPowerShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-  if (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf) {
+  if (-not $SkipLegacyRuntime -and (Test-Path -LiteralPath $windowsPowerShell -PathType Leaf)) {
     $legacyArchivePath = Join-Path $testRoot 'windows-powershell.zip'
     New-TestArchive '9.8.7' $legacyArchivePath
     $legacyDigest = (Get-FileHash -LiteralPath $legacyArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -47,7 +47,8 @@ try {
     & (Join-Path $root 'scripts\auto-update.ps1') -ArchivePath $badArchivePath -ExpectedSha256 ('0' * 64) -Version '9.8.7' -ValidateOnly
   } catch { $rejected = $_.Exception.Message -match 'SHA-256' }
   if (-not $rejected) { throw 'A mismatched update SHA-256 was not rejected.' }
-  if ((Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'CodexUsageMonitor\update-state.json') -Raw | ConvertFrom-Json).status -ne 'error') {
+  $failedUpdate = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'CodexUsageMonitor\update-state.json') -Raw | ConvertFrom-Json
+  if ($failedUpdate.status -ne 'error' -or $failedUpdate.currentVersion -eq '9.8.7' -or $failedUpdate.latestVersion -ne '9.8.7') {
     throw 'Failed automatic update did not persist an error status.'
   }
 
@@ -72,26 +73,49 @@ try {
   } catch { $unsafeRejected = $_.Exception.Message -match 'Unsafe update archive path' }
   if (-not $unsafeRejected) { throw 'A Windows alternate-data-stream update path was not rejected.' }
 
-  # Evaluate only the restart command against a mock. Start-Process joins its
-  # argument array into a command line, so the script path must retain quotes.
-  & {
-    $tokens = $null
-    $errors = $null
-    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts\auto-update.ps1'), [ref]$tokens, [ref]$errors)
-    $restart = $ast.Find({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Start-Process' }, $true)
-    $installedRoot = Join-Path $testRoot 'installed with spaces\9.8.7'
-    $pwsh = 'mock-powershell'
-    $Port = 9345
-    function Start-Process {
-      param($FilePath, $ArgumentList, $WindowStyle)
-      if ($FilePath -ne 'mock-powershell' -or $WindowStyle -ne 'Hidden') { throw 'Update restart must stay hidden.' }
-      $index = [Array]::IndexOf($ArgumentList, '-File')
-      $expected = '"' + (Join-Path $installedRoot 'scripts\start-monitor.ps1') + '"'
-      if ($index -lt 0 -or $ArgumentList[$index + 1] -ne $expected) { throw 'Update restart lost the quoted script path.' }
-      if (($ArgumentList -join ' ') -notmatch '-Port 9345 -Replace$') { throw 'Update restart lost the selected port or replacement flag.' }
+  # Run the actual installer with a package whose launcher only writes fixture state.
+  $installRoot = Join-Path $testRoot 'installed with spaces'
+  $runtimeRoot = Join-Path $installRoot '9.8.7\scripts'
+  New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+  $stateRoot = Join-Path $env:LOCALAPPDATA 'CodexUsageMonitor'
+  $runtimeScript = @'
+param([int]$Port,[switch]$Replace)
+if ($Port -ne 9345 -or -not $Replace) { throw 'Incorrect restart arguments.' }
+if ($env:CODEX_USAGE_TEST_STARTUP -eq 'error') { throw 'Fixture startup failure.' }
+$runtime = @{ runtimeVersion = '9.8.7'; startupPhase = $env:CODEX_USAGE_TEST_STARTUP; injectorPid = 1234; injectorPath = (Join-Path $PSScriptRoot 'injector.mjs'); startupVerifiedAt = $null }
+if ($runtime.startupPhase -eq 'ready') { $runtime.startupVerifiedAt = (Get-Date).ToString('o') }
+[IO.File]::WriteAllText((Join-Path $env:LOCALAPPDATA 'CodexUsageMonitor\state.json'), ($runtime | ConvertTo-Json))
+'@
+  Set-Content -LiteralPath (Join-Path $runtimeRoot 'start-monitor.ps1') -Value $runtimeScript -Encoding utf8BOM
+  $originalFixturePhase = $env:CODEX_USAGE_TEST_STARTUP
+  try {
+    foreach ($phase in @('waiting-ui','ready','error')) {
+      $env:CODEX_USAGE_TEST_STARTUP = $phase
+      $archivePath = Join-Path $testRoot "$phase.zip"
+      New-TestArchive '9.8.7' $archivePath
+      $digest = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+      try {
+        & (Join-Path $root 'scripts\auto-update.ps1') -ArchivePath $archivePath -ExpectedSha256 $digest -Version '9.8.7' -Port 9345 -InstallRoot $installRoot -ShortcutDirectory $testRoot
+        if ($phase -eq 'error') { throw 'Fixture failure was ignored.' }
+      } catch { if ($phase -ne 'error' -or $_.Exception.Message -ne 'Fixture startup failure.') { throw } }
+      $update = Get-Content -LiteralPath (Join-Path $stateRoot 'update-state.json') -Raw | ConvertFrom-Json
+      $expectedStatus = if ($phase -eq 'ready') { 'installed' } else { $phase }
+      if ($update.status -ne $expectedStatus -or $update.installedVersion -ne '9.8.7') { throw "Incorrect update status after $phase." }
+      if (($update.currentVersion -eq '9.8.7') -ne ($phase -eq 'ready')) { throw "Incorrect active version after $phase." }
+      if ($phase -eq 'waiting-ui') {
+        & {
+          . (Join-Path $root 'scripts\monitor-utils.ps1')
+          $CodexUsageVersion = '9.8.7'
+          Complete-CodexUsagePendingUpdate (Join-Path $root 'scripts\injector.mjs')
+          $unrelated = Get-Content -LiteralPath (Join-Path $stateRoot 'update-state.json') -Raw | ConvertFrom-Json
+          if ($unrelated.status -ne 'waiting-ui') { throw 'Unrelated installation promoted the update.' }
+          Complete-CodexUsagePendingUpdate (Join-Path $runtimeRoot 'injector.mjs')
+          $promoted = Get-Content -LiteralPath (Join-Path $stateRoot 'update-state.json') -Raw | ConvertFrom-Json
+          if ($promoted.status -ne 'installed' -or $promoted.currentVersion -ne $CodexUsageVersion) { throw 'Verified startup did not promote the pending update.' }
+        }
+      }
     }
-    & ([scriptblock]::Create($restart.Extent.Text))
-  }
+  } finally { $env:CODEX_USAGE_TEST_STARTUP = $originalFixturePhase }
   Write-Host 'PASS: automatic update ZIP validation, digest verification, cleanup, and failure state.'
 } finally {
   $env:LOCALAPPDATA = $originalLocalAppData

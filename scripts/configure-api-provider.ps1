@@ -16,6 +16,7 @@ if ($LASTEXITCODE -ne 0) { throw 'API Provider 配置校验失败。' }
 
 $savedKey = $env:CODEX_USAGE_API_KEY
 $savedConfig = $env:CODEX_USAGE_PROVIDER_CONFIG_PATH
+$savedSnapshot = $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT
 $plainKey = $null
 $secureKey = $null
 try {
@@ -30,9 +31,15 @@ try {
   if ($plainKey -notmatch '^[\x21-\x7E]+$') { throw 'API key 必须是单行 ASCII 文本；请重新复制后再试。' }
   if (-not $SessionOnly) {
     Save-CodexUsagePersistedProvider -ConfigPath $resolvedConfig -ApiKey $plainKey
+    $stored = Get-CodexUsagePersistedProvider
+    $env:CODEX_USAGE_API_KEY = $stored.ApiKey
+    $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $stored.ConfigPath
+    $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT = $stored.ConfigJson
+  } else {
+    $env:CODEX_USAGE_API_KEY = $plainKey
+    $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $resolvedConfig
+    $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT = $null
   }
-  $env:CODEX_USAGE_API_KEY = $plainKey
-  $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $resolvedConfig
   try {
     & (Join-Path $PSScriptRoot 'start-monitor.ps1') -Port $Port -Replace
     if ($LASTEXITCODE -ne 0) { throw "API 用量监视器启动失败，退出码 $LASTEXITCODE。" }
@@ -48,6 +55,7 @@ try {
 } finally {
   if ($null -ne $savedKey) { $env:CODEX_USAGE_API_KEY = $savedKey } else { Remove-Item Env:CODEX_USAGE_API_KEY -ErrorAction SilentlyContinue }
   if ($null -ne $savedConfig) { $env:CODEX_USAGE_PROVIDER_CONFIG_PATH = $savedConfig } else { Remove-Item Env:CODEX_USAGE_PROVIDER_CONFIG_PATH -ErrorAction SilentlyContinue }
+  $env:CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT = $savedSnapshot
   $plainKey = $null
   $secureKey = $null
   if ($FromClipboard) { Set-Clipboard '' }

@@ -12,9 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $injector = Join-Path $PSScriptRoot 'injector.mjs'
 $node = Resolve-CodexUsageNodePath
-$powerShellCommand = Get-Command pwsh -ErrorAction SilentlyContinue
-if ($powerShellCommand) { $env:CODEX_USAGE_POWERSHELL_PATH = $powerShellCommand.Source }
-else { $env:CODEX_USAGE_POWERSHELL_PATH = Get-CodexUsageWindowsPowerShellPath }
+$env:CODEX_USAGE_POWERSHELL_PATH = Resolve-CodexUsagePowerShellPath
 $cliPath = Resolve-CodexUsageCliPath
 if ($cliPath) { $env:CODEX_USAGE_CODEX_PATH = Resolve-CodexUsageRunnableCliPath -CliPath $cliPath }
 try {
@@ -59,9 +57,11 @@ if (-not $activePort) {
 }
 if (-not $activePort) {
   if (-not $LaunchCodex) { throw '没有找到带 CDP 的 Codex。请先使用“Codex Usage Monitor”快捷方式启动 Codex。' }
-  if (@(Get-Process ChatGPT -ErrorAction SilentlyContinue).Count -gt 0) {
-    throw 'Codex 已经运行但未开放 CDP。请正常退出后再使用监视器启动器；脚本不会强制结束现有会话。'
+  $desktops = @(Get-CodexUsageDesktopProcesses)
+  if ($desktops.Count -gt 0) {
+    throw (Get-CodexUsageBlockedLaunchMessage $desktops)
   }
+  $Port = Resolve-CodexUsageAvailablePort -PreferredPort $Port
   $launch = Start-CodexUsagePackagedCodex -Port $Port
   if (-not (Wait-CodexUsageCdpPort -Port $Port -ProcessId $launch.ProcessId)) { throw "Codex 调试端口 $Port 未就绪（PID $($launch.ProcessId)）；启动进程已退出或超过 180 秒启动期限，可能存在启动残留。脚本未结束 Codex，请正常退出后重试。" }
   $activePort = $Port
@@ -82,6 +82,7 @@ if (-not $Replace) {
       $state | Add-Member -NotePropertyName startupPhase -NotePropertyValue 'ready' -Force
       $state | Add-Member -NotePropertyName startupVerifiedAt -NotePropertyValue (Get-Date).ToString('o') -Force
       Write-CodexUsageState $state
+      Complete-CodexUsagePendingUpdate $currentInjectorPath
       Stop-CodexUsagePreviousInjectors $owned $candidate.ProcessId $true
       Write-Host "Codex 用量监视器已在端口 $Port 运行（PID $($candidate.ProcessId)）。"
       return
@@ -91,6 +92,7 @@ if (-not $Replace) {
   }
 }
 
+$env:CODEX_USAGE_DESKTOP_QUEUE_CLI = Resolve-CodexUsageDesktopQueueCliPath -Port $Port
 if ($Foreground) {
   if ($owned.Count -gt 0) { throw '已有监视器后台正在运行；前台诊断不会结束它。如需更新，请使用不带 -Foreground 的 -Replace。' }
   & $node $injector --watch --port $Port --monitor-only
@@ -144,6 +146,7 @@ if (-not $verified) {
   Write-Host "监视器后台已启动，正在等待 Codex 界面加载（端口 $Port，PID $($daemon.Id)）。后台会继续重试，原监视器暂时保留。"
   return
 }
+Complete-CodexUsagePendingUpdate $currentInjectorPath
 Write-Host "Codex 用量监视器已启动：端口 $Port，PID $($daemon.Id)。"
 } finally {
   if ($mutexAcquired) { try { $mutex.ReleaseMutex() } catch {} }

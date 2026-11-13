@@ -151,7 +151,7 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
         if (rejectUsage) error = { message: "fixture token usage unavailable" };
       } else if (message.method === "account/read") {
         assert.equal(message.params.refreshToken, false, "polling must not force token rotation");
-        result = { account: { type: "chatgpt", planType: "prolite" }, requiresOpenaiAuth: true };
+        result = { account: { type: "chatgpt", planType: "prolite", ...cached.identity }, requiresOpenaiAuth: true };
       } else if (message.method === "config/read") {
         result = { config: { model_provider: "openai" } };
       }
@@ -173,9 +173,57 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
     assert.equal(children.length, 1, "overlapping refreshes share one connection");
     assert.equal(children[0].requests.filter((item) => item.method === "account/rateLimits/read").length, 1);
     assert.equal(remaining(), 59);
+    const firstKey = client.view.resumeAccountKey;
+    assert.match(firstKey, /^[0-9a-f]{64}$/);
+    const firstSince = client.view.resumeAccountSince;
+    assert.ok(firstSince > 0 && firstSince <= client.view.resumeQuota.observedAt);
+    assert.equal(client.view.resumeQuota.accountKey, firstKey);
+    assert.deepEqual(client.view.resumeQuota.windows, [
+      { id: "secondaryRemaining", remainingPercent: 59, resetsAt: 1793100277 },
+    ]);
+    for (const change of [
+      {limitId: "codex_bengalfox", primary: {usedPercent: 0, windowDurationMins: 300}},
+      {limitId: "codex", secondary: {usedPercent: 10, windowDurationMins: 300}},
+      {limitId: "codex", primary: {resetsAt: 1793300277}},
+    ]) {
+      client.handleNotification("account/rateLimits/updated", {rateLimits: change});
+      assert.equal(client.view.resumeQuota, null, "a notification must never authorize recovery of an inherited window");
+      assert.equal(client.view.resumeAccountKey, firstKey);
+      assert.equal(client.view.resumeAccountSince, firstSince);
+    }
     assert.equal(client.view.lifetimeTokens, 100);
     await client.refresh();
     assert.equal(children.length, 1, "an unchanged login reuses the connection");
+
+    // Hold another RPC after the full quota RPC already returned a positive
+    // balance. A later exhausted notification must survive completion of the poll.
+    const request = client.rpc.request.bind(client.rpc);
+    let noticeAfterQuota;
+    let finishConfig;
+    const quotaReceived = new Promise(resolve => { noticeAfterQuota = resolve; });
+    const configGate = new Promise(resolve => { finishConfig = resolve; });
+    client.rpc.request = async (method, params) => {
+      const value = await request(method, params);
+      if (method === "account/rateLimits/read") noticeAfterQuota();
+      if (method === "config/read") await configGate;
+      return value;
+    };
+    const poll = client.refresh();
+    try {
+      await quotaReceived;
+      children[0].stdout.write(JSON.stringify({method: "account/rateLimits/updated", params: {
+        rateLimits: { limitId: "codex", primary: { usedPercent: 100, windowDurationMins: 10080 } },
+      }}) + "\n");
+    } finally {
+      finishConfig();
+      client.rpc.request = request;
+    }
+    await poll;
+    assert.equal(remaining(), 0, "the pending batch must not roll back a newer quota notification");
+    assert.equal(client.view.resumeQuota, null, "an overlapping read cannot authorize recovery");
+    assert.equal(client.view.quotaObservedAt, null, "the interrupted read is not a new history observation");
+    await client.refresh();
+    assert.equal(client.view.resumeQuota.windows[0].remainingPercent, 59);
 
     account = { usedPercent: 7, lifetimeTokens: 200 };
     rejectUsage = true;
@@ -185,6 +233,9 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
     assert.equal(children.length, 2);
     assert.equal(children[0].exitCode, 0, "only the obsolete owned transport is stopped");
     assert.equal(remaining(), 93, "login changes replace the stale quota client");
+    assert.notEqual(client.view.resumeAccountKey, firstKey);
+    assert.equal(client.view.resumeAccountSince, client.view.resumeQuota.observedAt, "an observed switch starts a new binding boundary");
+    assert.equal(client.view.resumeQuota.accountKey, client.view.resumeAccountKey);
     assert.equal(client.view.lifetimeTokens, null, "a partial new-account result cannot inherit old token totals");
     assert.equal(client.view.tokenUsageFetchedAt, null, "the new account cannot inherit an old token checkpoint");
     assert.ok(updates.slice(updatesBeforeSwitch).some((item) => item.status === "loading" && item.windows.length === 0));
@@ -211,6 +262,7 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
     assert.equal(client.view.tokenUsageFetchedAt, tokenPollTime,
       "a successful token poll keeps its own checkpoint even when quota data remain stale");
     assert.equal(client.view.quotaObservedAt, null);
+    assert.equal(client.view.resumeQuota, null, "token-only success is not a quota observation");
     assert.equal(remaining(), 93);
     assert.equal(client.view.lifetimeTokens, 200);
     assert.match(client.view.error, /quota unavailable/);
@@ -221,6 +273,9 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
     await client.refresh();
     assert.equal(children.length, 3, "deleting the login state invalidates the connection");
     assert.equal(remaining(), 90);
+    assert.equal(client.view.resumeAccountKey, null, "no marker and no stable RPC identity must fail closed");
+    assert.equal(client.view.resumeQuota, null);
+    assert.equal(client.view.resumeAccountSince, null);
     changeLogin();
     account = { usedPercent: 11, lifetimeTokens: 400 };
     await client.refresh();
@@ -235,7 +290,9 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
     };
     await client.refresh();
     assert.equal(client.rpc, null, "a login change during a request retires that transport");
-    assert.equal(client.view.status, "stale");
+    assert.equal(client.view.status, "error");
+    assert.equal(client.view.resumeAccountKey, null);
+    assert.equal(client.view.windows.length, 0, "clear account data immediately when a login changes during the poll");
     assert.equal(client.view.quotaObservedAt, null);
     assert.ok(updates.slice(beforeRace).every((item) => item.status !== "ready"),
       "mixed-login responses are never published as fresh");
@@ -252,6 +309,35 @@ assert.throws(() => parseAppServerLine("not-json"), SyntaxError);
     assert.equal(client.view.windows.length, 0);
     assert.equal(client.view.fetchedAt, null);
     assert.equal(client.view.quotaObservedAt, null);
+
+    rejectLimits = false;
+    account.identity = {accountId: "business-a", id: "member-a", workspaceId: "workspace-a"};
+    changeLogin();
+    await client.refresh();
+    const stableIdentity = client.view.resumeAccountKey;
+    const stableSince = client.view.resumeAccountSince;
+    changeLogin();
+    await client.refresh();
+    assert.equal(client.view.resumeAccountKey, stableIdentity, "credential rotation preserves an explicitly identified account");
+    assert.equal(client.view.resumeAccountSince, stableSince, "an already confirmed account retains its eligible interruption history");
+    account.identity = {...account.identity, workspaceId: "workspace-b"};
+    changeLogin();
+    await client.refresh();
+    assert.notEqual(client.view.resumeAccountKey, stableIdentity, "changing workspace isolates even a known member");
+    assert.equal(client.view.resumeAccountSince, client.view.resumeQuota.observedAt);
+    account.identity = {workspaceId: "shared-workspace", email: "fixture-a@example.test"};
+    changeLogin();
+    await client.refresh();
+    const workspaceMember = client.view.resumeAccountKey;
+    account.identity.email = "fixture-b@example.test";
+    changeLogin();
+    await client.refresh();
+    assert.notEqual(client.view.resumeAccountKey, workspaceMember, "members of a shared workspace have separate keys");
+    assert.doesNotMatch(JSON.stringify(client.view), /fixture-[ab]@/);
+    rmSync(marker);
+    account.identity = {workspaceId: "shared-workspace"};
+    await client.refresh();
+    assert.equal(client.view.resumeAccountKey, null, "an unscoped workspace by itself cannot identify a member");
 
     // Stop while a login-triggered reconnect is awaiting the old transport.
     // start() also awaits this refresh and must not reinstall its timer afterward.
@@ -1516,6 +1602,12 @@ const cctq = normalizeCctqUsageView({
 assert.equal(cctq.metrics.find((item) => item.id === "usedAmount").value, "¥5.0");
 assert.equal(cctq.metrics.find((item) => item.id === "quotaLimit").value, "¥15.0");
 assert.equal(cctq.metrics.find((item) => item.id === "expiresAt").value, "永久");
+for (const value of [{}, {total_granted:null,total_used:null,expires_at:"garbage"}]) {
+  const missing = normalizeCctqUsageView({data:value}, null);
+  assert.equal(missing.status, "error");
+  assert.deepEqual(missing.metrics.map(metric => metric.value), ["--","--","--"]);
+}
+assert.equal(normalizeCctqUsageView({data:{total_used:0,total_granted:0,expires_at:0}}, null).status, "ready");
 
 const customProvider = validateApiProviderConfig({
   schemaVersion: 1,
@@ -1539,6 +1631,20 @@ const customProvider = validateApiProviderConfig({
 });
 assert.equal(customProvider.baseUrl, "https://api.example.com");
 assert.equal(customProvider.auth.header, "X-API-Key");
+{
+  const saved = process.env.CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT;
+  const override = process.env.CODEX_USAGE_BASE_URL;
+  try {
+    process.env.CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT = JSON.stringify(customProvider);
+    process.env.CODEX_USAGE_BASE_URL = "https://different.example.test";
+    assert.equal(loadApiProviderConfig().baseUrl, customProvider.baseUrl, "an imported key stays bound to its original snapshot");
+  } finally {
+    if (saved === undefined) delete process.env.CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT;
+    else process.env.CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT = saved;
+    if (override === undefined) delete process.env.CODEX_USAGE_BASE_URL;
+    else process.env.CODEX_USAGE_BASE_URL = override;
+  }
+}
 const custom = normalizeApiUsageView({
   result: {
     account: {
@@ -1565,6 +1671,19 @@ const noLimitProvider = validateApiProviderConfig({
   response: { used: "used", limit: null, unlimited: null, defaultQuotaPerUnit: 1, defaultCurrency: "" },
 });
 const noLimit = normalizeApiUsageView({ used: 123 }, null, noLimitProvider, now.getTime());
+for (const id of ["session", "official", "api-account", "reset-forecast"]) {
+  assert.throws(() => validateApiProviderConfig({...noLimitProvider,id}), /内置/);
+}
+{
+  const directory = mkdtempSync(path.join(os.tmpdir(), "monitor-provider-id-"));
+  try {
+    const saved = path.join(directory, "provider.json");
+    writeFileSync(saved, JSON.stringify({ ...noLimitProvider, id: "official" }));
+    assert.throws(() => loadApiProviderConfig(saved), /内置/);
+    assert.equal(loadApiProviderConfig(saved, { migrateSourceId: true }).id, "api-key-official");
+    assert.equal(JSON.parse(readFileSync(saved, "utf8")).id, "official");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
 assert.equal(noLimit.metrics.find((item) => item.id === "usedAmount").value, "123.0");
 assert.equal(noLimit.metrics.find((item) => item.id === "quotaLimit").value, "不限");
 
@@ -1973,6 +2092,28 @@ assert.equal(forecastRequests, 1);
 await forecastClient.stop();
 
 console.log("PASS: official usage, reset forecast, API account aggregation, generic API mapping, provider validation, CCTQ compatibility, and sparse updates.");
+
+{
+  const root = mkdtempSync(path.join(os.tmpdir(),"monitor-account-baseline-"));
+  try {
+    const options = { sessionRoot:null,counterPath:path.join(root,"counter.json") };
+    const tracker = new LocalCodexTokenTracker(options);
+    tracker.bindTokenAccount("fixture-old");
+    tracker.setOfficialLifetimeTokens(12345);
+    tracker.setOfficialLast7DaysTokens(123);
+    const viewFor = (key) => mergeOfficialLocalUsage({resumeAccountKey:key},tracker.view);
+    assert.equal(viewFor("fixture-old").lifetimeTokens,12345);
+    assert.equal(viewFor(null).lifetimeTokens,null);
+    assert.equal(viewFor("fixture-new").last7DaysTokens,null);
+    tracker.bindTokenAccount("fixture-new");
+    tracker.setOfficialLast7DaysTokens(123);
+    assert.equal(viewFor("fixture-new").last7DaysTokens,123);
+    assert.equal(viewFor("fixture-new").lifetimeTokens,null);
+    const restarted = new LocalCodexTokenTracker(options);
+    restarted.bindTokenAccount("fixture-old");
+    assert.equal(restarted.currentLast7DaysTokens(),null, "restarts cannot pick up a different account's pending token increments");
+  } finally {rmSync(root,{recursive:true,force:true});}
+}
 
 // Changing the interval replaces the timer, keeping all managed sources synchronized.
 {

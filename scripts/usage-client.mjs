@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { UsageHistory } from "./usage/history.mjs";
+import { UsageHistory, quotaWindowId } from "./usage/history.mjs";
 import {
   LOCAL_TOKEN_ACTIVE_SCAN_MS,
   LOCAL_TOKEN_IDLE_SCAN_MS,
@@ -78,6 +78,7 @@ const RESPONSE_KEYS = new Set([
   "usageRoot", "statusRoot", "used", "limit", "unlimited", "expiresAt",
   "quotaPerUnit", "currency", "defaultQuotaPerUnit", "defaultCurrency",
 ]);
+const BUILTIN_SOURCE_IDS = new Set(["session", "official", "api-account", "reset-forecast"]);
 
 function assertAllowedKeys(value, allowed, section) {
   for (const key of Object.keys(value || {})) {
@@ -177,6 +178,7 @@ export function validateApiProviderConfig(value) {
   assertAllowedKeys(provider, PROVIDER_KEYS, "Provider 配置");
   if (provider.schemaVersion !== 1) throw new Error("API Provider schemaVersion 必须为 1。");
   if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(provider.id || "")) throw new Error("API Provider id 无效。");
+  if (BUILTIN_SOURCE_IDS.has(provider.id)) throw new Error("API Provider id 不可使用内置数据源名称。");
   if (typeof provider.label !== "string" || !provider.label.trim() || provider.label.length > 24) throw new Error("API Provider label 无效。");
   const baseUrl = normalizeCredentialBaseUrl(provider.baseUrl, "API Provider baseUrl");
   if (!provider.requests || typeof provider.requests !== "object" || Array.isArray(provider.requests)) throw new Error("requests 配置不能为空。");
@@ -214,12 +216,18 @@ export function validateApiProviderConfig(value) {
   return provider;
 }
 
-export function loadApiProviderConfig(configPath = process.env.CODEX_USAGE_PROVIDER_CONFIG_PATH) {
-  const value = configPath
-    ? JSON.parse(readFileSync(path.resolve(configPath), "utf8"))
-    : structuredClone(CCTQ_PROVIDER);
-  const baseUrlOverride = process.env.CODEX_USAGE_BASE_URL || (!configPath ? process.env.CCTQ_USAGE_BASE_URL : null);
+export function loadApiProviderConfig(configPath, { migrateSourceId = false } = {}) {
+  const saved = configPath === undefined ? process.env.CODEX_USAGE_PROVIDER_CONFIG_SNAPSHOT : null;
+  if (configPath === undefined) configPath = process.env.CODEX_USAGE_PROVIDER_CONFIG_PATH;
+  const json = saved || (configPath ? readFileSync(path.resolve(configPath), "utf8") : null);
+  const value = json === null ? structuredClone(CCTQ_PROVIDER) : JSON.parse(json.replace(/^\uFEFF/, ""));
+  // The stored credential is bound to the snapshot destination. Environment
+  // URL overrides apply only to independently supplied credentials/configs.
+  const baseUrlOverride = !saved && (process.env.CODEX_USAGE_BASE_URL || (!configPath ? process.env.CCTQ_USAGE_BASE_URL : null));
   if (baseUrlOverride) value.baseUrl = baseUrlOverride;
+  // Older releases accepted these IDs. Keep their mappings usable without
+  // overwriting built-in columns or changing the user's saved configuration.
+  if (migrateSourceId && BUILTIN_SOURCE_IDS.has(value?.id)) value.id = `api-key-${value.id}`;
   return validateApiProviderConfig(value);
 }
 
@@ -517,6 +525,49 @@ function authStateRevision(filePath) {
   }
 }
 
+// Bind recovery to this confirmed subscription/login generation without
+// opening credentials, persisting e-mail, or treating the plan as identity.
+function resumeAccountKey(accountResponse, revision) {
+  const account = accountResponse?.account;
+  if (!["chatgpt", "chatgptauthtokens"].includes(String(account?.type || "").toLowerCase())) return null;
+  const ids = [account.accountId, account.workspaceId, account.id].map(x => typeof x === "string" ? x.trim() : "");
+  const email = typeof account.email === "string" ? account.email.trim().toLowerCase() : "";
+  const marker = revision && !["missing", "unavailable"].includes(revision) ? revision : "";
+  // A workspace can contain multiple users; one user may belong to several
+  // workspaces. A login marker scopes an otherwise incomplete identity.
+  const identified = ids[0] || ids[2] || (ids[1] && email);
+  if (!identified && !marker) return null;
+  const identity = identified ? ["account", ...ids, email] : ["login", marker, ids[1], email];
+  return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+}
+
+function firstLoginBoundary(revision, observedAt) {
+  // Metadata is dev:ino:size:mtimeNs:ctimeNs. With no local marker, only
+  // events observed after the first confirmed account read can be attributed.
+  const match = /:(\d+):(\d+)$/.exec(revision || "");
+  if (!match) return observedAt;
+  const changedAt = Math.ceil(Math.max(Number(match[1]), Number(match[2])) / 1e6);
+  return changedAt > 0 && changedAt <= observedAt ? changedAt : observedAt;
+}
+
+function buildResumeQuota(response, accountKey, observedAt) {
+  if (!accountKey) return null;
+  // Inspect the unmerged RPC response, never the UI's placeholders, rounded
+  // percentages, sparse notifications, or legacy model-specific fallback.
+  const s = response?.rateLimitsByLimitId?.codex ?? response?.rateLimits;
+  if (!s || (s.limitId && s.limitId !== "codex")) return null;
+  const windows = [];
+  for (const w of [s.primary, s.secondary]) {
+    if (!w) continue;
+    const id = quotaWindowId(w.windowDurationMins);
+    if (!id || windows.some(other => other.id === id) || !Number.isFinite(w.usedPercent)
+      || w.usedPercent < 0 || w.usedPercent > 100) return null;
+    windows.push({ id, remainingPercent: 100 - w.usedPercent,
+      resetsAt: Number.isSafeInteger(w.resetsAt) && w.resetsAt > 0 ? w.resetsAt : null });
+  }
+  return windows.length ? { accountKey, observedAt, windows } : null;
+}
+
 function resolveLocalTokenCounterPath(explicit) {
   if (explicit) return path.resolve(explicit);
   return process.env.LOCALAPPDATA
@@ -591,6 +642,7 @@ function loadLocalTokenCounter(counterPath, date) {
     return {
       todayTokens,
       seenEvents,
+      tokenAccountKey: typeof value.tokenAccountKey === "string" ? value.tokenAccountKey : null,
       officialLifetimeTokens,
       officialLifetimeCheckpointAt,
       officialLifetimePendingTokens,
@@ -605,7 +657,7 @@ function loadLocalTokenCounter(counterPath, date) {
   }
 }
 
-function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, officialLifetime, officialLast7Days, now) {
+function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, officialLifetime, officialLast7Days, now, tokenAccountKey) {
   if (!counterPath || !Number.isSafeInteger(todayTokens) || todayTokens < 0) return;
   mkdirSync(path.dirname(counterPath), { recursive: true });
   const temporaryPath = `${counterPath}.${process.pid}.tmp`;
@@ -614,6 +666,7 @@ function saveLocalTokenCounter(counterPath, date, todayTokens, seenEvents, offic
     dailyDate: date,
     mode: "official-conversation-raw",
     todayTokens,
+    tokenAccountKey: tokenAccountKey ?? null,
     seenEvents: [...seenEvents].sort(),
     officialLifetime: officialLifetime?.baseTokens === null || officialLifetime?.baseTokens === undefined
       ? null
@@ -815,6 +868,7 @@ export class LocalCodexTokenTracker {
   resetDate(now) {
     this.dailyDate = localDateKey(now);
     const saved = loadLocalTokenCounter(this.counterPath, this.dailyDate);
+    this.tokenAccountKey = saved.tokenAccountKey ?? null;
     this.todayTokens = saved.todayTokens;
     this.seenEvents = new Set(saved.seenEvents);
     this.officialLifetimeTokens = saved.officialLifetimeTokens;
@@ -872,11 +926,13 @@ export class LocalCodexTokenTracker {
         seenEvents: this.officialLast7DaysSeenEvents,
       },
       now,
+      this.tokenAccountKey,
     );
     this.counterDirty = false;
   }
 
   emit(view) {
+    view = { ...view, tokenAccountKey: this.tokenAccountKey ?? null };
     const visibleThreadSignature = JSON.stringify([...this.visibleThreadIds].map((threadId) => {
       const task = this.getThreadView(threadId, view.fetchedAt ?? this.now());
       // Completed tasks need no update merely because another scan took place.
@@ -884,6 +940,7 @@ export class LocalCodexTokenTracker {
       return task;
     }));
     const unchanged = this.view.status === view.status
+      && this.view.tokenAccountKey === view.tokenAccountKey
       && this.view.dailyDate === view.dailyDate
       && this.view.todayTokens === view.todayTokens
       && this.view.last7DaysTokens === view.last7DaysTokens
@@ -907,6 +964,22 @@ export class LocalCodexTokenTracker {
     this.view = view;
     this.visibleThreadSignature = visibleThreadSignature;
     if (!unchanged) this.onUpdate(view);
+  }
+
+  bindTokenAccount(key, now = this.now()) {
+    if (!key) return;
+    if (this.dailyDate === null) this.resetDate(now);
+    if (this.tokenAccountKey === key) return;
+    this.tokenAccountKey = key;
+    for (const scope of ["officialLifetime", "officialLast7Days"]) {
+      this[scope+"Tokens"] = null;
+      this[scope+"CheckpointAt"] = null;
+      this[scope+"PendingTokens"] = 0;
+      this[scope+"SeenEvents"].clear();
+    }
+    this.counterDirty = true;
+    this.saveCounter(now);
+    this.emit({ ...this.view, lifetimeTokens: null, last7DaysTokens: null });
   }
 
   setOfficialLifetimeTokens(value, observedAt = this.now()) {
@@ -1639,11 +1712,13 @@ export function mergeOfficialLocalUsage(officialView, localView, now = new Date(
     && localView.todayTokens >= 0
     ? localView.todayTokens
     : null;
-  const localLifetime = Number.isSafeInteger(localView?.lifetimeTokens)
+  const allowLocalBase = !Object.hasOwn(officialView || {}, "resumeAccountKey")
+    || Boolean(officialView.resumeAccountKey && localView?.tokenAccountKey === officialView.resumeAccountKey);
+  const localLifetime = allowLocalBase && Number.isSafeInteger(localView?.lifetimeTokens)
     && localView.lifetimeTokens >= 0
     ? localView.lifetimeTokens
     : null;
-  const localLast7Days = Number.isSafeInteger(localView?.last7DaysTokens)
+  const localLast7Days = allowLocalBase && Number.isSafeInteger(localView?.last7DaysTokens)
     && localView.last7DaysTokens >= 0
     ? localView.last7DaysTokens
     : null;
@@ -1692,16 +1767,13 @@ export function toOfficialUsageSource(view, now = Date.now(), refreshMs = DEFAUL
     {
       id: "primaryRemaining",
       label: "5小时",
-      item: isPro ? null : availableWindows.find((item) => Number(item?.windowDurationMins) === 5 * 60) || null,
+      item: isPro ? null : availableWindows.find((item) => quotaWindowId(item.windowDurationMins) === "primaryRemaining") || null,
       defaultVisible: true,
     },
     {
       id: "secondaryRemaining",
       label: "7天",
-      item: availableWindows.find((item) => {
-        const duration = Number(item?.windowDurationMins);
-        return duration >= 6 * 24 * 60 && duration <= 8 * 24 * 60;
-      }) || null,
+      item: availableWindows.find((item) => quotaWindowId(item.windowDurationMins) === "secondaryRemaining") || null,
       defaultVisible: false,
     },
   ];
@@ -1881,9 +1953,15 @@ function readMapped(value, selector) {
   return selector ? readPath(value, selector) : undefined;
 }
 
+function numericQuota(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return NaN;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : NaN;
+}
+
 function formatApiQuota(value, quotaPerUnit, symbol, decimals = 1) {
-  if (!Number.isFinite(Number(value))) return "--";
-  const amount = Math.max(0, Number(value)) / quotaPerUnit;
+  const amount = numericQuota(value) / quotaPerUnit;
+  if (!Number.isFinite(amount)) return "--";
   return `${symbol}${amount.toFixed(decimals)}`;
 }
 
@@ -1894,12 +1972,13 @@ function parseApiBoolean(value) {
 }
 
 function formatApiExpiry(value, now) {
-  if (value == null || value === "" || Number(value) === 0) return "永久";
+  if (value === 0 || value === "0" || value === -1 || value === "-1") return "永久";
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return "--";
   const numeric = Number(value);
   const expiresAt = Number.isFinite(numeric)
     ? numeric > 100000000000 ? numeric : numeric * 1000
     : Date.parse(String(value));
-  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return "永久";
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return "--";
   const days = Math.max(0, Math.ceil((expiresAt - now) / 86400000));
   return `${days}天后`;
 }
@@ -1921,14 +2000,14 @@ export function normalizeApiUsageView(response, statusResponse, provider = CCTQ_
   }
   const responseConfig = config.response;
   const mappedQuotaPerUnit = readMapped(status, responseConfig.quotaPerUnit);
-  const quotaPerUnit = Number(mappedQuotaPerUnit) > 0
+  const quotaPerUnit = numericQuota(mappedQuotaPerUnit) > 0
     ? Number(mappedQuotaPerUnit)
     : Number(responseConfig.defaultQuotaPerUnit) > 0 ? Number(responseConfig.defaultQuotaPerUnit) : 1;
   const currency = String(readMapped(status, responseConfig.currency) ?? responseConfig.defaultCurrency ?? "").toUpperCase();
   const symbol = currency === "CNY" ? "¥" : currency === "USD" ? "$" : currency ? `${currency} ` : "";
   const grantedRaw = responseConfig.limit ? readPath(data, responseConfig.limit) : null;
-  const granted = Number(grantedRaw);
-  const used = Number(readPath(data, responseConfig.used));
+  const granted = numericQuota(grantedRaw);
+  const used = numericQuota(readPath(data, responseConfig.used));
   const unlimited = responseConfig.unlimited
     ? parseApiBoolean(readMapped(data, responseConfig.unlimited))
     : !responseConfig.limit;
@@ -1965,8 +2044,8 @@ export function normalizeApiUsageView(response, statusResponse, provider = CCTQ_
     id: config.id,
     label: config.label,
     accountType: "api-key",
-    status: "ready",
-    error: null,
+    status: Number.isFinite(used) ? "ready" : "error",
+    error: Number.isFinite(used) ? null : `${config.label} 未返回有效的已用额度`,
     fetchedAt: now,
     nextRefreshAt: now + refreshMs,
     metrics,
@@ -2146,7 +2225,7 @@ export function normalizeApiAccountView(profileResponse, logs, {
 }
 
 export class ApiUsageClient {
-  constructor({ provider = loadApiProviderConfig(), apiKey = resolveApiKey(), refreshMs = DEFAULT_REFRESH_MS, managed = false, now = () => Date.now(), onUpdate = () => {} } = {}) {
+  constructor({ provider = loadApiProviderConfig(undefined, { migrateSourceId: true }), apiKey = resolveApiKey(), refreshMs = DEFAULT_REFRESH_MS, managed = false, now = () => Date.now(), onUpdate = () => {} } = {}) {
     this.provider = validateApiProviderConfig(provider);
     this.baseUrl = this.provider.baseUrl;
     this.apiKey = validateRequestCredential(apiKey, `${this.provider.label} API key`);
@@ -2684,13 +2763,13 @@ export class ResetForecastClient {
 }
 
 export class CombinedUsageClient {
-  constructor({ command = resolveCodexExecutable(), provider = loadApiProviderConfig(), refreshMs = DEFAULT_REFRESH_MS, forecastFetch = globalThis.fetch, onUpdate = () => {} } = {}) {
+  constructor({ command = resolveCodexExecutable(), provider = loadApiProviderConfig(undefined, { migrateSourceId: true }), refreshMs = DEFAULT_REFRESH_MS, forecastFetch = globalThis.fetch, onUpdate = () => {} } = {}) {
     this.onUpdate = onUpdate;
     this.history = new UsageHistory({ filePath: process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "CodexUsageMonitor", "usage-history.json") : null });
     this.refreshMs = refreshMs;
     this.timer = null;
     this.nextRefreshAt = null;
-    this.officialView = { status: "loading", windows: [], todayTokens: null, last7DaysTokens: null, lifetimeTokens: null, fetchedAt: null, error: null };
+    this.officialView = { status: "loading", windows: [], todayTokens: null, last7DaysTokens: null, lifetimeTokens: null, fetchedAt: null, error: null, resumeAccountKey: null, resumeQuota: null };
     this.localOfficialView = { status: "loading", dailyDate: null, todayTokens: null, last7DaysTokens: null, lifetimeTokens: null, cacheHitRate: null, fetchedAt: null, error: null };
     this.accountView = normalizeApiAccountView(null, [], { refreshMs });
     this.apiView = normalizeApiUsageView(null, null, provider);
@@ -2707,10 +2786,11 @@ export class CombinedUsageClient {
         this.officialView = view;
         this.history.recordQuota(view);
         this.history.flush();
-        if (Number.isSafeInteger(view?.lifetimeTokens) && view.lifetimeTokens >= 0) {
+        this.localOfficial.bindTokenAccount(view.resumeAccountKey);
+        if (view.resumeAccountKey && Number.isSafeInteger(view?.lifetimeTokens) && view.lifetimeTokens >= 0) {
           this.localOfficial.setOfficialLifetimeTokens(view.lifetimeTokens, view.tokenUsageFetchedAt ?? view.fetchedAt);
         }
-        if (Number.isSafeInteger(view?.last7DaysTokens) && view.last7DaysTokens >= 0) {
+        if (view.resumeAccountKey && Number.isSafeInteger(view?.last7DaysTokens) && view.last7DaysTokens >= 0) {
           this.localOfficial.setOfficialLast7DaysTokens(view.last7DaysTokens, view.tokenUsageFetchedAt ?? view.fetchedAt);
         }
         if (view?.officialModelProvidersResolved) {
@@ -2825,10 +2905,14 @@ export function resolveCodexExecutable(explicitPath = process.env.CODEX_USAGE_CO
   return candidates.find((candidate) => existsSync(candidate)) || "codex";
 }
 
-class AppServerRpc {
-  constructor({ command, requestTimeoutMs = REQUEST_TIMEOUT_MS, onNotification = () => {}, onExit = () => {} }) {
+export class AppServerRpc {
+  constructor({ command, requestTimeoutMs = REQUEST_TIMEOUT_MS, onNotification = () => {}, onExit = () => {},
+    experimentalApi = false, environment = process.env, cwd } = {}) {
     this.command = command;
     this.requestTimeoutMs = requestTimeoutMs;
+    this.experimentalApi = experimentalApi;
+    this.environment = environment;
+    this.cwd = cwd;
     this.onNotification = onNotification;
     this.onExit = onExit;
     this.child = null;
@@ -2843,6 +2927,8 @@ class AppServerRpc {
     if (this.child && this.child.exitCode === null) return;
     this.stopping = false;
     const child = spawn(this.command, ["app-server", "--listen", "stdio://"], {
+      env: this.environment,
+      cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       shell: false,
@@ -2866,8 +2952,8 @@ class AppServerRpc {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.2.3" },
-      capabilities: { optOutNotificationMethods: [] },
+      clientInfo: { name: "codex-usage-monitor", title: "Codex Usage Monitor", version: "3.2.4" },
+      capabilities: { optOutNotificationMethods: [], ...(this.experimentalApi ? { experimentalApi: true } : {}) },
     });
     this.notify("initialized");
   }
@@ -2971,6 +3057,9 @@ export class UsageClient {
     this.rpc = null;
     this.authStatePath = authStatePath;
     this.authRevision = undefined;
+    this.lastConfirmedAccountKey = undefined;
+    this.resumeAccountSince = null;
+    this.quotaNotificationGeneration = 0;
     this.stopGeneration = 0;
     this.timer = null;
     this.refreshing = null;
@@ -2985,6 +3074,9 @@ export class UsageClient {
       last7DaysTokens: null,
       lifetimeTokens: null,
       officialModelProviders: [],
+      resumeAccountKey: null,
+      resumeAccountSince: null,
+      resumeQuota: null,
       officialModelProvidersResolved: false,
       fetchedAt: null,
       error: null,
@@ -2997,28 +3089,30 @@ export class UsageClient {
     this.onUpdate(view);
   }
 
+  clearAccountUsage() {
+    this.rateLimits = null;
+    this.tokenUsage = null;
+    this.accountSnapshot = null;
+    this.configSnapshot = null;
+    this.emit({
+      ...this.view, status: "loading", windows: [], planType: null,
+      todayTokens: null, last7DaysTokens: null, lifetimeTokens: null,
+      resumeAccountKey: null, resumeAccountSince: null, resumeQuota: null,
+      tokenUsageAvailable: false, latestUsageDate: null, tokenUsageFetchedAt: null,
+      quotaObservedAt: null, fetchedAt: null, error: null,
+      officialModelProviders: [], officialModelProvidersResolved: false,
+    });
+  }
+
   async ensureConnected() {
     const stopGeneration = this.stopGeneration;
     const revision = authStateRevision(this.authStatePath);
     if (this.authRevision !== undefined && this.authRevision !== revision) {
       const previous = this.rpc;
       this.rpc = null;
+      this.clearAccountUsage();
       if (previous) await previous.stop();
       if (this.stopGeneration !== stopGeneration) throw new Error("Codex 用量查询已停止");
-      // A login change can select another account. Do not carry its quota or
-      // token totals into a partially successful response for the new account.
-      this.rateLimits = null;
-      this.tokenUsage = null;
-      this.accountSnapshot = null;
-      this.configSnapshot = null;
-      this.emit({
-        ...this.view, status: "loading", windows: [], planType: null,
-        todayTokens: null, last7DaysTokens: null, lifetimeTokens: null,
-        tokenUsageAvailable: false, latestUsageDate: null,
-        tokenUsageFetchedAt: null,
-        quotaObservedAt: null, fetchedAt: null, error: null,
-        officialModelProviders: [], officialModelProvidersResolved: false,
-      });
     }
     this.authRevision = revision;
     if (this.rpc) return this.rpc;
@@ -3049,6 +3143,7 @@ export class UsageClient {
 
   handleNotification(method, params) {
     if (method !== "account/rateLimits/updated" || !params?.rateLimits) return;
+    this.quotaNotificationGeneration += 1;
     const byId = { ...(this.rateLimits?.rateLimitsByLimitId || {}) };
     const legacy = this.rateLimits?.rateLimits;
     if (legacy) {
@@ -3062,6 +3157,10 @@ export class UsageClient {
     this.rateLimits = { ...(this.rateLimits || {}), rateLimits, rateLimitsByLimitId: Object.keys(byId).length ? byId : null };
     this.emit({
       ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),
+      resumeAccountKey: this.view.resumeAccountKey,
+      resumeAccountSince: this.view.resumeAccountSince,
+      resumeQuota: null,
+      ...(limitId !== "codex" ? { status: this.view.status, fetchedAt: this.view.fetchedAt, error: this.view.error } : {}),
       tokenUsageFetchedAt: this.view.tokenUsageFetchedAt ?? null,
       quotaObservedAt: (!params.rateLimits.limitId || params.rateLimits.limitId === "codex")
         && (params.rateLimits.primary || params.rateLimits.secondary) ? Date.now() : null,
@@ -3075,6 +3174,7 @@ export class UsageClient {
     this.emit({
       ...this.view,
       status: hasData ? "stale" : "error",
+      resumeQuota: null,
       quotaObservedAt: null,
       error: error?.message || "Codex 用量暂时不可用",
     });
@@ -3085,6 +3185,8 @@ export class UsageClient {
     this.refreshing = (async () => {
       try {
         const rpc = await this.ensureConnected();
+        const readStartedAt = Date.now();
+        const quotaGeneration = this.quotaNotificationGeneration;
         const [limitsResult, usageResult, accountResult, configResult] = await Promise.allSettled([
           rpc.request("account/rateLimits/read"),
           rpc.request("account/usage/read"),
@@ -3092,22 +3194,41 @@ export class UsageClient {
           rpc.request("config/read", {}),
         ]);
         if (authStateRevision(this.authStatePath) !== this.authRevision) {
+          this.clearAccountUsage();
           throw new Error("Codex 登录状态已变化，等待重新读取用量");
         }
-        if (limitsResult.status === "fulfilled") this.rateLimits = limitsResult.value;
+        const accountKey = accountResult.status === "fulfilled"
+          ? resumeAccountKey(accountResult.value, this.authRevision) : null;
+        if (accountResult.status === "fulfilled" && accountKey !== this.lastConfirmedAccountKey) {
+          this.resumeAccountSince = accountKey
+            ? (this.lastConfirmedAccountKey === undefined ? firstLoginBoundary(this.authRevision, readStartedAt) : readStartedAt)
+            : null;
+          this.lastConfirmedAccountKey = accountKey;
+        }
+        if (this.view.resumeAccountKey && accountResult.status === "fulfilled" && this.view.resumeAccountKey !== accountKey) {
+          this.clearAccountUsage();
+        }
+        // Another RPC may still be pending after the quota read returned.
+        // A notification received meanwhile takes precedence until the next full read.
+        const freshQuotaRead = limitsResult.status === "fulfilled" && quotaGeneration === this.quotaNotificationGeneration;
+        if (freshQuotaRead) this.rateLimits = limitsResult.value;
         if (usageResult.status === "fulfilled") this.tokenUsage = usageResult.value;
         if (accountResult.status === "fulfilled") this.accountSnapshot = accountResult.value;
         if (configResult.status === "fulfilled") this.configSnapshot = configResult.value;
         if (limitsResult.status === "rejected" && usageResult.status === "rejected") throw limitsResult.reason;
         this.emit({
           ...normalizeUsageView(this.rateLimits, this.tokenUsage, new Date(), this.accountSnapshot),
+          resumeAccountKey: accountResult.status === "fulfilled" ? accountKey : this.view.resumeAccountKey,
+          resumeAccountSince: accountResult.status === "fulfilled" ? this.resumeAccountSince : this.view.resumeAccountSince,
+          resumeQuota: freshQuotaRead
+            ? buildResumeQuota(limitsResult.value, accountKey, readStartedAt) : null,
           tokenUsageFetchedAt: usageResult.status === "fulfilled" ? Date.now() : this.view.tokenUsageFetchedAt ?? null,
           ...(limitsResult.status === "rejected" ? {
             status: this.rateLimits ? "stale" : "error",
             fetchedAt: this.view.fetchedAt,
             error: limitsResult.reason?.message || "Codex 额度暂时不可用",
           } : {}),
-          quotaObservedAt: limitsResult.status === "fulfilled" ? Date.now() : null,
+          quotaObservedAt: freshQuotaRead ? Date.now() : null,
           officialModelProviders: officialModelProvidersFromAccount(this.accountSnapshot, this.configSnapshot),
           officialModelProvidersResolved: officialModelProviderResolutionReady(this.accountSnapshot, this.configSnapshot),
         });

@@ -13,6 +13,11 @@ const CAPACITY_ERROR = "历史记录已达容量上限，部分新增 Token 暂�
 const validCount = (v) => Number.isSafeInteger(v) && v >= 0;
 const percent = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100 ? v : null;
 
+export function quotaWindowId(minutes) {
+  if (minutes === 300) return "primaryRemaining";
+  return minutes >= 6 * 1440 && minutes <= 8 * 1440 ? "secondaryRemaining" : null;
+}
+
 // Stores aggregates and hashed event identities only, never conversation text.
 export class UsageHistory {
   constructor({ filePath = null, now = () => Date.now() } = {}) {
@@ -111,8 +116,8 @@ export class UsageHistory {
     if (previous && at <= previous.at) return;
     const windows = Array.isArray(view.windows) ? view.windows : [];
     const main = windows.filter(w => !w.limitId || w.limitId === "codex");
-    const primary = main.find(w => w.windowDurationMins === 300);
-    const secondary = main.find(w => w.windowDurationMins === 10080);
+    const primary = main.find(w => quotaWindowId(w.windowDurationMins) === "primaryRemaining");
+    const secondary = main.find(w => quotaWindowId(w.windowDurationMins) === "secondaryRemaining");
     const sample = { at,
       primaryRemaining: view.planType === "pro" ? null : percent(primary?.remainingPercent),
       secondaryRemaining: percent(secondary?.remainingPercent),

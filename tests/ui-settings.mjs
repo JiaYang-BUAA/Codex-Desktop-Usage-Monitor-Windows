@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   createUiSettingsStore,
   MAX_UI_SETTINGS_BYTES,
+  mergeUiSettingsEdit,
   normalizeUiSettings,
   readUiSettingsFile,
   resolveUiSettingsPath,
@@ -62,6 +63,31 @@ try {
   });
 
   const first = await createUiSettingsStore(settingsPath);
+  const base = normalizeUiSettings({ metrics: { official: [] }, autoResumeThreads: { [threadId]: { enabled: false, message: "old" } } });
+  const globalEdit = mergeUiSettingsEdit(base, { ...base, englishUi: true }, { key: "englishUi" });
+  const messageEdit = mergeUiSettingsEdit(globalEdit, { ...base, autoResumeThreads: { [threadId]: { enabled: false, message: "new" } } }, { key: "threadMessage", threadId });
+  const toggleEdit = mergeUiSettingsEdit(messageEdit, { ...base, autoResumeThreads: { [threadId]: { enabled: true, message: "old" } } }, { key: "threadEnabled", threadId });
+  assert.equal(toggleEdit.englishUi, true);
+  assert.deepEqual(toggleEdit.autoResumeThreads[threadId], { enabled: true, message: "new" });
+  const addMetric = (previous, metric) => mergeUiSettingsEdit(previous, { ...base, metrics: { official: [metric] } }, { key: "metric", source: "official", metric, checked: true });
+  const selections = addMetric(addMetric(toggleEdit, "primaryRemaining"), "secondaryRemaining");
+  assert.deepEqual(selections.metrics.official, ["primaryRemaining", "secondaryRemaining"]);
+  const staleLayout = mergeUiSettingsEdit(selections, base, { key: "layout", base: JSON.stringify([base.metricOrder, base.metrics, base.minimalMode]) });
+  assert.deepEqual(staleLayout, selections, "a stale automatic migration cannot reverse newer choices");
+  const fullThreads = Object.fromEntries(Array.from({ length: 128 }, (_, index) => [
+    "019fb3b1-2638-7bb0-9a90-" + String(index).padStart(12, "0"), { enabled: index !== 0, message: "custom" },
+  ]));
+  const newTask = { autoResumeThreads: { [threadId]: { enabled: true, message: "继续" } } };
+  const enable = { key: "threadEnabled", threadId };
+  assert.throws(() => mergeUiSettingsEdit({ ...base, autoResumeThreads: fullThreads }, newTask, enable), /autoResumeCapacity/);
+  const disposableId = Object.keys(fullThreads)[0];
+  const staleRemoval = { key: "forgetThread", threadId: disposableId, message: "older" };
+  assert.ok(mergeUiSettingsEdit({ ...base, autoResumeThreads: fullThreads }, {}, staleRemoval).autoResumeThreads[disposableId]);
+  fullThreads[disposableId].message = "继续";
+  const replaced = mergeUiSettingsEdit({ ...base, autoResumeThreads: fullThreads }, newTask, enable);
+  assert.equal(Object.keys(replaced.autoResumeThreads).length, 128);
+  assert.equal(replaced.autoResumeThreads[disposableId], undefined);
+  assert.equal(replaced.autoResumeThreads[threadId].enabled, true);
   assert.equal(first.current, null);
   await first.save({
     metrics: { official: ["secondaryRemaining", "currentTaskTokens"], "api-account": [], "quota-token": ["wholeEstimateTokens"] },
