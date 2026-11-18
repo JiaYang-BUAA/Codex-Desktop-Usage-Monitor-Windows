@@ -1655,6 +1655,7 @@
     if (preferredComposer && (!preferredComposer.isConnected || !isVisible(preferredComposer))) preferredComposer = null;
     const placement = findPlacement(HOST_ID, preferredComposer);
     if (!placement.composer) {
+      preferredComposer = null;
       clearPlacement();
       document.getElementById(HOST_ID)?.remove();
       if (state) {
@@ -1906,7 +1907,9 @@
   const observerTarget = document.documentElement || document;
   observer.observe(observerTarget, {
     childList: true, subtree: true, attributes: true,
-    attributeFilter: ["class", "aria-label", "placeholder", "data-placeholder",
+    attributeFilter: ["class", "aria-label", "placeholder", "data-placeholder", "hidden", "inert",
+      "aria-hidden", "contenteditable", "data-testid", "data-tab-id",
+      "data-app-shell-active-page", "data-right-panel-composer-overlay-content", "data-composer-placement", "data-thread-find-composer",
       "data-above-composer-conversation-id", "data-conversation-id", "data-thread-id"],
   });
   const timer = setInterval(() => {

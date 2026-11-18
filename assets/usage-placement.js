@@ -3,7 +3,6 @@
   const COMPOSER_SELECTORS = Object.freeze([
     ".composer-surface-chrome",
     '[data-testid="composer"]',
-    '[data-testid*="composer-"]',
     '[class*="ComposerLayoutRoot"]',
   ]);
   const EDITABLE_SELECTOR = 'textarea, [contenteditable="true"]';
@@ -62,21 +61,33 @@
       .filter((node) => isVisible(node) && !node.closest(`#${hostId}`));
     const editables = visibleEditables.filter((node) => !isChatGptComposer(node) && !isDotComposer(node));
     const nearestComposer = (editable) => {
-      const explicit = editable.closest(composerSelector);
-      if (explicit && isVisible(explicit)) return { composer: explicit, strategy: "explicit-editable" };
-      let current = editable.parentElement;
-      for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
-        const rect = box(current);
-        if (rect && rect.height >= 56 && rect.height <= 260 && current.querySelectorAll(CONTROL_SELECTOR).length >= 2) {
-          return { composer: current, strategy: `editable-ancestor-${depth + 1}` };
-        }
+      const composer = editable.closest(composerSelector);
+      if (!composers.includes(composer) || editable.closest('[hidden], [inert], [aria-hidden="true"]')) return null;
+      // Document tabs use the same ComposerLayoutRoot for a floating input.
+      // Only accept an input belonging to the active chat on the tabbed desktop.
+      const page = editable.closest("[data-app-shell-active-page]");
+      if (editable.closest("[data-right-panel-composer-overlay-content]")) return null;
+      if (page) {
+        if (page.getAttribute("data-app-shell-active-page") !== "true") return null;
+        const threadInput = editable.closest('[data-composer-placement="thread"], [data-thread-find-composer]');
+        const workLabel = ["aria-label", "placeholder", "data-placeholder"].some(attribute =>
+          /\bCodex\b|\bWork with ChatGPT\b|\bChatGPT\s+(?:Work\b|工作)/i.test(editable.getAttribute(attribute) || ""));
+        if (!threadInput && !workLabel) return null;
       }
-      return null;
+      if (editable.checkVisibility && !editable.checkVisibility({ visibilityProperty: true, opacityProperty: true })) return null;
+      // A document tab can cover a still-mounted chat. Check the editable itself
+      // and ignore our own portal so opening its popover does not hide it.
+      if (document.elementsFromPoint) {
+        const rect = box(editable);
+        const y = rect.y + rect.height / 2;
+        const exposed = [0.5, 0.2, 0.8].some((fraction) => {
+          const top = document.elementsFromPoint(rect.x + rect.width * fraction, y).find(node => node.id !== hostId);
+          return top && editable.contains(top);
+        });
+        if (!exposed) return null;
+      }
+      return { composer, strategy: "explicit-editable" };
     };
-    const preferredEditable = preferredComposer && preferredComposer.isConnected && isVisible(preferredComposer)
-      ? editables.find((editable) => preferredComposer.contains(editable))
-      : null;
-    const preferredMatch = preferredEditable ? nearestComposer(preferredEditable) : null;
     const candidates = editables
       .map((editable, order) => {
         const match = nearestComposer(editable);
@@ -95,6 +106,7 @@
         order: candidate.order,
       };
     };
+    const preferredMatch = candidates.find(candidate => candidate.composer === preferredComposer);
     const fallbackMatch = candidates.sort((left, right) => {
       const leftScore = candidateScore(left);
       const rightScore = candidateScore(right);
@@ -102,7 +114,7 @@
         || rightScore.explicit - leftScore.explicit
         || leftScore.x - rightScore.x
         || leftScore.order - rightScore.order;
-    })[0] || (composers.length ? { composer: composers.at(-1), strategy: "explicit-composer" } : null);
+    })[0];
     const match = preferredMatch || fallbackMatch;
     if (!match) {
       return {

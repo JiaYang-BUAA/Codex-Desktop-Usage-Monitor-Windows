@@ -887,6 +887,42 @@ try {
   dotSide.remove();
   assert.equal(JSON.stringify(window.__CODEX_USAGE_MONITOR_STATE__.getSettings()), savedModeSettings);
 
+  wrapper.setAttribute('data-app-shell-active-page', 'true');
+  const mainInput = wrapper.querySelector('[contenteditable]');
+  mainInput.setAttribute('aria-label', '消息');
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null, 'shared generic composer on a tab is insufficient');
+  wrapper.setAttribute('data-composer-placement', 'thread');
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), 'active thread composer');
+  const overlay = window.document.createElement('div');
+  overlay.setAttribute('data-app-shell-active-page', 'true');
+  overlay.setAttribute('data-right-panel-composer-overlay-content', '');
+  overlay.innerHTML = updatedComposerMarkup();
+  overlay.querySelector('[contenteditable]').setAttribute('aria-label', 'Work with ChatGPT');
+  window.document.body.append(overlay);
+  assert.equal(placementModule.findPlacement('codex-usage-monitor').composer, mainInput.closest('[class*="ComposerLayoutRoot"]'));
+  wrapper.setAttribute('data-app-shell-active-page', 'false');
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(window.document.getElementById('codex-usage-monitor'), null, 'document overlay and inactive main thread are both ineligible');
+  overlay.remove();
+  wrapper.removeAttribute('data-app-shell-active-page');
+  wrapper.removeAttribute('data-composer-placement');
+  mainInput.removeAttribute('aria-label');
+
+  // The document tab may cover a live chat or replace it with its own editor.
+  const editor = window.document.createElement('section');
+  editor.innerHTML = '<div data-testid="composer-document"><div contenteditable="true"></div><button>加粗</button><button>插图</button></div>';
+  window.document.body.append(editor);
+  window.document.elementsFromPoint = () => [editor, chatEditable];
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null, 'covered chat must release the portal');
+  window.document.elementsFromPoint = () => [chatEditable];
+  assert.ok(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), 'uncovered chat is eligible again');
+  delete window.document.elementsFromPoint;
+  wrapper.replaceChildren(...editor.children);
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null, 'rich text and toolbar are not a chat composer');
+  wrapper.innerHTML = '<div class="composer-surface-chrome"><button>发送</button></div>';
+  assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null, 'empty stale composer shell is insufficient');
+  editor.remove();
+
   window.document.getElementById("composer-wrapper").replaceChildren();
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.ensure(), null);
   assert.equal(window.__CODEX_USAGE_MONITOR_STATE__.diagnose().ok, false);

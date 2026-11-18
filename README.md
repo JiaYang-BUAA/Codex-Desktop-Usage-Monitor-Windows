@@ -54,7 +54,7 @@
 
 - [数据源与指标说明](docs/data-sources.md)：Token 统计口径、缓存命中率、历史图采样、续跑条件和第三方接口配置。
 - [故障排查指南](docs/troubleshooting.md)：快捷方式启动失败、没有监视条、读数过期或设置未保存。
-- v3.2.4 恢复了新版 Codex Desktop 上的额度续跑，修复了切换账号后的旧读数和多窗口设置冲突。可在设置中开启自动更新，更新监视器无需重启 Codex。[更新日志](CHANGELOG.md) · [下载正式版](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/latest)
+- v3.2.5 修复了 Codex 内置 Word 文档浮动输入框误显示监视栏的问题。可在设置中开启自动更新，更新监视器无需重启 Codex。[更新日志](CHANGELOG.md) · [下载正式版](https://github.com/JiaYang-BUAA/Codex-Desktop-Usage-Monitor-Windows/releases/latest)
 
 <details>
 <summary>手动安装、API 配置与技术细节</summary>
