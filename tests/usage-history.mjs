@@ -101,12 +101,17 @@ try {
 
   const dom=new JSDOM('<div id="host"></div>',{runScripts:'outside-only',pretendToBeVisual:true});
   const w=dom.window,host=w.document.getElementById('host');
-  host.attachShadow({mode:'open'}).innerHTML='<div class="usage-popover"><div class="usage-columns"><div class="usage-column-footer"></div></div></div>';
+  host.attachShadow({mode:'open'}).innerHTML='<div class="usage-popover"><div class="usage-columns"><div class="usage-column-meta"><button class="usage-settings-trigger" data-toggle-settings>设置</button></div></div></div>';
   w.eval(await fs.readFile(new URL('../assets/usage-history.js',import.meta.url),'utf8'));
   const today=new Date();today.setHours(1,0,0,0);const sampleTime=Math.min(+today,Date.now()-60000);
   const data={updatedAt:now,tokenBuckets:[{start:sampleTime,totalTokens:500}],quotaSamples:[{at:sampleTime,secondaryRemaining:0,secondaryResetsAt:1},{at:sampleTime+1000,secondaryRemaining:100,secondaryResetsAt:2}]};
   const render=w.__CODEX_USAGE_MONITOR_MODULES__.history.render;
-  render(host,data,false);host.shadowRoot.querySelector('[data-history-open]').click();
+  render(host,data,false);
+  const entry = host.shadowRoot.querySelector('[data-history-open]');
+  assert.equal(entry.textContent,'历史');
+  assert.equal(entry.nextElementSibling,host.shadowRoot.querySelector('[data-toggle-settings]'));
+  assert.equal(entry.className,entry.nextElementSibling.className);
+  entry.click();
   assert.equal(host.dataset.historyOpen,'true');
   assert.equal(host.shadowRoot.querySelectorAll('svg').length,2);
   assert.match(host.shadowRoot.querySelector('.usage-history-panel').textContent,/本机记录/);

@@ -240,12 +240,12 @@ try {
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-summary-item \+ \.usage-summary-item::before\s*\{[\s\S]*?top:\s*calc\(50% \+ 1px\);[\s\S]*?background:\s*currentColor;[\s\S]*?translateY\(-50%\)/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /height:\s*14px;[\s\S]*?opacity:\s*\.40;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?background:\s*Canvas;/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[\s\S]*?width:\s*max-content;/);
+  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[^}]*width:\s*var\(--usage-popover-width,/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /:host\s*\{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*var\(--usage-top/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-column\s*\{[\s\S]*?box-sizing:\s*border-box;[\s\S]*?width:\s*100%;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-column \+ \.usage-column\s*\{[^}]*border-left/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-columns\s*\{[\s\S]*?grid-template-columns:\s*var\(--usage-column-widths, repeat\(var\(--usage-column-count, 4\), minmax\(230px, 1fr\)\)\);/);
-  assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[^}]*max-width:\s*calc\(100vw - 24px\);[^}]*overflow-x:\s*auto;/);
+  assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /\.usage-popover\s*\{[^}]*overflow(?:-[xy])?:\s*auto;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /\.usage-detail-label\s*\{[\s\S]*?color:\s*inherit;[\s\S]*?font-weight:\s*650;/);
   assert.match(host.shadowRoot.querySelector("style").textContent, /usage-detail-select input\s*\{[\s\S]*?appearance:\s*none;[\s\S]*?width:\s*13px;[\s\S]*?height:\s*13px;/);
   assert.doesNotMatch(host.shadowRoot.querySelector("style").textContent, /usage-popover-footer/);
@@ -278,7 +278,7 @@ try {
   const columns = [...host.shadowRoot.querySelectorAll(".usage-column")];
   assert.equal(columns.length, 5);
   assert.equal(host.dataset.columnCount, "5");
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 230px 170px");
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "repeat(5, minmax(0, 1fr))");
   assert.equal(host.style.getPropertyValue("--usage-popover-width"), "1000px");
   assert.equal(host.style.getPropertyValue("--usage-popover-shift"), "-222px");
   assert.deepEqual(columns.map((column) => column.querySelector(".usage-column-heading").textContent), ["本会话", "官方订阅", "重置概率预测（仅供参考）", "API 账户", "API Key"]);
@@ -356,16 +356,15 @@ try {
   assert.equal(host.shadowRoot.querySelector("[data-toggle-settings]").textContent, "设置");
   host.shadowRoot.querySelector("[data-toggle-settings]").click();
   assert.equal(host.shadowRoot.querySelector(".usage-mode-switches").hidden, false);
-  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "30 秒刷新", "English UI", "自动更新", "API 栏", "重置概率预测栏"]);
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-mode-toggle input[type="checkbox"]').length, 7);
-  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle").length, 7);
+  assert.deepEqual([...host.shadowRoot.querySelectorAll(".usage-mode-toggle")].map((item) => item.textContent), ["极简模式", "倒计时可视化", "30 秒刷新", "English UI", "自动更新", "API 栏", "重置概率预测栏", "用量图表"]);
+  assert.equal(host.shadowRoot.querySelectorAll(".usage-mode-switches > .usage-mode-toggle input[type=checkbox]").length, 8);
   assert.equal(host.shadowRoot.querySelector(".usage-mode-toggle-api"), null);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').checked, false);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').title, "自动续跑已启用");
   assert.equal(host.shadowRoot.querySelector('input[data-setting="autoResume"]').closest(".usage-column").querySelector(".usage-column-heading").textContent, "本会话");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').value, "继续");
   assert.equal(host.shadowRoot.querySelector('[data-setting-text="autoResumeMessage"]').closest(".usage-auto-resume-field").querySelector(".usage-auto-resume-label").textContent, "续跑发送内容");
-  assert.equal(host.shadowRoot.querySelectorAll('.usage-column:nth-child(2) .usage-mode-toggle input[type="checkbox"]').length, 7);
+  assert.equal(host.shadowRoot.querySelector('[data-setting="showHourlyActivity"]').closest(".usage-column").dataset.source, "official");
   const refreshToggle = () => host.shadowRoot.querySelector('input[data-setting="refreshEvery30Seconds"]');
   assert.equal(refreshToggle().checked, false);
   refreshToggle().click();
@@ -423,7 +422,7 @@ try {
   host.shadowRoot.querySelector('input[data-setting="showResetForecast"]').click();
   await new Promise((resolve) => setTimeout(resolve, 250));
   assert.equal(host.shadowRoot.querySelectorAll(".usage-column").length, 5);
-  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "230px 230px 160px 230px 170px");
+  assert.equal(host.style.getPropertyValue("--usage-column-widths"), "repeat(5, minmax(0, 1fr))");
   assert.equal(JSON.parse(window.localStorage.getItem("codex-usage-monitor-settings-v2")).showResetForecast, true);
   assert.equal(host.shadowRoot.querySelector('input[data-setting="showQuotaToken"]'), null);
   assert.equal(host.shadowRoot.querySelector('.usage-column[data-source="quota-token"]'), null);
@@ -1118,7 +1117,8 @@ try {
   const historyNow = new Date(2026, 9, 13, 12).getTime();
   const historyUsage = { ...usage, usageHistory: {
     updatedAt: historyNow,
-    tokenBuckets: [{ start: historyNow - 3600000, totalTokens: 12000000 }],
+    tokenBuckets: [{ start: historyNow - 3600000, totalTokens: 12000000,
+      inputTokens: 10000000, cachedInputTokens: 8000000, outputTokens: 2000000 }],
     quotaSamples: [{ at: historyNow - 300000, secondaryRemaining: 42, secondaryResetsAt: 123 }],
   } };
   const historyOriginalNow = window.Date.now;
@@ -1130,15 +1130,39 @@ try {
     host = window.document.getElementById("codex-usage-monitor");
     const monitor = window.__CODEX_USAGE_MONITOR_STATE__;
     const shadow = host.shadowRoot;
-    shadow.querySelector('.usage-popover').getBoundingClientRect = () => {
-      const width = host.dataset.historyOpen === 'true' ? 450 : 1060;
-      return { x: 0, y: 0, width, height: 300, right: width, bottom: 300 };
-    };
     shadow.querySelector('.usage-summary').click();
     monitor.ensure();
+    const activity = shadow.querySelector(".usage-activity");
+    assert.equal(activity.querySelectorAll(".usage-activity-cell").length, 7 * 24);
+    const recordedHour = activity.querySelector('button[data-level="4"]');
+    recordedHour.focus();
+    assert.match(activity.querySelector(".usage-activity-detail").textContent, /1200万/);
+    recordedHour.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    assert.equal(shadow.activeElement, recordedHour.nextElementSibling);
+    assert.equal(activity.querySelectorAll(".usage-chart-slide").length, 4);
+    assert.match(activity.querySelector('[data-chart-point="6"]').getAttribute("aria-label"), /1200万/);
+    assert.match(activity.querySelector(".usage-token-parts").textContent, /800万/);
+    assert.match(activity.querySelector(".usage-cache-plot [data-chart-point=\"6\"]").getAttribute("aria-label"), /80.0%/);
+    const nextChart = activity.querySelector('[data-chart-step="1"]');
+    nextChart.click();
+    assert.equal(activity.dataset.chart, "1");
+    assert.equal(activity.querySelectorAll(".usage-chart-slide:not([inert])").length, 1);
+    monitor.updateUsage({ ...historyUsage, usageHistory: { ...historyUsage.usageHistory, updatedAt: historyNow + 1 } });
+    assert.equal(activity.dataset.chart, "1", "refresh keeps the chart selected");
+    assert.equal(activity.querySelector("[data-chart-count]").textContent, "2 / 4");
+    shadow.querySelector("[data-toggle-settings]").click();
+    for (const enabled of [false, true]) {
+      const input = shadow.querySelector('[data-setting="showHourlyActivity"]');
+      assert.equal(input.checked, !enabled);
+      input.click();
+      assert.equal(Boolean(shadow.querySelector(".usage-activity")), enabled);
+      assert.equal(monitor.getSettings().showHourlyActivity, enabled);
+    }
+    shadow.querySelector("[data-toggle-settings]").click();
+    monitor.updateUsage(historyUsage);
     const originalEntry = shadow.querySelector('[data-history-open]');
     originalEntry.click();
-    assert.equal(host.style.getPropertyValue('--usage-popover-width'), '450px', 'history must use its own rendered width');
+    assert.equal(host.style.getPropertyValue('--usage-popover-width'), '450px', 'history uses its own width');
     for (const viewport of [1024, 480]) {
       window.innerWidth = viewport;
       monitor.ensure();
@@ -1157,9 +1181,20 @@ try {
       monitor.ensure();
       const width = Number.parseFloat(host.style.getPropertyValue('--usage-popover-width'));
       const left = Number.parseFloat(host.style.getPropertyValue('--usage-left')) + Number.parseFloat(host.style.getPropertyValue('--usage-popover-shift'));
-      assert.equal(width, Math.min(1060, viewport - 24));
+      assert.equal(width, Math.min(660, viewport - 24));
       assert.ok(left >= 12 && left + width <= viewport - 12, 'all columns remain reachable within the viewport');
     }
+    assert.equal(host.style.getPropertyValue("--usage-column-widths"), "repeat(1, minmax(0, 1fr))");
+    const popover = shadow.querySelector(".usage-popover");
+    Object.defineProperty(popover, "offsetHeight", { value: window.innerHeight + 100, configurable: true });
+    monitor.ensure();
+    const scale = Number(host.style.getPropertyValue("--usage-popover-scale"));
+    const bottomOffset = Number.parseFloat(host.style.getPropertyValue("--usage-popover-bottom"));
+    const panelTop = Number.parseFloat(host.style.getPropertyValue("--usage-top")) + 28 - bottomOffset - popover.offsetHeight * scale;
+    assert.ok(popover.offsetHeight * scale <= window.innerHeight - 24, "a tall panel fits the viewport");
+    assert.ok(bottomOffset >= 36 || panelTop >= Number.parseFloat(host.style.getPropertyValue("--usage-top")) + 36,
+      "a tall panel leaves the monitor bar available for closing");
+    delete popover.offsetHeight;
     window.innerWidth = historyOriginalWidth;
 
     shadow.querySelector('[data-history-open]').click();

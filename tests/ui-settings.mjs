@@ -58,6 +58,7 @@ try {
     autoResumeSharedMessage: false,
     showApiColumns: true,
     showResetForecast: true,
+    showHourlyActivity: true,
     autoResumeMessage: "继续",
     autoResumeThreads: {},
   });
@@ -100,6 +101,7 @@ try {
     autoResume: true,
     showApiColumns: false,
     showResetForecast: false,
+    showHourlyActivity: false,
     showQuotaToken: false,
     metricOrder: ["official:secondaryRemaining", "quota-token:wholeEstimateTokens", "api-account:balance"],
     autoResumeMessage: "请继续完成当前任务",
@@ -118,6 +120,8 @@ try {
   assert.equal(restarted.current.autoResume, true);
   assert.equal(restarted.current.showApiColumns, false);
   assert.equal(restarted.current.showResetForecast, false);
+  assert.equal(restarted.current.showHourlyActivity, false);
+  assert.equal(normalizeUiSettings({}).showHourlyActivity, true);
   assert.equal(Object.hasOwn(restarted.current, "showQuotaToken"), false, "the retired feature switch is dropped while loading old settings");
   assert.deepEqual(restarted.current.metricOrder, ["official:secondaryRemaining", "api-account:balance"]);
   assert.equal(restarted.current.autoResumeMessage, "请继续完成当前任务");

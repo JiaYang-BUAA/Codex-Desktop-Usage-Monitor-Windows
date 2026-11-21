@@ -311,6 +311,7 @@
         showApiColumns: hasSettings
           ? (Object.prototype.hasOwnProperty.call(value, "showApiColumns") ? Boolean(value.showApiColumns) : true)
           : false,
+        showHourlyActivity: value?.showHourlyActivity !== false,
         showResetForecast: Object.prototype.hasOwnProperty.call(value || {}, "showResetForecast")
           ? Boolean(value.showResetForecast)
           : true,
@@ -323,6 +324,7 @@
         minimalMode: false, countdownVisualization: false, refreshEvery30Seconds: false, englishUi: false, updateNotifications: false, autoResume: false,
         showApiColumns: false,
         showResetForecast: true,
+        showHourlyActivity: true,
         autoResumeThreads: {},
         autoResumeMessage: AUTO_RESUME_DEFAULT_MESSAGE,
         autoResumeSharedMessage: false,
@@ -623,30 +625,27 @@
     .usage-popover {
       box-sizing: border-box;
       position: absolute;
-      left: 0;
-      bottom: calc(100% + 8px);
+      bottom: var(--usage-popover-bottom, calc(100% + 8px));
       z-index: 40;
       left: var(--usage-popover-shift, 0px);
-      width: max-content;
-      max-width: calc(100vw - 24px);
-      max-height: min(440px, calc(100vh - 72px));
+      width: var(--usage-popover-width, 450px);
+      transform: scale(var(--usage-popover-scale, 1));
+      transform-origin: bottom left;
       padding: 10px 11px;
       border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
       border-radius: 8px;
       color: inherit;
       background: Canvas;
       box-shadow: 0 10px 28px rgba(0, 0, 0, .16);
-      overflow-x: auto;
-      overflow-y: auto;
-      overscroll-behavior: contain;
-      scrollbar-gutter: stable;
       white-space: normal;
     }
     .usage-columns {
       display: grid;
       grid-template-columns: var(--usage-column-widths, repeat(var(--usage-column-count, 4), minmax(230px, 1fr)));
       align-items: stretch;
+      row-gap: 10px;
     }
+    :host([data-wrapped-columns="true"]) .usage-column { padding-inline: 5px; }
     .usage-column { box-sizing: border-box; display: flex; flex-direction: column; width: 100%; min-width: 0; padding: 0 11px; }
     .usage-column:first-child { padding-left: 0; }
     .usage-column:last-child { padding-right: 0; }
@@ -790,6 +789,8 @@
     .usage-detail-label { min-width: 0; color: inherit; font-weight: 650; }
     .usage-detail-value { max-width: 138px; overflow: hidden; color: inherit; font-weight: 650; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .usage-detail-reset { font-weight: 500; opacity: .58; }
+    :host([data-wrapped-columns="true"]) .usage-column-heading,
+    :host([data-wrapped-columns="true"]) .usage-detail-value { white-space:normal; overflow-wrap:anywhere; }
     .usage-reset-method { margin-top: 6px; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
     .usage-tibo-activity {
       min-width: 0;
@@ -929,6 +930,7 @@
     .usage-column-meta {
       display: flex;
       justify-content: flex-end;
+      flex-wrap: wrap;
       align-items: center;
       gap: 5px;
       min-height: 27px;
@@ -937,6 +939,8 @@
       opacity: .55;
       white-space: nowrap;
     }
+    .usage-column-actions { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 5px; }
+    .usage-column-hints { display: flex; align-items: center; gap: 5px; }
     .usage-settings-trigger {
       min-height: 22px;
       padding: 0 6px;
@@ -966,6 +970,12 @@
       .usage-inline-toggle input:checked + .usage-toggle-track::after { transform: translateX(8px); }
       .usage-column-meta { font-size: 9px; }
       .usage-config-trigger { padding-inline: 5px; }
+    }
+    @media (max-height: 700px) {
+      .usage-column-title { min-height: 22px; padding-bottom: 2px; }
+      .usage-detail-row { min-height: 22px; }
+      .usage-column-brand { min-height: 26px; }
+      .usage-columns { row-gap: 7px; }
     }
     @supports not (color: color-mix(in srgb, red 50%, transparent)) {
       .usage-summary { border-color: rgba(128, 128, 128, .22); background: rgba(128, 128, 128, .06); }
@@ -1581,6 +1591,7 @@
             ["updateNotifications", t("updateNotifications")],
             ["showApiColumns", t("showApiColumns")],
             ["showResetForecast", t("showResetForecast")],
+            ["showHourlyActivity", t("showHourlyActivity")],
           ]) {
             const toggle = document.createElement("label");
             toggle.className = "usage-mode-toggle";
@@ -1616,7 +1627,13 @@
           const countdown = document.createElement("span");
           countdown.className = "usage-refresh-countdown";
           countdown.textContent = t("refreshIn", { seconds: "--" });
-          meta.append(settingsTrigger, maximum, separator, countdown);
+          const actions = document.createElement("div");
+          actions.className = "usage-column-actions";
+          actions.append(settingsTrigger);
+          const hints = document.createElement("div");
+          hints.className = "usage-column-hints";
+          hints.append(maximum, separator, countdown);
+          meta.append(actions, hints);
           footer.append(switches, meta);
           column.append(footer);
 
@@ -1641,6 +1658,7 @@
     updateCountdowns(host, usage);
     host.dataset.rendered = "true";
     modules.history?.render(host, usage.usageHistory, settings.englishUi);
+    modules.history?.renderCharts(host, usage.usageHistory, settings.englishUi, settings.showHourlyActivity);
     if (host.dataset.open === "true") {
       requestAnimationFrame(() => {
         const state = window[STATE_KEY];
@@ -1822,7 +1840,7 @@
         if (input.type !== "checkbox") return;
         const state = window[STATE_KEY];
         const usage = normalizeUsage(state?.usage || window[USAGE_KEY]);
-        if (["minimalMode", "countdownVisualization", "refreshEvery30Seconds", "englishUi", "updateNotifications", "autoResume", "autoResumeSharedMessage", "showApiColumns", "showResetForecast"].includes(input.dataset.setting)) {
+        if (["minimalMode", "countdownVisualization", "refreshEvery30Seconds", "englishUi", "updateNotifications", "autoResume", "autoResumeSharedMessage", "showApiColumns", "showResetForecast", "showHourlyActivity"].includes(input.dataset.setting)) {
           const settings = loadSettings();
           if (input.dataset.setting === "autoResume") {
             if (!usage.currentThreadId) return;

@@ -223,18 +223,53 @@
     if (apiColumnsVisible) columnWidths.push(230, 170);
     while (columnWidths.length < columnCount) columnWidths.push(230);
     const columnWidthTotal = columnWidths.reduce((total, width) => total + width, 0);
-    const renderedPopoverWidth = box(host.shadowRoot?.querySelector(".usage-popover"))?.width || 0;
     const historyOpen = host.dataset.historyOpen === "true";
-    const popoverWidth = Math.min(Math.max(0, window.innerWidth - 24), historyOpen
-      ? renderedPopoverWidth || 450
-      : Math.max(280, renderedPopoverWidth, columnWidthTotal + 40));
+    const viewportWidth = Math.max(1, window.innerWidth - 24);
+    const barTop = Math.round(placementY);
+    const barBottom = barTop + hostHeight;
+    const panelGap = 8;
+    const above = barTop - panelGap - 12;
+    const below = window.innerHeight - 12 - barBottom - panelGap;
+    const availableHeight = Math.max(1, above, below);
+    const naturalWidth = historyOpen ? 450 : columnWidthTotal + 40;
+    const minColumnWidth = 155;
+    const popover = host.shadowRoot?.querySelector(".usage-popover");
+    const applyWidth = (width) => {
+      const wrapped = columnWidthTotal + 24 > width;
+      const columnsPerRow = Math.max(1, Math.min(columnCount, Math.floor((width - 24) / minColumnWidth)));
+      host.dataset.wrappedColumns = String(wrapped);
+      host.style.setProperty("--usage-column-widths", wrapped
+        ? `repeat(${columnsPerRow}, minmax(0, 1fr))`
+        : columnWidths.map(columnWidth => `${columnWidth}px`).join(" "));
+      host.style.setProperty("--usage-popover-width", `${width}px`);
+    };
+    const measureFit = (width) => {
+      applyWidth(width);
+      const height = popover?.offsetHeight || 0;
+      return { width, height, scale: Math.min(1, viewportWidth / width, availableHeight / Math.max(1, height)) };
+    };
+    let fit = measureFit(Math.min(viewportWidth, naturalWidth));
+    if (!historyOpen && fit.scale < 0.75) {
+      // In short windows, an extra column can fit the content at a larger font size.
+      for (let count = 2; count <= columnCount; count++) {
+        const width = count * minColumnWidth + 24;
+        if (width <= viewportWidth || width >= naturalWidth || viewportWidth / width <= fit.scale) continue;
+        const candidate = measureFit(width);
+        if (candidate.scale > fit.scale) fit = candidate;
+      }
+      applyWidth(fit.width);
+    }
+    const { width: popoverWidth, height, scale } = fit;
+    // Keep the bar clickable on either side of the expanded panel.
+    const scaledHeight = height * scale;
+    const bottomEdge = scaledHeight <= above + 0.01 ? barTop - panelGap : barBottom + panelGap + scaledHeight;
+    host.style.setProperty("--usage-popover-scale", String(scale));
+    host.style.setProperty("--usage-popover-bottom", `${barBottom - bottomEdge}px`);
     const desiredLeftExtension = resetForecastVisible ? -160 : 0;
-    const rightEdgeShift = window.innerWidth - 12 - placementX - popoverWidth;
-    const popoverShift = historyOpen
-      ? Math.max(12 - placementX, Math.min(-16, rightEdgeShift))
-      : Math.max(12 - placementX, Math.min(desiredLeftExtension, rightEdgeShift) - 16);
-    host.style.setProperty("--usage-column-widths", columnWidths.map((width) => `${width}px`).join(" "));
-    host.style.setProperty("--usage-popover-width", `${popoverWidth}px`);
+    const rightEdgeShift = window.innerWidth - 12 - placementX - popoverWidth * scale;
+    const popoverShift = Math.max(12 - placementX, historyOpen
+      ? Math.min(-16, rightEdgeShift)
+      : Math.min(desiredLeftExtension, rightEdgeShift) - 16);
     host.style.setProperty("--usage-popover-shift", `${popoverShift}px`);
     host.dataset.anchor = inlineInput ? "reserved-composer-row"
       : shiftedRight ? "right-control-gap" : approval ? "approval" : widestGap ? "control-gap" : anchor ? "control" : "composer-left";

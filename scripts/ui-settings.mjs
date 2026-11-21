@@ -49,6 +49,7 @@ export function normalizeUiSettings(value) {
   normalized.showApiColumns = Object.prototype.hasOwnProperty.call(value, "showApiColumns")
     ? Boolean(value.showApiColumns)
     : true;
+  normalized.showHourlyActivity = value.showHourlyActivity !== false;
   normalized.showResetForecast = Object.prototype.hasOwnProperty.call(value, "showResetForecast")
     ? Boolean(value.showResetForecast)
     : true;
@@ -123,7 +124,7 @@ export function mergeUiSettingsEdit(current, snapshot, edit) {
       for (const config of Object.values(next.autoResumeThreads)) config.message = next.autoResumeMessage;
     }
     next.autoResumeSharedMessage = snapshot.autoResumeSharedMessage === true;
-  } else if ([...BOOLEAN_FIELDS, "showApiColumns", "showResetForecast"].includes(key) && key !== "autoResume") {
+  } else if ([...BOOLEAN_FIELDS, "showApiColumns", "showResetForecast", "showHourlyActivity"].includes(key) && key !== "autoResume") {
     next[key] = snapshot[key] === true;
   }
   return normalizeUiSettings(next);
